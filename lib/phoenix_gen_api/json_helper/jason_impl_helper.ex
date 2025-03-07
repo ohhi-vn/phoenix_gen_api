@@ -27,7 +27,7 @@ defmodule PhoenixGenApi.JasonImplHelper do
 
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts] do
-      import PhoenixGenApi.JsonImplHelper
+      import PhoenixGenApi.JasonImplHelper
 
       list_module = Keyword.get(opts, :impl, [])
 
