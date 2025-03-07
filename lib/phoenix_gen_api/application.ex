@@ -5,13 +5,24 @@ defmodule PhoenixGenApi.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
-    children = [
-      children = [
-        PhoenixGenApi.ConfigCache,
-        PhoenixGenApi.ConfigPuller,
-    ]
+    client_mode = Application.get_env(:phoenix_gen_api, :client_mode, false)
+
+    Logger.info("PhoenixGenApi.Application, start, client_mode: #{inspect client_mode}")
+
+    children =
+      if client_mode do
+        []
+      else
+        # TO-DO: Add config number of pullers
+        [
+          PhoenixGenApi.ConfigCache,
+          PhoenixGenApi.ConfigPuller,
+        ]
+      end
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

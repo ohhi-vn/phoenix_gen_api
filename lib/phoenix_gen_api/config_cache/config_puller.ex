@@ -84,30 +84,30 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   @impl true
   def init(_elements) do
-    Logger.info("PhoenixGenApi.ConfigPuller, puller, init")
+    Logger.info("PhoenixGenApi.ConfigPuller, init")
     {:ok, %{services: %{}, api_list: %{}}, {:continue, :load_data}}
   end
 
   @impl true
   def handle_continue(_, state) do
-    Logger.debug("PhoenixGenApi.ConfigPuller, puller, load data")
+    Logger.debug("PhoenixGenApi.ConfigPuller, load data from remote")
     state =
-      case Application.fetch_env(:location_service, :gen_api) do
+      case Application.fetch_env(:phoenix_gen_api, :gen_api) do
         {:ok, config} ->
           services = config[:service_configs]
-          Logger.debug("PhoenixGenApi.ConfigPuller, puller, read config: #{inspect services}")
+          Logger.debug("PhoenixGenApi.ConfigPuller, read config: #{inspect services}")
           config_list =
             Enum.reduce(services, %{}, fn service, acc ->
-              Logger.debug("PhoenixGenApi.ConfigPuller, puller, convert config: #{inspect service}")
+              Logger.debug("PhoenixGenApi.ConfigPuller, convert config: #{inspect service}")
               config = ServiceConfig.from_map(service)
               Map.put(acc, config.service, config)
             end)
 
-          Logger.debug("PhoenixGenApi.ConfigPuller, puller, read config: #{inspect config_list}")
+          Logger.debug("PhoenixGenApi.ConfigPuller, read config: #{inspect config_list}")
 
           Map.put(state, :services, config_list)
         :error ->
-          Logger.warning("PhoenixGenApi.ConfigPuller, puller read config, config not found")
+          Logger.warning("PhoenixGenApi.ConfigPuller, config not found, if has config please check config file follow format config :phoenix_gen_api, :gen_api, value")
           state
       end
 
@@ -127,7 +127,6 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   def handle_cast(:pull, state) do
     send(self(), :pull)
-
 
     {:noreply, state}
   end
@@ -151,11 +150,12 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   @impl true
   def handle_info(:pull, %{services: services, api_list: api_list} = state) do
-    Logger.debug("PhoenixGenApi.ConfigPuller, puller, pull config from services")
+    Logger.debug("PhoenixGenApi.ConfigPuller, pull config from remote")
 
     api_list =
       Enum.reduce(services, api_list, fn {_key, service}, acc ->
-        Logger.debug("PhoenixGenApi.ConfigPuller, puller, pull config from service: #{inspect service}")
+        Logger.debug("PhoenixGenApi.ConfigPuller, pull config from service: #{inspect service}")
+
         # Current version only support same api config for all nodes.
         node = service.nodes |> Enum.random()
 
@@ -167,31 +167,31 @@ defmodule PhoenixGenApi.ConfigPuller do
               {:ok, fun_list} when is_list(fun_list) ->
                 Enum.reduce(fun_list, [], fn
                   config = %FunConfig{}, acc ->
-                    Logger.info("PhoenixGenApi.ConfigPuller, puller, add config: #{inspect config}")
+                    Logger.info("PhoenixGenApi.ConfigPuller, add config: #{inspect config}")
                     ConfigDb.add(config)
 
                     [config.service | acc]
                   other, acc ->
-                    Logger.error("PhoenixGenApi.ConfigPuller, puller, unexpected return type: #{inspect other}")
+                    Logger.error("PhoenixGenApi.ConfigPuller, unexpected return type: #{inspect other}")
                     acc
                 end)
               other ->
-                Logger.error("PhoenixGenApi.ConfigPuller, puller, unexpected return type: #{inspect other}")
+                Logger.error("PhoenixGenApi.ConfigPuller, unexpected return type: #{inspect other}")
                 []
             end
 
           rescue
             error ->
-              Logger.error("PhoenixGenApi.ConfigPuller, puller, got an error: #{inspect error}")
+              Logger.error("PhoenixGenApi.ConfigPuller, got an error: #{inspect error}")
               []
 
           catch
             error ->
-              Logger.error("PhoenixGenApi.ConfigPuller, puller, unexpected raise: #{inspect error}")
+              Logger.error("PhoenixGenApi.ConfigPuller, unexpected raise: #{inspect error}")
               []
           end
 
-        Logger.debug("PhoenixGenApi.ConfigPuller, puller, api list from node #{node}: #{inspect result}")
+        Logger.debug("PhoenixGenApi.ConfigPuller, api list from node #{node}: #{inspect result}")
 
         Map.put(acc, service.service, result)
       end)

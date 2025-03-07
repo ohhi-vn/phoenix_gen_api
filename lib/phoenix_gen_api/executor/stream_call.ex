@@ -1,8 +1,11 @@
-defmodule LocationService.GenApi.StreamCall do
+defmodule PhoenixGenApi.StreamCall do
+  @moduledoc """
+  Module helps to handle stream call.
+  """
   use GenServer, restart: :temporary
 
-  alias CommonLib.Structs.GenApi.{FunConfig, Request, Response}
-  alias LocationService.GenApi.Executor
+  alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
+  alias PhoenixGenApi.Executor
 
   require Logger
 
@@ -20,7 +23,7 @@ defmodule LocationService.GenApi.StreamCall do
 
   @impl true
   def init(args) do
-    Logger.debug("location, gen_api, stream_call, init, args: #{inspect args}")
+    Logger.debug("PhoenixGenApi.StreamCall, init, args: #{inspect args}")
 
     {:ok, args, {:continue, :start_call}}
   end
@@ -32,7 +35,7 @@ defmodule LocationService.GenApi.StreamCall do
     send(state.receiver, Response.stream_response(state.request.request_id, :ok))
 
     if Response.is_error?(result) do
-      Logger.error("location, gen_api, stream_call, handle_continue, rpc failed, error: #{inspect result}")
+      Logger.error("PhoenixGenApi.StreamCall, handle_continue, rpc failed, error: #{inspect result}")
       {:stop, :error, state}
     else
       {:noreply, state}
@@ -41,7 +44,7 @@ defmodule LocationService.GenApi.StreamCall do
 
   @impl true
   def handle_call({:stream_call, :stop}, _from, state) do
-    Logger.debug("location, gen_api, stream_call, handle_call, stop")
+    Logger.debug("PhoenixGenApi.StreamCall, stream_call, handle_call, stop")
 
     done(state)
 
@@ -49,14 +52,14 @@ defmodule LocationService.GenApi.StreamCall do
   end
 
   def handle_call({:stream_call, result}, _from, state) do
-    Logger.debug("location, gen_api, stream_call, handle_call, result: #{inspect result}")
+    Logger.debug("PhoenixGenApi.StreamCall, handle_call, result: #{inspect result}")
     {:reply, {:stream_call, result}, state}
   end
 
 
   @impl true
   def handle_info({:result, result}, state) do
-    Logger.debug("location, gen_api, stream_call, handle_info, result: #{inspect result}")
+    Logger.debug("PhoenixGenApi.StreamCall, handle_info, result: #{inspect result}")
 
     result = Response.stream_response(state.request.request_id, result)
     send(state.receiver, {:stream_call, result})
@@ -65,7 +68,7 @@ defmodule LocationService.GenApi.StreamCall do
   end
 
   def handle_info({:last_result, result}, state) do
-    Logger.debug("location, gen_api, stream_call, handle_info, result: #{inspect result}")
+    Logger.debug("PhoenixGenApi.StreamCall, handle_info, result: #{inspect result}")
 
     result = Response.stream_response(state.request.request_id, result, true)
     send(state.receiver, {:stream_call, result})
@@ -74,7 +77,7 @@ defmodule LocationService.GenApi.StreamCall do
   end
 
   def handle_info({:error, error}, state) do
-    Logger.error("location, gen_api, stream_call, handle_info, error: #{inspect error}")
+    Logger.error("lPhoenixGenApi.StreamCall, handle_info, error: #{inspect error}")
 
     result = Response.error_response(state.request.request_id, "internal server error, rpc")
     send(state.receiver, {:stream_call, result})
@@ -83,7 +86,7 @@ defmodule LocationService.GenApi.StreamCall do
   end
 
   def handle_info(:complete, state) do
-    Logger.debug("location, gen_api, stream_call, handle_info, done")
+    Logger.debug("PhoenixGenApi.StreamCall, handle_info, done")
 
     done(state)
 
@@ -92,7 +95,7 @@ defmodule LocationService.GenApi.StreamCall do
 
   @impl true
   def terminate(reason, state) do
-    Logger.debug("location, gen_api, stream_call, terminate for request_id: #{inspect state.request.request_id}, reason: #{inspect reason}")
+    Logger.debug("lPhoenixGenApi.StreamCall, terminate for request_id: #{inspect state.request.request_id}, reason: #{inspect reason}")
 
     :ok
   end

@@ -1,5 +1,23 @@
 defmodule PhoenixGenApi.Executor do
 
+  @moduledoc """
+  This module is the core of PhoenixGenApi.
+  It will execute the request from client and return the response.
+  Response can be sync, async, or stream.
+
+  This module will handle the request, check permission, convert args, and call the remote node.
+
+  If the function is local, it will call the function directly.
+  If the function is remote, it will call the function via RPC.
+
+  If the function is sync, it will call the function and return the response immediately.
+  If the function is async, it will spawn a new process to call the function and return the response immediately.
+  If the function is stream, it will start a new process to handle the stream and return the response immediately.
+
+  for case async and stream, the response will be sent to the client later Channel process will receive the response and send it to the client.
+
+  """
+
   alias PhoenixGenApi.Structs.{Request, FunConfig, Response}
   alias PhoenixGenApi.ConfigCache, as: ConfigDb
   alias PhoenixGenApi.StreamCall
@@ -9,8 +27,27 @@ defmodule PhoenixGenApi.Executor do
   require Logger
 
   @doc """
-  Execute external request.
+  Execute a request from params.
+  Params is a map from playload in Phoenix Channel event (handle_in).
+  Function will raise an error if something wrong.
+
+  Params:
+    - request_id: String.t()
+    - request_type: String.t()
+    - user_id: String.t()
+    - device_id: String.t()
+    - args: map()
   """
+  @spec execute_params!(map()) :: Response.t()
+  def execute_params!(params) do
+    request = Request.decode!(params)
+    execute!(request)
+  end
+
+  @doc """
+  Execute a request.
+  """
+  @spec execute!(Request.t()) :: Response.t()
   def execute!(request = %Request{}) do
     fun_config = ConfigDb.get(request.request_type)
     if fun_config == nil do
@@ -84,8 +121,13 @@ defmodule PhoenixGenApi.Executor do
     end
   end
 
-  # TO-DO: Move to GenServer/pool style.
+  @doc """
+  Async call a request support for async response.
+  """
+  @spec async_call(Request.t(), FunConfig.t()) :: Response.t()
   def async_call(request = %Request{}, fun_config = %FunConfig{}) do
+    # TO-DO: Move to GenServer/pool style.
+
     Logger.debug("PhoenixGenApi.Executor, async_call, request: #{inspect request}")
     receiver = self()
 
@@ -101,7 +143,13 @@ defmodule PhoenixGenApi.Executor do
     Response.async_response(request.request_id)
   end
 
+  @doc """
+  Stream call a request support for stream response.
+  """
+  @spec stream_call(Request.t(), FunConfig.t()) :: Response.t()
   def stream_call(request = %Request{}, fun_config = %FunConfig{}) do
+    # TO-DO: Move to pool style.
+
     Logger.debug("PhoenixGenApi.Executor, stream_call, request: #{inspect request}")
 
     result = StreamCall.start_link(%{request: request, fun_config: fun_config})

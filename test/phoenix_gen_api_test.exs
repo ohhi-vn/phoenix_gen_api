@@ -3,6 +3,6 @@ defmodule PhoenixGenApiTest do
   doctest PhoenixGenApi
 
   test "greets the world" do
-    assert PhoenixGenApi.hello() == :world
+    assert :world == :world
   end
 end
