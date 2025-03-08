@@ -5,6 +5,13 @@ defmodule PhoenixGenApi.Structs.StreamHelper do
 
   alias __MODULE__
 
+  @typedoc "Stream helper struct."
+
+  @type t :: %__MODULE__{
+    stream_pid: pid(),
+    request_id: String.t(),
+  }
+
   @derive Nestru.Decoder
   defstruct [
     # string, user's id in system.

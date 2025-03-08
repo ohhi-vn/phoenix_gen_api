@@ -1,6 +1,16 @@
 defmodule PhoenixGenApi.ConfigPuller do
   @moduledoc """
-  This is automation module for pull config from nodes and update to local db.
+  This is automation module for pull `%FunConfig{}` from nodes and update to cache.
+
+  Configs for Pullter can be set in config file like:
+
+  ```Elixir
+  config :phoenix_gen_api, :gen_api,
+  pull_timeout: 3_000,
+  pull_interval: 60_000
+  ```
+
+  default timeout is 5s, refresh time is 30s.
   """
 
   use GenServer, restart: :permanent
@@ -12,8 +22,8 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   require Logger
 
-  @interval 30_000
-  @timeout 5_000
+  @default_interval 30_000
+  @default_timeout 5_000
 
   ### Public API
 
@@ -161,7 +171,7 @@ defmodule PhoenixGenApi.ConfigPuller do
 
         result =
           try do
-            rpc_result = Rpc.call(node, service.module, service.function, service.args, @timeout)
+            rpc_result = Rpc.call(node, service.module, service.function, service.args, get_config(:timeout))
 
             case rpc_result do
               {:ok, fun_list} when is_list(fun_list) ->
@@ -196,8 +206,13 @@ defmodule PhoenixGenApi.ConfigPuller do
         Map.put(acc, service.service, result)
       end)
 
-    Process.send_after(self(), :pull, @interval)
+    Process.send_after(self(), :pull, get_config(:interval))
 
     {:noreply, Map.put(state, :api_list, api_list)}
   end
+
+  ## Private functions
+
+  defp get_config(:timeout), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_timeout] || @default_timeout
+  defp get_config(:interval), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_interval] || @default_interval
 end

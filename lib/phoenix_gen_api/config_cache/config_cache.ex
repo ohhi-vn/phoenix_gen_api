@@ -1,4 +1,14 @@
 defmodule PhoenixGenApi.ConfigCache do
+  @moduledoc """
+  This module provides a cache for `Executor` can get `%FunConfig{}` config by `request_type`.
+
+  Use `:ets` to store config in memory.
+
+  Application can add, update, delete, get config from this cache.
+
+  `PhoenixGenApi.ConfigPuller` will pull config from nodes and update to this cache.
+
+  """
 
   use GenServer, restart: :permanent
 
@@ -10,23 +20,42 @@ defmodule PhoenixGenApi.ConfigCache do
 
   ### Public API
 
+  @doc """
+  Start the cache.
+  """
   def start_link(opts \\ []) do
     Logger.info("PhoenixGenApi.ConfigCache, start_link")
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @doc """
+  Add a new config to cache.
+  """
+  @spec add(FunConfig.t()) :: :ok
   def add(request_config = %FunConfig{})  do
     GenServer.call(__MODULE__, {:insert, request_config})
   end
 
+  @doc """
+  Update a config in cache.
+  """
+  @spec update(FunConfig.t()) :: :ok | {:error, String.t()}
   def update(request_config = %FunConfig{}) do
     GenServer.call(__MODULE__, {:update, request_config})
   end
 
+  @doc """
+  Delete a config from cache.
+  """
+  @spec delete(String.t()) :: :ok
   def delete(request_type) do
     GenServer.call(__MODULE__, {:delete, request_type})
   end
 
+  @doc """
+  Get a config from cache.
+  """
+  @spec get(String.t()) :: FunConfig.t() | nil
   def get(request_type) do
     case :ets.lookup(ConfigCache, request_type) do
       [{_, config}] ->
@@ -37,6 +66,10 @@ defmodule PhoenixGenApi.ConfigCache do
     end
   end
 
+  @doc """
+  Get all keys in cache.
+  """
+  @spec get_all_keys() :: [String.t()]
   def get_all_keys() do
     :ets.tab2list(ConfigCache)
     |> Enum.map(fn {key, _} -> key end)

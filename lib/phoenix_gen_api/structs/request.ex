@@ -3,6 +3,8 @@ defmodule PhoenixGenApi.Structs.Request do
   Request struct for internal using, convert data map from websocket api.
 
   Data from websocket api has payload like this:
+
+  ```Elixir
   %{
     "request_id" => "request_id",
     "request_type" => "request_type",
@@ -10,10 +12,13 @@ defmodule PhoenixGenApi.Structs.Request do
     "device_id" => "device_id",
     "args" => %{}
   }
+  ```
 
   We need to convert it to struct for internal using.
 
   Like this:
+
+  ```Elixir
   %PhoenixGenApi.Structs.Request{
     request_id: "request_id",
     request_type: "request_type",
@@ -21,6 +26,7 @@ defmodule PhoenixGenApi.Structs.Request do
     device_id: "device_id",
     args: %{}
   }
+  ```
 
   Explain:
   - user_id: string, user's id in system.
@@ -40,6 +46,16 @@ defmodule PhoenixGenApi.Structs.Request do
   """
 
   alias __MODULE__
+
+  @typedoc "Request struct for internal using, convert data map from websocket api."
+
+  @type t :: %__MODULE__{
+    user_id: String.t(),
+    device_id: String.t(),
+    request_type: String.t(),
+    request_id: String.t(),
+    args: map()
+  }
 
   @derive Nestru.Decoder
   defstruct [

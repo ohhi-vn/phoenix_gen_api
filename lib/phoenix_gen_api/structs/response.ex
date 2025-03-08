@@ -52,6 +52,18 @@ defmodule PhoenixGenApi.Structs.Response do
 
   alias __MODULE__
 
+
+  @typedoc "Response struct for internal using."
+
+  @type t :: %__MODULE__{
+    request_id: String.t(),
+    result: map(),
+    success: boolean,
+    error: String.t(),
+    async: boolean,
+    has_more: boolean
+  }
+
   @derive Nestru.Encoder
   defstruct [
     # string, unique id from request. Make by client.

@@ -4,6 +4,16 @@ defmodule PhoenixGenApi.Structs.ServiceConfig do
   """
   alias __MODULE__
 
+  @typedoc "service config struct."
+
+  @type t :: %__MODULE__{
+    service: String.t(),
+    nodes: list(String.t()),
+    module: String.t(),
+    function: String.t(),
+    args: list()
+  }
+
   @derive Nestru.Decoder
   defstruct [
     # service name

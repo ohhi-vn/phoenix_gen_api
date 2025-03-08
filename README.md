@@ -10,7 +10,7 @@ APIs can be added dynamically at runtime without needing to reconfigure.
 
 ## Concept
 
-After received an event from client(in handle_in callback of Phoenix Channel) Phoenix Channel process will pass data to PhoenixGenApi to find final event & target node to execute than get result to response to client.
+After received an event from client(in handle_in callback of Phoenix Channel) Phoenix Channel process will pass data to PhoenixGenApi to find final event & target node to execute then get result & push to response to client.
 
 
 ## Installation
@@ -21,14 +21,14 @@ by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
 ```Elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 0.0.3"}
+    {:phoenix_gen_api, "~> 0.0.5"}
   ]
 end
 ```
 
 We has two step to add PhoenixGenApi to our system.
 
-Note: You can use [`libcluster`](https://hex.pm/packages/libcluster) to build a Elixir cluster.
+Note: You can use [`:libcluster`](https://hex.pm/packages/libcluster) to build a Elixir cluster.
 
 ### Remote Node (optional)
 

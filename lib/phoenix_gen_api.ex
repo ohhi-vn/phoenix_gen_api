@@ -1,5 +1,7 @@
 defmodule PhoenixGenApi do
   @moduledoc """
-  Documentation for `PhoenixGenApi`.
+  PhoenixGenApi is a library to help you to generate API for Phoenix.
+
+  Go to modules to see more details.
   """
 end
