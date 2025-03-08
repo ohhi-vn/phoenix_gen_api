@@ -1,9 +1,21 @@
 defmodule PhoenixGenApi.Structs.FunConfig do
-  @doc """
-  Config struct for external request.
-  Request after receive from client will check config and forward to target service.
+  @moduledoc """
+  For declare a general config for a function.
+
+  ## Summary
+
+  Based on function config, the request will be forwarded to the target service.
+  Params will be validated & converted to the correct types before forwarding.
+  The response will be handled based on the response type.
+
+  For basic check permission, it will check if the user_id of the request is the same as the user_id in the argument (indicated by `check_permission`, ex: check_permission: {:arg, arg_name}).
+
+  For advanced permission check, please pass the request_info to the target function for checking.
 
   ## Example
+
+  Below is an example of a function config:
+
   ```Elixir
   %FunConfig{
     request_type: "get_user",
@@ -18,9 +30,33 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     },
     arg_orders: ["user_id", "device_id"],
     response_type: :async,
+    check_permission: false,
   }
   ```
 
+  Explain:
+
+  - `request_type`: the unique identifier for the type of request & response.
+    This is unqiue name in system for cliet can call right function.
+
+  - `service`: the service that will handle the request.
+
+  - `nodes`: the nodes that will handle the request. You can choose local node by set to `:local`.
+    Currently, all nodes must have the same config.
+
+  - `choose_node_mode`: the way to chose node, support: `:random`, `:hash`, `:round_robin`.
+
+  - `timeout`: the timeout for the request.
+
+  - `mfa`: the module, function, and arguments that will be called to handle the request.
+
+  - `arg_types`: the types of the arguments that will be passed to the function. For validation & converting.
+
+  - `arg_orders`: the order of the arguments that will be passed to the function.
+
+  - `response_type`: indicates if the request has a response. Type of response: `:sync`, `:async`, `:none`.
+
+  - `check_permission`: check permission, false or `{:arg, arg_name}`.
   """
 
   alias __MODULE__

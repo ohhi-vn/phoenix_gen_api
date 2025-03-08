@@ -1,6 +1,53 @@
 defmodule PhoenixGenApi.Structs.Response do
   @moduledoc """
-  Response event from server to client.
+  Response struct for internal using, convert data map from websocket api.
+
+  Data after pass throught websocket api client will received a event has payload like this:
+
+  ```Elixir
+  %{
+    "request_id" => "request_id",
+    "result" => data or null,
+    "success" => boolean,
+    "error" => string if has error,
+    "async" => boolean,
+    "has_more" => boolean
+  }
+  ```
+
+  Internal struct like:
+
+  ```Elixir
+  %PhoenixGenApi.Structs.Response{
+    request_id: "request_id",
+    result: data or nil,
+    success: boolean,
+    error: string if has error,
+    async: boolean,
+    has_more: boolean
+  }
+  ```
+
+  Explain:
+  - request_id: string, unique id from request. Make by client.
+    send back to client for identify request.
+
+  - result: map, field -> value, result for request. If is async/stream
+    this field is null for first time. Client must wait for next response.
+
+  - success: boolean, success or not. for case async/stream, server is processing
+
+  - error: string, error message.
+
+  - async: boolean, is async response or not.
+
+  - has_more: boolean, indicates has more data for stream request.
+
+  For Phoenix can convert result to json and send to client,
+  we need to make sure data can be convert to json.
+  Or we need implement a Jason.Encoder for our struct.
+
+  If Struct has function `encode!`, can use macro `use PhoenixGenApi.JasonImplHelpe` to generate Jason.Encoder implementation.
   """
 
   alias __MODULE__
