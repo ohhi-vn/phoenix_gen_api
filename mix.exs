@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "0.0.5",
+      version: "0.0.6",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -41,7 +41,7 @@ defmodule PhoenixGenApi.MixProject do
   defp package() do
     [
       maintainers: ["Manh Van Vu"],
-      licenses: ["MIT"],
+      licenses: ["MPL 2.0"],
       links: %{"GitHub" => "https://github.com/ohhi-vn/phoenix_gen_api", "About us" => "https://ohhi.vn/"}
     ]
   end
