@@ -118,6 +118,17 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   @doc """
   Select target based on config.
   """
+  def get_node(config = %FunConfig{nodes: {m, f, a}}, request = %Request{}) do
+    case apply(m, f, a) do
+      nodes when is_list(nodes) ->
+        config = %FunConfig{config | nodes: nodes}
+        get_node(config, request)
+      other ->
+        Logger.error("gen_api, get_node, invalid nodes #{inspect other}")
+        raise "invalid nodes #{inspect other}"
+    end
+
+  end
   def get_node(config = %FunConfig{}, request = %Request{}) do
      # TO-DO: Implement sticky node selection.
     case config.choose_node_mode do
