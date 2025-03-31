@@ -3,32 +3,38 @@
 
 # PhoenixGenApi
 
-The library helps quickly develop APIs based on Phoenix Channel.
-Helps developers add and update APIs at runtime from other nodes in the cluster without restarting or reconfiguring the Phoenix app.
+The library helps quickly develop APIs for client, the library is based on Phoenix Channel.
+Developers can add or update APIs in runtime from other nodes in the cluster without restarting or reconfiguring the Phoenix app.
 In this case, the Phoenix app will take on the role of an API gateway.
-APIs can be added dynamically at runtime without needing to reconfigure.
+
+The library can use with [EasyRpc](https://hex.pm/packages/easy_rpc) and [ClusterHelper](https://hex.pm/packages/cluster_helper) for fast and easy to develop a dynamic Elixir cluster.
 
 ## Concept
 
-After received an event from client(in handle_in callback of Phoenix Channel) Phoenix Channel process will pass data to PhoenixGenApi to find final event & target node to execute then get result & push to response to client.
+After received an event from client(in handle_in callback of Phoenix Channel), the event will be passed to PhoenixGenApi to find target API & target node to execute then get result for response to client.
 
+For service nodes (target node), the libray support some basic strategy for selecting node (:choose_node_mode) like: :random, :hash, :round_robin(will be added in the future).
+
+Supported :sync, :async, :stream for request/response to client.
+
+Supported basic check type & permission.
 
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
+The package can be installed
 by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
 
 ```Elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 0.0.5"}
+    {:phoenix_gen_api, "~> 0.0.8"}
   ]
 end
 ```
 
-We has two step to add PhoenixGenApi to our system.
-
 Note: You can use [`:libcluster`](https://hex.pm/packages/libcluster) to build a Elixir cluster.
+
+## Usage
 
 ### Remote Node (optional)
 
@@ -61,7 +67,7 @@ defmodule MyApp.GenApi.Supporter do
     [
       %FunConfig{
         request_type: "get_data",
-        service: :club_service,
+        service: :my_service,
         nodes: [Node.self()],
         choose_node_mode: :random,
         timeout: 5_000,
@@ -74,7 +80,7 @@ defmodule MyApp.GenApi.Supporter do
 end
 ```
 
-Note: You can add directly in runtime in Phoenix app node without using client mode.
+Note: You can add directly in runtime in gateway node without using client mode.
 
 ### Phoenix Node (Gateway node)
 
@@ -87,9 +93,9 @@ config :phoenix_gen_api, :gen_api,
     # service config for pulling general api config.
     %{
       # service type
-      service: :remote_service,
+      service: :my_service,
       # nodes of service in cluster, need to connecto to get config
-      nodes: [:"remote_service@test.local"],
+      nodes: [:"remote_service@test.local"], # or using MFA like: {ClusterHelper, get_nodes, [:my_api]}
       # module to get config
       module: MyApp.GenApi.Supporter,
       # function to get config
@@ -130,11 +136,13 @@ def handle_info({:async_call, result = %Response{}}, socket) do
 end
 ```
 
+In this case, if need you can authenticate by using Phoenix framework.
+
 Now you can start your cluster and test!
 
 After start Phoenix app, PhoenixGenApi will auto pull config from remote node to serve client.
 
-For test in Elixir you can use  [`phoenix_client`](https://hex.pm/packages/phoenix_client) to create a connecto to Phoenix Channel.
+For test in Elixir you can use  [`phoenix_client`](https://hex.pm/packages/phoenix_client) to create a connection to Phoenix Channel.
 
 You can push a event with content like:
 
@@ -182,8 +190,15 @@ After that is a another message with result:
 }
 ```
 
-For better security you can overwrite user_id in server.
+For better security you can overwrite user_id in server, using basic check permission or passing request info (user_id, device_id, request_id).
 
-### Full Example
+## Full Example
 
 We will add a full example in the future.
+
+## Planned Features
+
+- Add pool processes for save/limit resource.
+- Implement round-robin (based on process) for selecting node.
+- Sticky node.
+- Rate limiter.

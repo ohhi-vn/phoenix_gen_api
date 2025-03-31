@@ -31,6 +31,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     arg_orders: ["user_id", "device_id"],
     response_type: :async,
     check_permission: false,
+    request_info: true,
   }
   ```
 
@@ -57,6 +58,10 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   - `response_type`: indicates if the request has a response. Type of response: `:sync`, `:async`, `:none`.
 
   - `check_permission`: check permission, false or `{:arg, arg_name}`.
+
+  - `request_info`: indicates if need request info, info will be added to the request in the last argument.
+    `%{request_id: request_id, user_id: user_id, device_id: device_id}`.
+    `user_id` is the user_id of the user who made the request.
   """
 
   alias __MODULE__

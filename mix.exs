@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "0.0.7",
+      version: "0.0.8",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -47,7 +47,7 @@ defmodule PhoenixGenApi.MixProject do
   end
 
   defp description() do
-    "A library to add dynamic API to Phoenix Channels, with the ability to pull config from remote nodes. Easy to use, easy to extend & scale."
+    "A library for fast develop APIs for backend side, using Phoenix Channels for transport data, auto pull configs from service nodes. Scalable and easy to use."
   end
 
   defp docs do
