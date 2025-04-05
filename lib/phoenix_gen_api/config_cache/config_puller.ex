@@ -167,7 +167,7 @@ defmodule PhoenixGenApi.ConfigPuller do
         Logger.debug("PhoenixGenApi.ConfigPuller, pull config from service: #{inspect service}")
 
         # Current version only support same api config for all nodes.
-        node = service.nodes |> Enum.random()
+        node = get_node(service.nodes)
 
         result =
           try do
@@ -215,4 +215,12 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   defp get_config(:timeout), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_timeout] || @default_timeout
   defp get_config(:interval), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_interval] || @default_interval
+
+  defp get_node(nodes) when is_list(nodes) do
+    Enum.random(nodes)
+  end
+  defp get_node({m, f, a}) do
+    apply(m, f, a)
+    |> get_node()
+  end
 end
