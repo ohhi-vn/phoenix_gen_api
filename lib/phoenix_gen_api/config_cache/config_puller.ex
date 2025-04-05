@@ -166,11 +166,13 @@ defmodule PhoenixGenApi.ConfigPuller do
       Enum.reduce(services, api_list, fn {_key, service}, acc ->
         Logger.debug("PhoenixGenApi.ConfigPuller, pull config from service: #{inspect service}")
 
-        # Current version only support same api config for all nodes.
-        node = get_node(service.nodes)
+
 
         result =
           try do
+            # Current version only support same api config for all nodes.
+            node = get_node(service.nodes)
+
             rpc_result = Rpc.call(node, service.module, service.function, service.args, get_config(:timeout))
 
             case rpc_result do
@@ -201,8 +203,6 @@ defmodule PhoenixGenApi.ConfigPuller do
               []
           end
 
-        Logger.debug("PhoenixGenApi.ConfigPuller, api list from node #{node}: #{inspect result}")
-
         Map.put(acc, service.service, result)
       end)
 
@@ -216,6 +216,10 @@ defmodule PhoenixGenApi.ConfigPuller do
   defp get_config(:timeout), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_timeout] || @default_timeout
   defp get_config(:interval), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_interval] || @default_interval
 
+  defp get_node([]) do
+    Logger.error("PhoenixGenApi.ConfigPuller, no nodes to pull config from")
+    raise ArgumentError, "nodes must be a list of node names, received empty list"
+  end
   defp get_node(nodes) when is_list(nodes) do
     Enum.random(nodes)
   end
