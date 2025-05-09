@@ -90,6 +90,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     # the module, function, and arguments that will be called to handle the request.
     :mfa,
     # map, field -> type, the types of the arguments that will be passed to the function. For validation & converting.
+    # if nil or empty map, function has no arguments.
     # Support follow types:
     # :string - String type.
     # :boolean - boolean type.
@@ -164,32 +165,48 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       Map.put(acc, name, convert_arg!(value, type))
     end)
 
-    if map_size(arg_types) == 1 do
-      Map.values(converted_args)
-    else
-      result = Enum.reduce(config.arg_orders, [], fn name, acc ->
-        case Map.get(converted_args, name) do
-          nil ->
-            Logger.error("common, gen_api, request, missing argument #{inspect name} in #{inspect request.request_type}")
-            raise "missing argument #{inspect name} in #{inspect request.request_type}"
-          arg ->
-            acc ++ [arg]
-        end
-      end)
-      Logger.debug("common, gen_api, request, converted args: #{inspect result}")
-      result
+    cond do
+      # function has no arguments.
+      arg_types == nil or map_size(arg_types) == 0 ->
+        []
+
+      # function has only one argument.
+      map_size(arg_types) == 1 ->
+        Map.values(converted_args)
+
+      # function has multiple arguments.
+      true ->
+        result = Enum.reduce(config.arg_orders, [], fn name, acc ->
+          case Map.get(converted_args, name) do
+            nil ->
+              Logger.error("gen_api, request, missing argument #{inspect name} in #{inspect request.request_type}")
+              raise "missing argument #{inspect name} in #{inspect request.request_type}"
+            arg ->
+              acc ++ [arg]
+          end
+        end)
+        Logger.debug("gen_api, request, converted args: #{inspect result}")
+        result
     end
   end
 
   @doc """
   Validate request arguments.
   """
+  def validate_args!(%FunConfig{arg_types: nil},  %Request{}) do
+    :ok
+  end
+
+  def validate_args!(%FunConfig{arg_types: %{}}, %Request{}) do
+    :ok
+  end
+
   def validate_args!(config = %FunConfig{}, request = %Request{}) do
     args = request.args
     arg_types = config.arg_types
 
     if map_size(args) != map_size(arg_types) do
-      Logger.error("common, gen_api, request, invalid number of arguments for #{inspect request.request_type}, request_id: #{inspect request.request_id}")
+      Logger.error("gen_api, request, invalid number of arguments for #{inspect request.request_type}, request_id: #{inspect request.request_id}")
       raise "invalid number of arguments for #{inspect request.request_type}"
     end
 
@@ -197,7 +214,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     request_args = MapSet.new(Map.keys(args))
 
     if !MapSet.equal?(config_args, request_args) do
-      Logger.error("common, gen_api, request, invalid arguments for #{inspect request.request_type}, request_id: #{inspect request.request_id}")
+      Logger.error("gen_api, request, invalid arguments for #{inspect request.request_type}, request_id: #{inspect request.request_id}")
       raise "invalid arguments for #{inspect request.request_type}"
     end
 
@@ -206,20 +223,20 @@ defmodule PhoenixGenApi.Structs.FunConfig do
      case arg_types[name] do
        :list ->
           if length(value) > @default_list_max_items do
-            Logger.error("common, gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
+            Logger.error("gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
             raise "invalid argument size for #{inspect name} in #{inspect request.request_type}"
           end
           arg_list_validation!(value)
         {:list, max_items} ->
           if length(value) > max_items do
-            Logger.error("common, gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
+            Logger.error("gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
             raise "invalid argument size for #{inspect name} in #{inspect request.request_type}"
           end
           arg_list_validation!(value)
 
         :map ->  # TO-DO: Implement more for map type validation.
           if map_size(value) > @default_map_max_items do
-            Logger.error("common, gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
+            Logger.error("gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
             raise "invalid argument size for #{inspect name} in #{inspect request.request_type}"
           end
 
@@ -228,7 +245,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
         {:map, max_items} ->  # TO-DO: Implement more for map type validation.
           if map_size(value) > max_items do
-            Logger.error("common, gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
+            Logger.error("gen_api, request, invalid argument size for #{inspect name} in #{inspect request.request_type}, request_id: #{inspect request.request_id}")
             raise "invalid argument size for #{inspect name} in #{inspect request.request_type}"
           end
           arg_map_validation!(value)
@@ -287,6 +304,11 @@ defmodule PhoenixGenApi.Structs.FunConfig do
         raise "unsupported type of #{inspect item} in list"
       end
     end)
+  end
+
+  defp arg_validation!(_type, nil) do
+    Logger.error("gen_api, request, invalid argument type for nil")
+    raise "invalid argument, not accept nil"
   end
 
   defp arg_validation!(type, value) do

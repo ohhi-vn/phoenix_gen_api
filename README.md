@@ -199,6 +199,6 @@ We will add a full example in the future.
 ## Planned Features
 
 - Add pool processes for save/limit resource.
-- Implement round-robin (based on process) for selecting node.
+- Implement round-robin (based per connection process) for selecting node.
 - Sticky node.
 - Rate limiter.
