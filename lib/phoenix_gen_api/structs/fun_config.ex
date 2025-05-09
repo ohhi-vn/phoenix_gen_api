@@ -402,24 +402,31 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     0
   end
   defp next_round_robin_node_num(nodes_length) do
-    case :ets.whereis(RoundRobinNode) do
-      :undefined ->
-        :ets.new(RoundRobinNode, [:named_table, :set, :protected, read_concurrency: true])
-        :ets.insert(RoundRobinNode, {:node_number, 0})
+    case Process.get(:round_robin_num, nil) do
+      nil ->
+        Process.put(:round_robin_num, 0)
         0
-      _tid ->
-        [{:node_number, curr_num}] = :ets.lookup(RoundRobinNode, :node_number)
+      curr_num ->
         next_num = curr_num + 1
-        case next_num < nodes_length do
-          true ->
-            :ets.insert(RoundRobinNode, {:node_number, next_num})
-            next_num
-          false ->
-            :ets.insert(RoundRobinNode, {:node_number, 0})
-            0
+        if next_num < nodes_length do
+          Process.put(:round_robin_num, next_num)
+          next_num
+        else
+          Process.put(:round_robin_num, 0)
+          0
         end
     end
   end
+  # defp next_round_robin_node_num(nodes_length) do
+  #   next_num = Process.get(:round_robin_num, 0) + 1
+  #   if next_num < nodes_length do
+  #     Process.put(:round_robin_num, next_num)
+  #     next_num
+  #   else
+  #     Process.put(:round_robin_num, 0)
+  #     0
+  #   end
+  # end
 
   defp convert_arg!(arg, :string) when is_binary(arg) do
     arg
