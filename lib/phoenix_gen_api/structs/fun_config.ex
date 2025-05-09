@@ -393,9 +393,40 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   end
 
   defp round_robin_node(_request, config) do
-    # TO-DO: Implement round robin node selection.
-    Enum.at(config.nodes, 0)
+    node_num = config.nodes |> length() |> next_round_robin_node_num()
+    Enum.at(config.nodes, node_num)
   end
+
+  # Get next node number for round robin mode
+  defp next_round_robin_node_num(1) do
+    0
+  end
+  defp next_round_robin_node_num(nodes_length) do
+    case Process.get(:round_robin_num, nil) do
+      nil ->
+        Process.put(:round_robin_num, 0)
+        0
+      curr_num ->
+        next_num = curr_num + 1
+        if next_num < nodes_length do
+          Process.put(:round_robin_num, next_num)
+          next_num
+        else
+          Process.put(:round_robin_num, 0)
+          0
+        end
+    end
+  end
+  # defp next_round_robin_node_num(nodes_length) do
+  #   next_num = Process.get(:round_robin_num, 0) + 1
+  #   if next_num < nodes_length do
+  #     Process.put(:round_robin_num, next_num)
+  #     next_num
+  #   else
+  #     Process.put(:round_robin_num, 0)
+  #     0
+  #   end
+  # end
 
   defp convert_arg!(arg, :string) when is_binary(arg) do
     arg
