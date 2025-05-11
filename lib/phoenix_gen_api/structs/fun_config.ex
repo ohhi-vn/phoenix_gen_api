@@ -440,7 +440,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp convert_arg!(arg, :list_string) when is_list(arg) do
     Enum.each(arg, fn
       x when is_binary(x) -> x
-      x -> raise "invalid type #{inspect x} for list_string"
+      x -> raise InvalidTypeError, message: "invalid type #{inspect x} for list_string"
     end)
 
     arg
@@ -448,7 +448,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp convert_arg!(arg, :list_num) when is_list(arg) do
     Enum.each(arg, fn
       x when is_float(x) or is_integer(x) -> x
-      x -> raise "invalid type #{inspect x} for list_num"
+      x -> raise InvalidTypeError, message: "invalid type #{inspect x} for list_num"
     end)
 
     arg
@@ -464,7 +464,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   defp convert_arg!(arg, type) do
     Logger.error("gen_api, request, unsupported type #{inspect type} for #{inspect arg}")
-    raise "unsupported type #{inspect type} for #{inspect arg}"
+    raise InvalidTypeError, message: "unsupported type #{inspect type} for #{inspect arg}"
   end
 
   @doc """
