@@ -64,6 +64,20 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     `user_id` is the user_id of the user who made the request.
   """
 
+  @type t :: %__MODULE__{
+    request_type: String.t(),
+    service: atom() | String.t(),
+    nodes: list(String.t()) | {module(), function(), args :: list()},
+    choose_node_mode: atom(),
+    timeout: integer() | :infinity,
+    mfa: {module(), function(), args :: list()},
+    arg_types: map() | nil,
+    arg_orders: list(String.t()),
+    response_type: :sync | :async | :stream | :none,
+    check_permission: false | {:arg, String.t()},
+    request_info: boolean()
+  }
+
   alias __MODULE__
 
   alias PhoenixGenApi.Structs.Request
@@ -105,6 +119,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     # indicates if the request has a response. Type of response: :sync, :async, :none.
     # :sync -> the response will call directly & send back to the client.
     # :async -> Add to queue for other process to handle and send back to the client.
+    # :stream -> stream the response to the client.
     # :none -> no response needed, using for updating or sending notification.
     :response_type,
     # boolean, indicates if need request info, info will be added to the request in the last argument.
