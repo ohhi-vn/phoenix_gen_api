@@ -68,13 +68,20 @@ defmodule PhoenixGenApi.Structs.Request do
     # string, unique id for request. Make by client.
     :request_id,
     # map, field -> value, arguments for request.
-    :args,
+    args: %{}
   ]
 
   @doc """
   Create Request from params for convert data map from websocket api.
   """
   def decode!(params = %{}) do
-    Nestru.decode!(params, Request)
+    request = Nestru.decode!(params, Request)
+
+    # set args to empty map if args is nil (function with no args in request)
+    if request.args == nil do
+      %Request{request | args: %{}}
+    else
+      request
+    end
   end
 end

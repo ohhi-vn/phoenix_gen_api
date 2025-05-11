@@ -65,23 +65,29 @@ defmodule PhoenixGenApi.Executor do
           call(request, fun_config)
         :async ->
           async_call(request, fun_config)
+        :none ->
+          async_call(request, fun_config)
         :stream ->
-          Logger.error("PhoenixGenApi.Executor, unimplemented response type, stream")
-          Response.error_response(request.request_id, "unimplemented response type, stream")
-        _ ->
-          Logger.error("PhoenixGenApi.Executor, unknown response type: #{inspect fun_config.response_type}")
-          Response.error_response(request.request_id, "unknown response type")
+          stream_call(request, fun_config)
       end
     end
   end
 
   def call(request = %Request{}, fun_config = %FunConfig{}) do
     args = FunConfig.convert_args!(fun_config, request)
-    Logger.debug("PhoenixGenApi.Executor, remote call, converted args: #{inspect args}")
+    Logger.debug("PhoenixGenApi.Executor, remote call, converted args: #{inspect args}, executor pid: #{inspect self()}")
 
     info_args =
       if fun_config.request_info do
-        [%{request_id: request.request_id, user_id: request.user_id, device_id: request.device_id}]
+        request_info = %{request_id: request.request_id, user_id: request.user_id, device_id: request.device_id}
+
+        case fun_config.response_type do
+          :stream ->
+            # Stream call need to pass request info to remote node.
+            [Map.put(request_info, :stream_pid, self())]
+          _ ->
+            [request_info]
+        end
       else
         []
       end
@@ -122,10 +128,10 @@ defmodule PhoenixGenApi.Executor do
   end
 
   @doc """
-  Async call a request support for async response.
+  Async call a request support for async/none response.
   """
   @spec async_call(Request.t(), FunConfig.t()) :: Response.t()
-  def async_call(request = %Request{}, fun_config = %FunConfig{}) do
+  def async_call(request = %Request{}, fun_config = %FunConfig{response_type: response_type}) do
     # TO-DO: Move to GenServer/pool style.
 
     Logger.debug("PhoenixGenApi.Executor, async_call, request: #{inspect request}")
@@ -137,10 +143,14 @@ defmodule PhoenixGenApi.Executor do
       result = call(request, fun_config)
       Logger.debug("PhoenixGenApi.Executor, async_call, result: #{inspect result}")
 
-      send(receiver, {:async_call, result})
+      if response_type != :none do
+        send(receiver, {:async_call, result})
+      end
     end)
 
-    Response.async_response(request.request_id)
+    if response_type != :none do
+      Response.async_response(request.request_id)
+    end
   end
 
   @doc """
@@ -152,9 +162,13 @@ defmodule PhoenixGenApi.Executor do
 
     Logger.debug("PhoenixGenApi.Executor, stream_call, request: #{inspect request}")
 
-    result = StreamCall.start_link(%{request: request, fun_config: fun_config})
-
-    Logger.debug("PhoenixGenApi.Executor, stream_call, start result: #{inspect result}")
-    result
+    case StreamCall.start_link(%{request: request, fun_config: fun_config}) do
+      {:ok, pid} ->
+        Logger.debug("PhoenixGenApi.Executor, stream_call, start_link for request: #{inspect request.request_id} ok, pid: #{inspect pid}")
+        Response.stream_response(request.request_id, :init)
+      {:error, reason} ->
+        Logger.error("PhoenixGenApi.Executor, stream_call, start_link error: #{inspect reason}")
+        Response.error_response(request.request_id, "start stream call error")
+    end
   end
 end

@@ -110,4 +110,5 @@ defmodule PhoenixGenApi.Structs.Response do
   end
 
   def is_error?(%Response{success: false}), do: true
+  def is_error?(%Response{}), do: false
 end

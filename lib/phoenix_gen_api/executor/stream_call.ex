@@ -14,16 +14,31 @@ defmodule PhoenixGenApi.StreamCall do
       if Map.has_key?(args, :receiver) do
         args
       else
-        %{receiver: self()}
+        Map.put(args, :receiver, self())
       end
+
+    Logger.debug("PhoenixGenApi.StreamCall, start_link, args: #{inspect args}, parent pid: #{inspect self()}")
+
     GenServer.start_link(__MODULE__, args)
+  end
+
+  def send_data(pid, data) do
+    GenServer.cast(pid, {:stream_send, data})
+  end
+
+  def send_last_data(pid, data) do
+    GenServer.cast(pid, {:last_result, data})
+  end
+
+  def stop(pid) do
+    GenServer.cast(pid, :stream_stop)
   end
 
   ## GenServer callbacks
 
   @impl true
   def init(args) do
-    Logger.debug("PhoenixGenApi.StreamCall, init, args: #{inspect args}")
+    Logger.debug("PhoenixGenApi.StreamCall, init, args: #{inspect args}, pid: #{inspect self()}")
 
     {:ok, args, {:continue, :start_call}}
   end
@@ -32,28 +47,38 @@ defmodule PhoenixGenApi.StreamCall do
   def handle_continue(:start_call, state) do
     result = Executor.call(state.request, state.fun_config)
 
-    send(state.receiver, Response.stream_response(state.request.request_id, :ok))
+    result = %Response{result | has_more: true}
+    Logger.debug("PhoenixGenApi.StreamCall, handle_continue, result: #{inspect result}")
+
+    send(state.receiver, {:stream_response, result})
 
     if Response.is_error?(result) do
       Logger.error("PhoenixGenApi.StreamCall, handle_continue, rpc failed, error: #{inspect result}")
+      done(state)
+
       {:stop, :error, state}
     else
+
       {:noreply, state}
     end
   end
 
   @impl true
-  def handle_call({:stream_call, :stop}, _from, state) do
-    Logger.debug("PhoenixGenApi.StreamCall, stream_call, handle_call, stop")
+  def handle_cast(:stream_stop, state) do
+    Logger.debug("PhoenixGenApi.StreamCall, stream_call, handle_cast, stop")
 
     done(state)
 
     {:stop, :normal, state}
   end
 
-  def handle_call({:stream_call, result}, _from, state) do
-    Logger.debug("PhoenixGenApi.StreamCall, handle_call, result: #{inspect result}")
-    {:reply, {:stream_call, result}, state}
+  def handle_cast({:stream_send, result}, state) do
+    Logger.debug("PhoenixGenApi.StreamCall, handle_cast, result: #{inspect result}")
+
+    result = Response.stream_response(state.request.request_id, result)
+    send(state.receiver, {:stream_response, result})
+
+    {:noreply, state}
   end
 
 
@@ -62,7 +87,7 @@ defmodule PhoenixGenApi.StreamCall do
     Logger.debug("PhoenixGenApi.StreamCall, handle_info, result: #{inspect result}")
 
     result = Response.stream_response(state.request.request_id, result)
-    send(state.receiver, {:stream_call, result})
+    send(state.receiver, {:stream_response, result})
 
     {:noreply, state}
   end
@@ -71,7 +96,7 @@ defmodule PhoenixGenApi.StreamCall do
     Logger.debug("PhoenixGenApi.StreamCall, handle_info, result: #{inspect result}")
 
     result = Response.stream_response(state.request.request_id, result, true)
-    send(state.receiver, {:stream_call, result})
+    send(state.receiver, {:stream_response, result})
 
     {:noreply, state}
   end
@@ -81,6 +106,8 @@ defmodule PhoenixGenApi.StreamCall do
 
     result = Response.error_response(state.request.request_id, "internal server error, rpc")
     send(state.receiver, {:stream_call, result})
+
+    done(state)
 
     {:stop, :error, state}
   end
@@ -93,6 +120,12 @@ defmodule PhoenixGenApi.StreamCall do
     {:stop, :normal, state}
   end
 
+  def handle_info(unknown, state) do
+    Logger.debug("PhoenixGenApi.StreamCall, handle_info, unknown message: #{inspect unknown}")
+
+    {:noreply, state}
+  end
+
   @impl true
   def terminate(reason, state) do
     Logger.debug("lPhoenixGenApi.StreamCall, terminate for request_id: #{inspect state.request.request_id}, reason: #{inspect reason}")
@@ -102,6 +135,7 @@ defmodule PhoenixGenApi.StreamCall do
 
   defp done(state) do
     result = Response.stream_response(state.request.request_id, nil, false)
+
     send(state.receiver, {:stream_call, result})
   end
 
