@@ -55,7 +55,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   - `arg_orders`: the order of the arguments that will be passed to the function.
 
-  - `response_type`: indicates if the request has a response. Type of response: `:sync`, `:async`, `:none`.
+  - `response_type`: indicates if the request has a response. Type of response: `:sync`, `:async`, `:stream`, `:none`.
 
   - `check_permission`: check permission, false or `{:arg, arg_name}`.
 

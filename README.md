@@ -116,8 +116,17 @@ def handle_in("phoenix_gen_api", payload, socket) do
     |> Map.put("user_id", socket.assigns.user_id) # avoid security issue.
     |> PhoenixGenApi.Executor.execute_params()
 
-  # not a final result for async/stream call.
-  push(socket, "phoenix_gen_api_result", result)
+
+    case result do
+      result = %Response{} ->
+
+      # not a final result for async/stream call.
+      push(socket, "gen_api_result", result)
+
+    # request type is :none, no response.
+    {:ok, :no_response} ->
+      :ok
+    end
 
   {:noreply, socket}
 end
@@ -131,6 +140,13 @@ end
 
 def handle_info({:async_call, result = %Response{}}, socket) do
   push(socket, "phoenix_gen_api_result", result)
+
+  {:noreply, socket}
+end
+
+# For receiving data from stream.
+def handle_info({:stream_response, result}, socket) do
+  push(socket, "gen_api_result", result)
 
   {:noreply, socket}
 end
@@ -199,6 +215,5 @@ We will add a full example in the future.
 ## Planned Features
 
 - Add pool processes for save/limit resource.
-- Implement round-robin (based per connection process) for selecting node.
 - Sticky node.
 - Rate limiter.

@@ -150,6 +150,8 @@ defmodule PhoenixGenApi.Executor do
 
     if response_type != :none do
       Response.async_response(request.request_id)
+    else
+      {:ok, :no_response}
     end
   end
 
@@ -165,6 +167,9 @@ defmodule PhoenixGenApi.Executor do
     case StreamCall.start_link(%{request: request, fun_config: fun_config}) do
       {:ok, pid} ->
         Logger.debug("PhoenixGenApi.Executor, stream_call, start_link for request: #{inspect request.request_id} ok, pid: #{inspect pid}")
+        # Store stream call pid in parent process dictionary.
+        Process.put({:phoenix_gen_api, :stream_call_pid, request.request_id}, pid)
+
         Response.stream_response(request.request_id, :init)
       {:error, reason} ->
         Logger.error("PhoenixGenApi.Executor, stream_call, start_link error: #{inspect reason}")
