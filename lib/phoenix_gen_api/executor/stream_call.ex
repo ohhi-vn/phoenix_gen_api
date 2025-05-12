@@ -30,7 +30,19 @@ defmodule PhoenixGenApi.StreamCall do
     GenServer.cast(pid, {:last_result, data})
   end
 
-  def stop(pid) do
+  # When stop by manual generator process cannot get notification
+  # TO-D: Implement callback for easy to work with stream call.
+  def stop(request_id) when is_binary(request_id) do
+    case Process.get({:phoenix_gen_api, :stream_call_pid, request_id}) do
+      nil ->
+        Logger.info("PhoenixGenApi.StreamCall, stop, not found stream for request_id: #{inspect request_id}")
+        :ok
+      pid when is_pid(pid) ->
+        Logger.debug("PhoenixGenApi.StreamCall, stop, stream call pid: #{inspect pid}")
+        stop(pid)
+    end
+  end
+  def stop(pid) when is_pid(pid) do
     GenServer.cast(pid, :stream_stop)
   end
 
