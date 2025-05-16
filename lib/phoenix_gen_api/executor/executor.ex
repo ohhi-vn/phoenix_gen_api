@@ -108,19 +108,33 @@ defmodule PhoenixGenApi.Executor do
         Rpc.call(node, mod, fun, final_args, fun_config.timeout)
       end
     rescue
+      error in [InvalidTypeError] ->
+        Logger.error("PhoenixGenApi.FunConfig, convert args, got an error: #{inspect error}")
+        {:error, "#{inspect error}"}
       error ->
         Logger.error("PhoenixGenApi.Executor, remote call, got an error: #{inspect error}")
         {:error, "#{inspect error}"}
     catch
+      :exit, reason ->
+        Logger.error("PhoenixGenApi.Executor, remote call, rpc exit: #{inspect reason}")
+        {:error, "#{inspect reason}"}
       error ->
-        Logger.error("PhoenixGenApi.Executor, remote call, unexpected raise: #{inspect error}")
-        {:error, error}
+        Logger.error("PhoenixGenApi.Executor, remote call, unexpected error: #{inspect error}")
+        {:error, "#{inspect error}"}
     end
 
     case result do
+      {:error, %err_struct{} = reason}
+      when err_struct in [InvalidTypeError,
+                          UndefinedFunctionError,
+                          FunctionClauseError,
+                          ArgumentError,
+                          ArithmeticError,
+                          RuntimeError,
+                          BadArityError] ->
+        Response.error_response(request.request_id, "Bad Request: #{inspect reason}")
       {:error, reason} ->
-        Logger.error("PhoenixGenApi.Executor, remote call, error: #{inspect reason}")
-        Response.error_response(request.request_id, "internal server error, rpc")
+        Response.error_response(request.request_id, "Internal Server Error: #{inspect reason}")
       _ ->
         Logger.debug("PhoenixGenApi.Executor, remote call, success request_id: #{inspect request.request_id}, result: #{inspect result}")
         Response.success_response(request.request_id, result)
