@@ -38,7 +38,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   Explain:
 
   - `request_type`: the unique identifier for the type of request & response.
-    This is unqiue name in system for cliet can call right function.
+    This is unqiue name in system for client can call right function.
 
   - `service`: the service that will handle the request.
 
@@ -68,7 +68,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     request_type: String.t(),
     service: atom() | String.t(),
     nodes: list(String.t()) | {module(), function(), args :: list()},
-    choose_node_mode: atom(),
+    choose_node_mode: atom() | {atom(), atom()},
     timeout: integer() | :infinity,
     mfa: {module(), function(), args :: list()},
     arg_types: map() | nil,
@@ -97,7 +97,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     # list, nodes that will handle the request.
     # for local service run same node set to :local
     :nodes,
-    # way to chose node, support: :random, :hash, :round_robin,
+    # way to chose node, support: :random, :hash, {:hash, hash_key}, :round_robin.
     :choose_node_mode,
     # the timeout for the request.
     :timeout,
@@ -155,6 +155,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     case config.choose_node_mode do
       :random -> Enum.random(config.nodes)
       :hash -> hash_node(request, config)
+      {:hash, hash_key} -> hash_node(request, config, hash_key)
       :round_robin -> round_robin_node(request, config)
     end
   end
@@ -405,6 +406,21 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp hash_node(request, config) do
     hash_order = :erlang.phash2(request.request_id, length(config.nodes))
     Enum.at(config.nodes, hash_order)
+  end
+
+  # Get node in hash mode with hash_key
+  defp hash_node(request, config, hash_key) do
+    value =
+      Map.get(request.args, hash_key) ||
+      Map.get(request, hash_key)
+    case value do
+      nil ->
+        Logger.error("gen_api, hash key #{inspect hash_key} does not existed in request")
+        raise "hash_key #{inspect hash_key} does not existed in request"
+      val ->
+        hash_order = :erlang.phash2(val, length(config.nodes))
+        Enum.at(config.nodes, hash_order)
+    end
   end
 
   defp round_robin_node(_request, config) do
