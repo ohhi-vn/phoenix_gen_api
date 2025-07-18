@@ -136,7 +136,14 @@ defmodule PhoenixGenApi.Executor do
                           BadArityError] ->
         Response.error_response(request.request_id, "Bad Request: #{inspect reason}")
       {:error, reason} ->
-        Response.error_response(request.request_id, "Internal Server Error: #{inspect reason}")
+        error_message =
+          if Application.get_env(:phoenix_gen_api, :detail_error, false) do
+            "Internal Server Error: #{inspect reason}"
+          else
+            "Internal Server Error"
+          end
+
+        Response.error_response(request.request_id, error_message)
       _ ->
         Logger.debug("PhoenixGenApi.Executor, remote call, success request_id: #{inspect request.request_id}, result: #{inspect result}")
         Response.success_response(request.request_id, result)

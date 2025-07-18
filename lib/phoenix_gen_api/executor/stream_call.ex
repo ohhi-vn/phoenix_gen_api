@@ -116,7 +116,14 @@ defmodule PhoenixGenApi.StreamCall do
   def handle_info({:error, error}, state) do
     Logger.error("lPhoenixGenApi.StreamCall, handle_info, error: #{inspect error}")
 
-    result = Response.error_response(state.request.request_id, "internal server error, rpc")
+    error_message =
+      if Application.get_env(:phoenix_gen_api, :detail_error, false) do
+        "Internal Server Error: #{inspect error}"
+      else
+        "Internal Server Error"
+      end
+
+    result = Response.error_response(state.request.request_id, error_message)
     send(state.receiver, {:stream_call, result})
 
     done(state)

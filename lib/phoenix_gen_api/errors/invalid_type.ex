@@ -10,7 +10,7 @@ defmodule PhoenixGenApi.Errors.InvalidType do
   """
   def exception(arg_name) do
     %__MODULE__{
-      message: "Invalid type for argument '#{arg_name}'"
+      message: "Invalid type for argument '#{inspect arg_name}'"
     }
   end
 end
