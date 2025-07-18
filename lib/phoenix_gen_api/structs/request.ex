@@ -79,7 +79,7 @@ defmodule PhoenixGenApi.Structs.Request do
 
     # set args to empty map if args is nil (function with no args in request)
     if request.args == nil do
-      %Request{request | args: %{}}
+      %{request | args: %{}}
     else
       request
     end

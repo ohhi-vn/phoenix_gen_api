@@ -82,6 +82,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   alias PhoenixGenApi.Structs.Request
 
+  alias PhoenixGenApi.Errors.InvalidType
+
   # default max string length for data from client.
   @default_string_max_length 1000
   @default_list_max_items 1000
@@ -142,7 +144,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   def get_node(config = %FunConfig{nodes: {m, f, a}}, request = %Request{}) do
     case apply(m, f, a) do
       nodes when is_list(nodes) ->
-        config = %FunConfig{config | nodes: nodes}
+        config = %{config | nodes: nodes}
         get_node(config, request)
       other ->
         Logger.error("gen_api, get_node, invalid nodes #{inspect other}")
@@ -173,8 +175,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   def convert_args!(config = %FunConfig{}, request = %Request{}) do
     validate_args!(config, request)
 
-    args = request.args
-    arg_types = config.arg_types
+    args = request.args || %{}
+    arg_types = config.arg_types || %{}
 
     converted_args = Enum.reduce(args, %{}, fn {name, value}, acc ->
       type = arg_types[name]
@@ -448,16 +450,6 @@ defmodule PhoenixGenApi.Structs.FunConfig do
         end
     end
   end
-  # defp next_round_robin_node_num(nodes_length) do
-  #   next_num = Process.get(:round_robin_num, 0) + 1
-  #   if next_num < nodes_length do
-  #     Process.put(:round_robin_num, next_num)
-  #     next_num
-  #   else
-  #     Process.put(:round_robin_num, 0)
-  #     0
-  #   end
-  # end
 
   defp convert_arg!(arg, :string) when is_binary(arg) do
     arg
@@ -471,7 +463,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp convert_arg!(arg, :list_string) when is_list(arg) do
     Enum.each(arg, fn
       x when is_binary(x) -> x
-      x -> raise InvalidTypeError, message: "invalid type #{inspect x} for list_string"
+      x -> raise InvalidType, x
     end)
 
     arg
@@ -479,7 +471,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp convert_arg!(arg, :list_num) when is_list(arg) do
     Enum.each(arg, fn
       x when is_float(x) or is_integer(x) -> x
-      x -> raise InvalidTypeError, message: "invalid type #{inspect x} for list_num"
+      x -> raise InvalidType, x
     end)
 
     arg
@@ -495,7 +487,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   defp convert_arg!(arg, type) do
     Logger.error("gen_api, request, unsupported type #{inspect type} for #{inspect arg}")
-    raise InvalidTypeError, message: "unsupported type #{inspect type} for #{inspect arg}"
+    raise InvalidType, message: "unsupported type #{inspect type} for #{inspect arg}"
   end
 
   @doc """

@@ -59,7 +59,7 @@ defmodule PhoenixGenApi.StreamCall do
   def handle_continue(:start_call, state) do
     result = Executor.call(state.request, state.fun_config)
 
-    result = %Response{result | has_more: true}
+    result = %{result | has_more: true}
     Logger.debug("PhoenixGenApi.StreamCall, handle_continue, result: #{inspect result}")
 
     send(state.receiver, {:stream_response, result})

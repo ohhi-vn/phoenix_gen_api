@@ -22,6 +22,8 @@ defmodule PhoenixGenApi.Executor do
   alias PhoenixGenApi.ConfigCache, as: ConfigDb
   alias PhoenixGenApi.StreamCall
 
+  alias PhoenixGenApi.Errors.{InvalidType}
+
   alias :erpc, as: Rpc
 
   require Logger
@@ -108,7 +110,7 @@ defmodule PhoenixGenApi.Executor do
         Rpc.call(node, mod, fun, final_args, fun_config.timeout)
       end
     rescue
-      error in [InvalidTypeError] ->
+      error in [InvalidType] ->
         Logger.error("PhoenixGenApi.FunConfig, convert args, got an error: #{inspect error}")
         {:error, "#{inspect error}"}
       error ->
