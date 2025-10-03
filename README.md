@@ -111,7 +111,7 @@ In Phoenix Channel you can add a lit of bit code like:
 ```Elixir
 @impl true
 def handle_in("phoenix_gen_api", payload, socket) do
-  result = 
+  result =
     payload
     |> Map.put("user_id", socket.assigns.user_id) # avoid security issue.
     |> PhoenixGenApi.Executor.execute_params()
@@ -217,3 +217,22 @@ We will add a full example in the future.
 - Add pool processes for save/limit resource.
 - Sticky node.
 - Rate limiter.
+
+
+## Support AI agents & MCP
+
+Run this command for update guide & rules from deps to repo for supporting ai agents.
+
+```bash
+mix usage_rules.sync AGENTS.md --all \
+  --link-to-folder deps \
+  --inline usage_rules:all
+```
+
+Run this command for enable MCP server
+
+```bash
+mix tidewave
+```
+
+Config MCP for agent `http://localhost:4114/tidewave/mcp`, changes port in `mix.exs` file if needed. Go to [Tidewave](https://hexdocs.pm/tidewave/) for more informations.

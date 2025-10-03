@@ -11,3 +11,5 @@ erl_crash.dump
 mix.lock
 .tool-versions
 .DS_Store
+PROJECT_SUMMARY.md
+DOCUMENTATION_SUMMARY.md

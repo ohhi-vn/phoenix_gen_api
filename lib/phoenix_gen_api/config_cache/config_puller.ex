@@ -1,23 +1,24 @@
 defmodule PhoenixGenApi.ConfigPuller do
   @moduledoc """
-  This is automation module for pull `%FunConfig{}` from nodes and update to cache.
+  This module is responsible for periodically pulling function configurations (`%FunConfig{}`)
+  from remote nodes and updating the `ConfigCache`.
 
-  Configs for Pullter can be set in config file like:
+  The puller's behavior can be configured in your `config.exs` file:
 
-  ```Elixir
+  ```elixir
   config :phoenix_gen_api, :gen_api,
-  pull_timeout: 3_000,
-  pull_interval: 60_000
+    pull_timeout: 5_000,
+    pull_interval: 30_000
   ```
 
-  default timeout is 5s, refresh time is 30s.
+  - `pull_timeout`: The timeout for each RPC call in milliseconds (default: 5000).
+  - `pull_interval`: The interval between each pull operation in milliseconds (default: 30000).
   """
 
   use GenServer, restart: :permanent
 
-  alias PhoenixGenApi.ConfigCache, as: ConfigDb
+  alias PhoenixGenApi.ConfigCache
   alias PhoenixGenApi.Structs.{ServiceConfig, FunConfig}
-
   alias :erpc, as: Rpc
 
   require Logger
@@ -27,13 +28,16 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   ### Public API
 
+  @doc """
+  Starts the `ConfigPuller` GenServer.
+  """
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc """
-  Add nodes to pull config from.
-  Nodes is a list of %ServiceConfig{}.
+  Adds a list of services to the puller.
+  The `services` argument must be a list of `%ServiceConfig{}` structs.
   """
   def add(services) when is_list(services) do
     if services == [] do
@@ -42,24 +46,26 @@ defmodule PhoenixGenApi.ConfigPuller do
       Enum.each(services, fn
         %ServiceConfig{} ->
           :ok
+
         other ->
-          Logger.error("PhoenixGenApi.ConfigPuller, add, incorrect data type: #{inspect other}")
+          Logger.error("PhoenixGenApi.ConfigPuller, add, incorrect data type: #{inspect(other)}")
           raise ArgumentError, "nodes must be a list of ServiceConfig"
       end)
+
       GenServer.cast(__MODULE__, {:add, services})
     end
   end
 
   @doc """
-  Force pull config from nodes.
+  Forces an immediate pull of configurations from the registered services.
   """
   def pull() do
     GenServer.cast(__MODULE__, :pull)
   end
 
   @doc """
-  Delete services from pull config from.
-  Nodes is a list of %ServiceConfig{}.
+  Deletes a list of services from the puller.
+  The `services` argument must be a list of `%ServiceConfig{}` structs.
   """
   def delete(services) when is_list(services) do
     if services == [] do
@@ -68,23 +74,28 @@ defmodule PhoenixGenApi.ConfigPuller do
       Enum.each(services, fn
         %ServiceConfig{} ->
           :ok
+
         other ->
-          Logger.error("PhoenixGenApi.ConfigPuller, remove, incorrect data type: #{inspect other}")
+          Logger.error(
+            "PhoenixGenApi.ConfigPuller, remove, incorrect data type: #{inspect(other)}"
+          )
+
           raise ArgumentError, "nodes must be a list of ServiceConfig"
       end)
+
       GenServer.cast(__MODULE__, {:delete, services})
     end
   end
 
   @doc """
-  Get nodes that will be pulled config from.
+  Returns the map of services currently being pulled from.
   """
   def get_services() do
     GenServer.call(__MODULE__, :get_services)
   end
 
   @doc """
-  Get api list from node.
+  Returns the list of APIs for a given service.
   """
   def get_api_list(service) do
     GenServer.call(__MODULE__, {:get_api_list, service})
@@ -93,138 +104,147 @@ defmodule PhoenixGenApi.ConfigPuller do
   ### Callbacks
 
   @impl true
-  def init(_elements) do
+  def init(_opts) do
     Logger.info("PhoenixGenApi.ConfigPuller, init")
-    {:ok, %{services: %{}, api_list: %{}}, {:continue, :load_data}}
+    {:ok, %{services: %{}, api_list: %{}}, {:continue, :load_initial_data}}
   end
 
   @impl true
-  def handle_continue(_, state) do
-    Logger.debug("PhoenixGenApi.ConfigPuller, load data from remote")
-    state =
-      case Application.fetch_env(:phoenix_gen_api, :gen_api) do
-        {:ok, config} ->
-          services = config[:service_configs]
-          Logger.debug("PhoenixGenApi.ConfigPuller, read config: #{inspect services}")
-          config_list =
-            Enum.reduce(services, %{}, fn service, acc ->
-              Logger.debug("PhoenixGenApi.ConfigPuller, convert config: #{inspect service}")
-              config = ServiceConfig.from_map(service)
-              Map.put(acc, config.service, config)
-            end)
-
-          Logger.debug("PhoenixGenApi.ConfigPuller, read config: #{inspect config_list}")
-
-          Map.put(state, :services, config_list)
-        :error ->
-          Logger.warning("PhoenixGenApi.ConfigPuller, config not found, if has config please check config file follow format config :phoenix_gen_api, :gen_api, value")
-          state
-      end
-
-    send(self(), :pull)
-
-    {:noreply, state}
+  def handle_continue(:load_initial_data, state) do
+    Logger.debug("PhoenixGenApi.ConfigPuller, loading initial data")
+    new_state = load_services_from_config(state)
+    schedule_pull()
+    {:noreply, new_state}
   end
 
   @impl true
-  def handle_cast({:add, services}, %{services: current_services} = state) do
-    new_services = Enum.reduce(services, current_services, fn config, acc ->
-      Map.put(acc, config.service, config)
-    end)
+  def handle_cast({:add, services}, state) do
+    new_services =
+      Enum.reduce(services, state.services, fn config, acc ->
+        Map.put(acc, config.service, config)
+      end)
 
-    {:noreply, Map.put(state, :services, new_services)}
+    {:noreply, %{state | services: new_services}}
   end
 
   def handle_cast(:pull, state) do
-    send(self(), :pull)
-
+    pull_and_update_cache(state.services, state.api_list)
+    schedule_pull()
     {:noreply, state}
   end
 
-  def handle_cast({:delete, services}, %{service: current_services} = state) do
-    new_services = Enum.reduce(services, current_services, fn config, acc ->
-      Map.delete(acc, config.service)
-    end)
-
-    {:noreply, Map.put(state, :services, new_services)}
-  end
-
-  @impl true
-  def handle_call(:get_services, _from, %{services: services} = state) do
-    {:reply, services, state}
-  end
-
-  def handle_call({:get_api_list, service}, _from, %{api_list: api_list} = state) do
-    {:reply,  Map.get(api_list, service), state}
-  end
-
-  @impl true
-  def handle_info(:pull, %{services: services, api_list: api_list} = state) do
-    Logger.debug("PhoenixGenApi.ConfigPuller, pull config from remote")
-
-    api_list =
-      Enum.reduce(services, api_list, fn {_key, service}, acc ->
-        Logger.debug("PhoenixGenApi.ConfigPuller, pull config from service: #{inspect service}")
-
-
-
-        result =
-          try do
-            # Current version only support same api config for all nodes.
-            node = get_node(service.nodes)
-
-            rpc_result = Rpc.call(node, service.module, service.function, service.args, get_config(:timeout))
-
-            case rpc_result do
-              {:ok, fun_list} when is_list(fun_list) ->
-                Enum.reduce(fun_list, [], fn
-                  config = %FunConfig{}, acc ->
-                    Logger.info("PhoenixGenApi.ConfigPuller, add config: #{inspect config}")
-                    ConfigDb.add(config)
-
-                    [config.service | acc]
-                  other, acc ->
-                    Logger.error("PhoenixGenApi.ConfigPuller, unexpected return type: #{inspect other}")
-                    acc
-                end)
-              other ->
-                Logger.error("PhoenixGenApi.ConfigPuller, unexpected return type: #{inspect other}")
-                []
-            end
-
-          rescue
-            error ->
-              Logger.error("PhoenixGenApi.ConfigPuller, got an error: #{inspect error}")
-              []
-
-          catch
-            error ->
-              Logger.error("PhoenixGenApi.ConfigPuller, unexpected raise: #{inspect error}")
-              []
-          end
-
-        Map.put(acc, service.service, result)
+  def handle_cast({:delete, services}, state) do
+    new_services =
+      Enum.reduce(services, state.services, fn config, acc ->
+        Map.delete(acc, config.service)
       end)
 
-    Process.send_after(self(), :pull, get_config(:interval))
-
-    {:noreply, Map.put(state, :api_list, api_list)}
+    {:noreply, %{state | services: new_services}}
   end
 
-  ## Private functions
-
-  defp get_config(:timeout), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_timeout] || @default_timeout
-  defp get_config(:interval), do: Application.get_env(:phoenix_gen_api, :gen_api)[:pull_interval] || @default_interval
-
-  defp get_node([]) do
-    Logger.error("PhoenixGenApi.ConfigPuller, no nodes to pull config from")
-    raise ArgumentError, "nodes must be a list of node names, received empty list"
+  @impl true
+  def handle_call(:get_services, _from, state) do
+    {:reply, state.services, state}
   end
-  defp get_node(nodes) when is_list(nodes) do
+
+  def handle_call({:get_api_list, service}, _from, state) do
+    {:reply, Map.get(state.api_list, service), state}
+  end
+
+  @impl true
+  def handle_info(:pull, state) do
+    new_api_list = pull_and_update_cache(state.services, state.api_list)
+    schedule_pull()
+    {:noreply, %{state | api_list: new_api_list}}
+  end
+
+  ### Private Functions
+
+  defp load_services_from_config(state) do
+    case Application.fetch_env(:phoenix_gen_api, :gen_api) do
+      {:ok, config} ->
+        services =
+          config
+          |> Keyword.get(:service_configs, [])
+          |> Enum.reduce(%{}, fn service_map, acc ->
+            config = ServiceConfig.from_map(service_map)
+            Map.put(acc, config.service, config)
+          end)
+
+        Logger.debug(
+          "PhoenixGenApi.ConfigPuller, loaded services from config: #{inspect(services)}"
+        )
+
+        %{state | services: services}
+
+      :error ->
+        Logger.warning(
+          "PhoenixGenApi.ConfigPuller, :service_configs not found in application config"
+        )
+
+        state
+    end
+  end
+
+  defp pull_and_update_cache(services, api_list) do
+    Enum.reduce(services, api_list, fn {_key, service}, acc ->
+      Logger.debug("PhoenixGenApi.ConfigPuller, pulling config from service: #{inspect(service)}")
+      result = fetch_and_process_service(service)
+      Map.put(acc, service.service, result)
+    end)
+  end
+
+  defp fetch_and_process_service(service) do
+    try do
+      node = get_random_node(service.nodes)
+
+      case Rpc.call(node, service.module, service.function, service.args, pull_timeout()) do
+        {:ok, fun_list} when is_list(fun_list) ->
+          process_fun_list(fun_list)
+
+        other ->
+          Logger.error("PhoenixGenApi.ConfigPuller, unexpected RPC result: #{inspect(other)}")
+          []
+      end
+    rescue
+      error ->
+        Logger.error("PhoenixGenApi.ConfigPuller, RPC call failed: #{inspect(error)}")
+        []
+    catch
+      kind, value ->
+        Logger.error("PhoenixGenApi.ConfigPuller, unexpected error: #{kind}: #{inspect(value)}")
+        []
+    end
+  end
+
+  defp process_fun_list(fun_list) do
+    Enum.reduce(fun_list, [], fn
+      config = %FunConfig{}, acc ->
+        Logger.info("PhoenixGenApi.ConfigPuller, adding config: #{inspect(config)}")
+        ConfigCache.add(config)
+        [config.service | acc]
+
+      other, acc ->
+        Logger.error("PhoenixGenApi.ConfigPuller, unexpected item in fun_list: #{inspect(other)}")
+        acc
+    end)
+  end
+
+  defp get_random_node([]) do
+    raise ArgumentError, "nodes list cannot be empty"
+  end
+
+  defp get_random_node(nodes) when is_list(nodes) do
     Enum.random(nodes)
   end
-  defp get_node({m, f, a}) do
-    apply(m, f, a)
-    |> get_node()
+
+  defp schedule_pull() do
+    Process.send_after(self(), :pull, pull_interval())
   end
+
+  defp pull_timeout,
+    do: Application.get_env(:phoenix_gen_api, :gen_api, [])[:pull_timeout] || @default_timeout
+
+  defp pull_interval,
+    do: Application.get_env(:phoenix_gen_api, :gen_api, [])[:pull_interval] || @default_interval
 end
