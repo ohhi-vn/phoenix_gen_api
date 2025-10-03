@@ -13,7 +13,7 @@ The library can use with [EasyRpc](https://hex.pm/packages/easy_rpc) and [Cluste
 
 After received an event from client(in handle_in callback of Phoenix Channel), the event will be passed to PhoenixGenApi to find target API & target node to execute then get result for response to client.
 
-For service nodes (target node), the libray support some basic strategy for selecting node (:choose_node_mode) like: :random, :hash, :round_robin(will be added in the future).
+For service nodes (target node), the libray support some basic strategy for selecting node (:choose_node_mode) like: :random, :hash, :round_robin.
 
 Supported :sync, :async, :stream for request/response to client.
 
@@ -27,7 +27,7 @@ by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
 ```Elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 0.0.8"}
+    {:phoenix_gen_api, "~> 0.2.1"}
   ]
 end
 ```
@@ -124,7 +124,7 @@ def handle_in("phoenix_gen_api", payload, socket) do
       push(socket, "gen_api_result", result)
 
     # request type is :none, no response.
-    {:ok, :no_response} ->
+    {:ok, :none} ->
       :ok
     end
 
@@ -214,7 +214,7 @@ We will add a full example in the future.
 
 ## Planned Features
 
-- Add pool processes for save/limit resource.
+- [DONE]Add pool processes for save/limit resource.
 - Sticky node.
 - Rate limiter.
 
