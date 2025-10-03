@@ -230,6 +230,11 @@ defmodule PhoenixGenApi.ConfigPuller do
     end)
   end
 
+  defp get_random_node({module, function, args}) do
+    apply(module, function, args)
+    |> get_random_node()
+  end
+
   defp get_random_node([]) do
     raise ArgumentError, "nodes list cannot be empty"
   end

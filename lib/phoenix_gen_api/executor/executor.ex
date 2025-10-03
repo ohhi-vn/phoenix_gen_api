@@ -53,13 +53,15 @@ defmodule PhoenixGenApi.Executor do
         "response_type: #{fun_config.response_type}"
     )
 
-    Permission.check_permission!(request, fun_config)
-
-    case fun_config.response_type do
-      :sync -> sync_call(request, fun_config)
-      :async -> async_call(request, fun_config)
-      :none -> async_call(request, fun_config)
-      :stream -> stream_call(request, fun_config)
+    if Permission.check_permission(request, fun_config) do
+      case fun_config.response_type do
+        :sync -> sync_call(request, fun_config)
+        :async -> async_call(request, fun_config)
+        :none -> async_call(request, fun_config)
+        :stream -> stream_call(request, fun_config)
+      end
+    else
+      Response.error_response(request.request_id, "Permission denied")
     end
   end
 
@@ -127,12 +129,13 @@ defmodule PhoenixGenApi.Executor do
   end
 
   defp async_call(request, fun_config) do
+    receiver = self()
     # TODO: Replace with a worker pool for better performance.
     spawn_link(fn ->
       result = sync_call(request, fun_config)
 
       if fun_config.response_type != :none do
-        send(self(), {:async_call, result})
+        send(receiver, {:async_call, result})
       end
     end)
 

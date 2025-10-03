@@ -36,7 +36,7 @@ defmodule PhoenixGenApi.StreamCall do
   def stop(request_id) when is_binary(request_id) do
     case Process.get({:phoenix_gen_api, :stream_call_pid, request_id}) do
       nil ->
-        Logger.warn(
+        Logger.warning(
           "PhoenixGenApi.StreamCall, stop, not found stream for request_id: #{inspect(request_id)}"
         )
 
