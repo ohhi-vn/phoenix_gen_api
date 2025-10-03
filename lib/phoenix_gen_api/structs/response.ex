@@ -12,10 +12,12 @@ defmodule PhoenixGenApi.Structs.Response do
           success: boolean(),
           error: String.t() | nil,
           async: boolean(),
-          has_more: boolean()
+          has_more: boolean(),
+          can_retry: boolean()
         }
 
-  @derive {Jason.Encoder, only: [:request_id, :result, :success, :error, :async, :has_more]}
+  @derive {Jason.Encoder,
+           only: [:request_id, :result, :success, :error, :async, :has_more, :can_retry]}
   @derive Nestru.Encoder
   defstruct [
     :request_id,
@@ -23,7 +25,8 @@ defmodule PhoenixGenApi.Structs.Response do
     success: false,
     error: nil,
     async: false,
-    has_more: false
+    has_more: false,
+    can_retry: false
   ]
 
   @doc """
@@ -64,8 +67,8 @@ defmodule PhoenixGenApi.Structs.Response do
   @doc """
   Creates a response for a failed request.
   """
-  def error_response(request_id, error) do
-    %__MODULE__{request_id: request_id, error: error, success: false}
+  def error_response(request_id, error, can_retry \\ false) do
+    %__MODULE__{request_id: request_id, error: error, success: false, can_retry: can_retry}
   end
 
   @doc """

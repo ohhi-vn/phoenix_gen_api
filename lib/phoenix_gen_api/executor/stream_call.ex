@@ -14,7 +14,8 @@ defmodule PhoenixGenApi.StreamCall do
   require Logger
 
   def start_link(args = %{fun_config: %FunConfig{}, request: %Request{}, receiver: nil}) do
-    start_link(Map.put(args, :receiver, self()))
+    receiver = self()
+    start_link(Map.put(args, :receiver, receiver))
   end
 
   def start_link(args = %{fun_config: %FunConfig{}, request: %Request{}, receiver: receiver})
@@ -57,7 +58,7 @@ defmodule PhoenixGenApi.StreamCall do
 
   @impl true
   def handle_continue(:start_stream, state) do
-    result = Executor.execute_with_config!(state.request, state.fun_config)
+    result = Executor.sync_call(state.request, state.fun_config)
 
     if Response.is_error?(result) do
       send(state.receiver, {:stream_response, result})

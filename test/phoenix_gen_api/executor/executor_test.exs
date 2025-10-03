@@ -20,7 +20,15 @@ defmodule PhoenixGenApi.ExecutorTest do
   end
 
   describe "execute!/1" do
-    test "returns error when function config not found", %{request: request} do
+    test "returns error when function config not found" do
+      request = %Request{
+        request_id: "test_request_id",
+        request_type: "test_no_function",
+        user_id: "user_123",
+        device_id: "device_456",
+        args: %{"name" => "Alice", "age" => 30}
+      }
+
       result = Executor.execute!(request)
 
       assert result.success == false

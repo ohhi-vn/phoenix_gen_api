@@ -11,16 +11,18 @@ defmodule PhoenixGenApi.Application do
   def start(_type, _args) do
     client_mode = Application.get_env(:phoenix_gen_api, :client_mode, false)
 
-    Logger.info("PhoenixGenApi.Application, start, client_mode: #{inspect client_mode}")
+    Logger.info("PhoenixGenApi.Application, start, client_mode: #{inspect(client_mode)}")
 
     children =
       if client_mode do
         []
       else
-        # TO-DO: Add config number of pullers
         [
+          # Worker pools for async and stream execution
+          PhoenixGenApi.WorkerPool.WorkerPoolSupervisor,
+          # Configuration cache and puller
           PhoenixGenApi.ConfigCache,
-          PhoenixGenApi.ConfigPuller,
+          PhoenixGenApi.ConfigPuller
         ]
       end
 

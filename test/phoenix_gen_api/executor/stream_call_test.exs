@@ -45,7 +45,9 @@ defmodule PhoenixGenApi.StreamCallTest do
 
       # Wait for stream to complete
       receive do
-        {:stream_response, _response} -> :ok
+        {:stream_response, _response} ->
+          StreamCall.stop(pid)
+          :ok
       after
         1000 -> flunk("Expected stream response")
       end
@@ -63,7 +65,9 @@ defmodule PhoenixGenApi.StreamCallTest do
 
       # Receive initial response
       receive do
-        {:stream_response, _response} -> :ok
+        {:stream_response, _response} ->
+          StreamCall.stop(pid)
+          :ok
       after
         1000 -> flunk("Expected stream response")
       end
@@ -82,7 +86,8 @@ defmodule PhoenixGenApi.StreamCallTest do
 
       # Wait for initial message
       receive do
-        {:stream_response, _} -> :ok
+        {:stream_response, _} ->
+          :ok
       after
         1000 -> :ok
       end
@@ -126,6 +131,7 @@ defmodule PhoenixGenApi.StreamCallTest do
         {:stream_response, response} ->
           assert response.result == "data chunk 1"
           assert response.has_more == true
+          StreamCall.stop(pid)
       after
         1000 -> flunk("Expected result message")
       end

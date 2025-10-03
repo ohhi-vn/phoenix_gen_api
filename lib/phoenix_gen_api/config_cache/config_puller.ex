@@ -158,6 +158,12 @@ defmodule PhoenixGenApi.ConfigPuller do
     {:noreply, %{state | api_list: new_api_list}}
   end
 
+  @impl true
+  def handle_info(_msg, state) do
+    # Ignore unknown messages (e.g., from test helpers)
+    {:noreply, state}
+  end
+
   ### Private Functions
 
   defp load_services_from_config(state) do
