@@ -75,11 +75,11 @@ defmodule PhoenixGenApi.Executor do
     rescue
       e in [RuntimeError] ->
         Logger.error("PhoenixGenApi.Executor, call failed: #{inspect(e)}")
-        Response.error_response(request.request_id, "Internal Server Error")
+        Response.error_response(request.request_id, get_error_message(e))
     catch
       :exit, reason ->
         Logger.error("PhoenixGenApi.Executor, call exited: #{inspect(reason)}")
-        Response.error_response(request.request_id, "Internal Server Error")
+        Response.error_response(request.request_id, get_error_message(reason))
     end
   end
 
@@ -118,14 +118,7 @@ defmodule PhoenixGenApi.Executor do
   end
 
   defp handle_call_result({:error, reason}, request_id) do
-    error_message =
-      if Application.get_env(:phoenix_gen_api, :detail_error, false) do
-        "Internal Server Error: #{inspect(reason)}"
-      else
-        "Internal Server Error"
-      end
-
-    Response.error_response(request_id, error_message)
+    Response.error_response(request_id, get_error_message(reason))
   end
 
   defp handle_call_result(result, request_id) do
@@ -216,6 +209,14 @@ defmodule PhoenixGenApi.Executor do
         )
 
         Response.error_response(request_id, "Service temporarily unavailable", true)
+    end
+  end
+
+  defp get_error_message(reason) do
+    if Application.get_env(:phoenix_gen_api, :detail_error, false) do
+      "Internal Server Error: #{inspect(reason)}"
+    else
+      "Internal Server Error"
     end
   end
 end
