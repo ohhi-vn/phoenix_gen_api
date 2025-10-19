@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.StreamCallTest do
   alias PhoenixGenApi.StreamCall
   alias PhoenixGenApi.Structs.{Request, FunConfig}
 
-  # ConfigCache is already started by the application
+  # ConfigDb is already started by the application
 
   setup do
     request = %Request{

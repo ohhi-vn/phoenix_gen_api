@@ -1,4 +1,4 @@
-defmodule PhoenixGenApi.ConfigCache do
+defmodule PhoenixGenApi.ConfigDb do
   @moduledoc """
   A GenServer-based cache for storing `FunConfig` structs, using an ETS table as the
   backing store.
@@ -19,7 +19,7 @@ defmodule PhoenixGenApi.ConfigCache do
   ### Public API
 
   @doc """
-  Starts the `ConfigCache` GenServer.
+  Starts the `ConfigDb` GenServer.
   """
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -45,9 +45,9 @@ defmodule PhoenixGenApi.ConfigCache do
   @doc """
   Deletes a function configuration from the cache.
   """
-  @spec delete(String.t()) :: :ok
-  def delete(request_type) do
-    GenServer.call(__MODULE__, {:delete, request_type})
+  @spec delete(String.t(), String.t()) :: :ok
+  def delete(service, request_type) do
+    GenServer.call(__MODULE__, {:delete, {service, request_type}})
   end
 
   @doc """
@@ -56,9 +56,9 @@ defmodule PhoenixGenApi.ConfigCache do
   Returns `{:ok, config}` if the configuration is found, or `{:error, :not_found}`
   if it is not.
   """
-  @spec get(String.t()) :: {:ok, FunConfig.t()} | {:error, :not_found}
-  def get(request_type) do
-    case :ets.lookup(__MODULE__, request_type) do
+  @spec get(String.t(), String.t()) :: {:ok, FunConfig.t()} | {:error, :not_found}
+  def get(service, request_type) do
+    case :ets.lookup(__MODULE__, {service, request_type}) do
       [{_, config}] ->
         {:ok, config}
 
@@ -70,10 +70,24 @@ defmodule PhoenixGenApi.ConfigCache do
   @doc """
   Returns a list of all request types (keys) in the cache.
   """
-  @spec get_all_keys() :: [String.t()]
-  def get_all_keys() do
+  @spec get_all_functions() :: %{String.t() => [String.t()]}
+  def get_all_functions() do
     :ets.tab2list(__MODULE__)
     |> Enum.map(fn {key, _} -> key end)
+    |> Enum.group_by(&elem(&1, 0))
+    |> Enum.map(fn {service, keys} -> {service, Enum.map(keys, &elem(&1, 1))} end)
+    |> Enum.into(%{})
+  end
+
+  @doc """
+  Returns a list of all request types (keys) in the cache.
+  """
+  @spec get_all_services() :: [String.t()]
+  def get_all_services() do
+    :ets.tab2list(__MODULE__)
+    |> Enum.map(fn {key, _} -> key end)
+    |> Enum.group_by(&elem(&1, 0))
+    |> Enum.map(fn {service, _} -> service end)
   end
 
   ### Callbacks
@@ -88,17 +102,17 @@ defmodule PhoenixGenApi.ConfigCache do
 
   @impl true
   def handle_call({:add, config}, _from, state) do
-    :ets.insert(__MODULE__, {config.request_type, config})
+    :ets.insert(__MODULE__, {{config.service, config.request_type}, config})
     {:reply, :ok, state}
   end
 
   def handle_call({:update, config}, _from, state) do
-    :ets.insert(__MODULE__, {config.request_type, config})
+    :ets.insert(__MODULE__, {{config.service, config.request_type}, config})
     {:reply, :ok, state}
   end
 
-  def handle_call({:delete, request_type}, _from, state) do
-    :ets.delete(__MODULE__, request_type)
+  def handle_call({:delete, {service, request_type}}, _from, state) do
+    :ets.delete(__MODULE__, {service, request_type})
     {:reply, :ok, state}
   end
 

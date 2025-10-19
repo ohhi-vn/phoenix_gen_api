@@ -1,7 +1,7 @@
 defmodule PhoenixGenApi.ConfigPuller do
   @moduledoc """
   This module is responsible for periodically pulling function configurations (`%FunConfig{}`)
-  from remote nodes and updating the `ConfigCache`.
+  from remote nodes and updating the `ConfigDb`.
 
   The puller's behavior can be configured in your `config.exs` file:
 
@@ -17,7 +17,7 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   use GenServer, restart: :permanent
 
-  alias PhoenixGenApi.ConfigCache
+  alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.Structs.{ServiceConfig, FunConfig}
   alias :erpc, as: Rpc
 
@@ -113,7 +113,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   def handle_continue(:load_initial_data, state) do
     Logger.debug("PhoenixGenApi.ConfigPuller, loading initial data")
     new_state = load_services_from_config(state)
-    schedule_pull()
+    Process.send_after(self(), :pull, 1_000)
     {:noreply, new_state}
   end
 
@@ -200,13 +200,13 @@ defmodule PhoenixGenApi.ConfigPuller do
     end)
   end
 
-  defp fetch_and_process_service(service) do
+  defp fetch_and_process_service(service = %ServiceConfig{}) do
     try do
       node = get_random_node(service.nodes)
 
       case Rpc.call(node, service.module, service.function, service.args, pull_timeout()) do
         {:ok, fun_list} when is_list(fun_list) ->
-          process_fun_list(fun_list)
+          process_fun_list(service.service, fun_list)
 
         other ->
           Logger.error("PhoenixGenApi.ConfigPuller, unexpected RPC result: #{inspect(other)}")
@@ -223,11 +223,23 @@ defmodule PhoenixGenApi.ConfigPuller do
     end
   end
 
-  defp process_fun_list(fun_list) do
+  defp process_fun_list(service_name, fun_list) do
     Enum.reduce(fun_list, [], fn
       config = %FunConfig{}, acc ->
         Logger.info("PhoenixGenApi.ConfigPuller, adding config: #{inspect(config)}")
-        ConfigCache.add(config)
+        # avoid security issues
+        config =
+          if config.service == service_name do
+            config
+          else
+            Logger.warning(
+              "PhoenixGenApi.ConfigPuller, service_name in FunConfig is incorrect, overwrite to #{service_name}"
+            )
+
+            %FunConfig{config | service: service_name}
+          end
+
+        ConfigDb.add(config)
         [config.service | acc]
 
       other, acc ->

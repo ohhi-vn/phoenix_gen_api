@@ -14,7 +14,7 @@ defmodule PhoenixGenApi.Executor do
   """
 
   alias PhoenixGenApi.Structs.{Request, FunConfig, Response}
-  alias PhoenixGenApi.ConfigCache
+  alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.StreamCall
   alias PhoenixGenApi.ArgumentHandler
   alias PhoenixGenApi.NodeSelector
@@ -39,7 +39,7 @@ defmodule PhoenixGenApi.Executor do
   """
   @spec execute!(Request.t()) :: Response.t()
   def execute!(request = %Request{}) do
-    case ConfigCache.get(request.request_type) do
+    case ConfigDb.get(request.service, request.request_type) do
       {:ok, fun_config} ->
         execute_with_config!(request, fun_config)
 

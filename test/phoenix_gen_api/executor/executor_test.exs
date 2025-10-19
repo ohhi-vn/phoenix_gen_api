@@ -3,9 +3,9 @@ defmodule PhoenixGenApi.ExecutorTest do
 
   alias PhoenixGenApi.Executor
   alias PhoenixGenApi.Structs.{Request, FunConfig}
-  alias PhoenixGenApi.ConfigCache
+  alias PhoenixGenApi.ConfigDb
 
-  # ConfigCache is already started by the application
+  # ConfigDb is already started by the application
 
   setup do
     request = %Request{
@@ -50,11 +50,12 @@ defmodule PhoenixGenApi.ExecutorTest do
         request_info: false
       }
 
-      ConfigCache.add(config)
+      ConfigDb.add(config)
 
       request = %Request{
         request_id: "test_sync_req",
         request_type: "test_sync",
+        service: "test_service",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Alice", "age" => 30}
@@ -81,11 +82,12 @@ defmodule PhoenixGenApi.ExecutorTest do
         request_info: true
       }
 
-      ConfigCache.add(config)
+      ConfigDb.add(config)
 
       request = %Request{
         request_id: "test_sync_req_info",
         request_type: "test_sync_with_info",
+        service: "test_service",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Bob"}
@@ -113,11 +115,12 @@ defmodule PhoenixGenApi.ExecutorTest do
         request_info: false
       }
 
-      ConfigCache.add(config)
+      ConfigDb.add(config)
 
       request = %Request{
         request_id: "test_error_req",
         request_type: "test_error",
+        service: "test_service",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -144,11 +147,12 @@ defmodule PhoenixGenApi.ExecutorTest do
         request_info: false
       }
 
-      ConfigCache.add(config)
+      ConfigDb.add(config)
 
       request = %Request{
         request_id: "test_async_req",
         request_type: "test_async",
+        service: "test_service",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Charlie", "age" => 25}
@@ -175,11 +179,12 @@ defmodule PhoenixGenApi.ExecutorTest do
         request_info: false
       }
 
-      ConfigCache.add(config)
+      ConfigDb.add(config)
 
       request = %Request{
         request_id: "test_none_req",
         request_type: "test_none",
+        service: "test_service",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Dave", "age" => 35}
@@ -207,11 +212,12 @@ defmodule PhoenixGenApi.ExecutorTest do
         request_info: false
       }
 
-      ConfigCache.add(config)
+      ConfigDb.add(config)
 
       params = %{
         "request_id" => "test_params_req",
         "request_type" => "test_params",
+        "service" => "test_service",
         "user_id" => "user_123",
         "device_id" => "device_456",
         "args" => %{"name" => "Eve", "age" => 28}

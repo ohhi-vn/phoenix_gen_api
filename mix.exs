@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "0.2.1",
+      version: "1.0.0",
       elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -34,7 +34,7 @@ defmodule PhoenixGenApi.MixProject do
       {:nestru, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:ex_doc, "~> 0.24", only: :dev, runtime: false},
-      {:benchee, "~> 1.3", only: :dev},
+      {:benchee, "~> 1.4", only: :dev},
       {:tidewave, "~> 0.5", only: [:dev]},
       {:usage_rules, "~> 0.1", only: [:dev]}
     ]

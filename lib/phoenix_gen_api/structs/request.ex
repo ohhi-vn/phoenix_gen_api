@@ -8,6 +8,7 @@ defmodule PhoenixGenApi.Structs.Request do
   %{
     "request_id" => "request_id",
     "request_type" => "request_type",
+    "service" => "service",
     "user_id" => "user_id",
     "device_id" => "device_id",
     "args" => %{}
@@ -22,6 +23,7 @@ defmodule PhoenixGenApi.Structs.Request do
   %PhoenixGenApi.Structs.Request{
     request_id: "request_id",
     request_type: "request_type",
+    service: "service",
     user_id: "user_id",
     device_id: "device_id",
     args: %{}
@@ -41,6 +43,9 @@ defmodule PhoenixGenApi.Structs.Request do
   - request_id: string, unique id for request. Make by client.
     Unique id for request. Make by client. Using for identify response.
 
+  - service: string, service name.
+    Service name. Using for identify service to call in system.
+
   - args: map, field -> value, arguments for request.
     Arguments for request. Using for call function in system.
   """
@@ -50,12 +55,13 @@ defmodule PhoenixGenApi.Structs.Request do
   @typedoc "Request struct for internal using, convert data map from websocket api."
 
   @type t :: %__MODULE__{
-    user_id: String.t(),
-    device_id: String.t(),
-    request_type: String.t(),
-    request_id: String.t(),
-    args: map()
-  }
+          user_id: String.t(),
+          device_id: String.t(),
+          request_type: String.t(),
+          request_id: String.t(),
+          service: String.t(),
+          args: map()
+        }
 
   @derive Nestru.Decoder
   defstruct [
@@ -67,6 +73,8 @@ defmodule PhoenixGenApi.Structs.Request do
     :request_type,
     # string, unique id for request. Make by client.
     :request_id,
+    # string, service name.
+    :service,
     # map, field -> value, arguments for request.
     args: %{}
   ]

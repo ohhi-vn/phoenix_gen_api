@@ -67,7 +67,7 @@ defmodule MyApp.GenApi.Supporter do
     [
       %FunConfig{
         request_type: "get_data",
-        service: :my_service,
+        service: "my_service",
         nodes: [Node.self()],
         choose_node_mode: :random,
         timeout: 5_000,
@@ -166,6 +166,7 @@ You can push a event with content like:
 {
   "user_id": "user_1",
   "device_id": "device_1",
+  "service": "my_service",
   "request_type": "get_data",
   "request_id": "test_request_1",
   "args": {

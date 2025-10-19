@@ -21,7 +21,7 @@ defmodule PhoenixGenApi do
   The library consists of several key components:
 
   - `PhoenixGenApi.Executor` - Core execution engine for processing requests
-  - `PhoenixGenApi.ConfigCache` - Caches function configurations for fast lookup
+  - `PhoenixGenApi.ConfigDb` - Caches function configurations for fast lookup
   - `PhoenixGenApi.ConfigPuller` - Pulls and updates configurations from remote services
   - `PhoenixGenApi.NodeSelector` - Selects target nodes based on configured strategies
   - `PhoenixGenApi.Permission` - Handles permission checking for requests
@@ -49,7 +49,7 @@ defmodule PhoenixGenApi do
       }
 
       # Add configuration to cache
-      PhoenixGenApi.ConfigCache.add(config)
+      PhoenixGenApi.ConfigDb.add(config)
 
   ### Execute Requests
 

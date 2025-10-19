@@ -21,7 +21,7 @@ defmodule PhoenixGenApi.Application do
           # Worker pools for async and stream execution
           PhoenixGenApi.WorkerPool.WorkerPoolSupervisor,
           # Configuration cache and puller
-          PhoenixGenApi.ConfigCache,
+          PhoenixGenApi.ConfigDb,
           PhoenixGenApi.ConfigPuller
         ]
       end

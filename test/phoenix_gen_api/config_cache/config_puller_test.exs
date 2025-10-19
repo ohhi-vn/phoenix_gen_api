@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.ConfigPullerTest do
   alias PhoenixGenApi.ConfigPuller
   alias PhoenixGenApi.Structs.ServiceConfig
 
-  # ConfigCache and ConfigPuller are already started by the application
+  # ConfigDb and ConfigPuller are already started by the application
 
   describe "add/1" do
     test "adds a list of services" do
