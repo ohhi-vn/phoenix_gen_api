@@ -10,7 +10,7 @@ defmodule PhoenixGenApi.JasonImplHelper do
   Usage:
 
   ```Elixir
-  use PhoenixGenApi.NestruImplHelper, impl: [AModule1, AModule2, ...]
+  use PhoenixGenApi.JasonImplHelper, impl: [AModule1, AModule2, ...]
   ```
 
   Using macro without option in `use` keyword.
@@ -23,7 +23,6 @@ defmodule PhoenixGenApi.JasonImplHelper do
   """
 
   # TO-DO: Improve this, avoid encode to many time.
-
 
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts] do
@@ -48,5 +47,4 @@ defmodule PhoenixGenApi.JasonImplHelper do
       end
     end
   end
-
 end
