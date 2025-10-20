@@ -69,6 +69,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       request = %Request{
         request_id: "test_req",
         request_type: "test",
+        service: "test_service",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"user_id" => "different_user"}
@@ -77,6 +78,46 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       assert_raise RuntimeError, ~r/Permission denied/, fn ->
         FunConfig.check_permission!(request, config)
       end
+    end
+  end
+
+  describe "valid?/1" do
+    test "correct function configuration" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "user1" => :string,
+          "user2" => :string
+        },
+        arg_orders: ["user1", "user2"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "incorrect function configuration" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "user1_id" => :string,
+          "user2_id" => :string
+        },
+        arg_orders: nil,
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
     end
   end
 end

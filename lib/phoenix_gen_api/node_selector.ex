@@ -151,6 +151,16 @@ defmodule PhoenixGenApi.NodeSelector do
     end
   end
 
+  def choose_node_valid?(config = %FunConfig{}) do
+    case config.choose_node_mode do
+      :random -> true
+      :hash -> true
+      {:hash, _} -> true
+      :round_robin -> true
+      _ -> false
+    end
+  end
+
   defp hash_node(request, config) do
     hash_order = :erlang.phash2(request.request_id, length(config.nodes))
     Enum.at(config.nodes, hash_order)

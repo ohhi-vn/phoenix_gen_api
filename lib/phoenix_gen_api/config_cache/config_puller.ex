@@ -239,8 +239,14 @@ defmodule PhoenixGenApi.ConfigPuller do
             %FunConfig{config | service: service_name}
           end
 
-        ConfigDb.add(config)
-        [config.service | acc]
+        valid? = FunConfig.valid?(config)
+
+        if valid? do
+          ConfigDb.add(config)
+          [config.service | acc]
+        else
+          acc
+        end
 
       other, acc ->
         Logger.error("PhoenixGenApi.ConfigPuller, unexpected item in fun_list: #{inspect(other)}")
