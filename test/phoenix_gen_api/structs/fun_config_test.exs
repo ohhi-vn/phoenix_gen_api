@@ -82,6 +82,71 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
   end
 
   describe "valid?/1" do
+    test "correct function configuration 1" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "correct function configuration 2" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "correct function configuration 3" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        arg_types: %{
+          "user1" => :string
+        },
+        arg_orders: ["user1"],
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "correct function configuration 4" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        arg_types: %{
+          "user1" => :string
+        },
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
     test "correct function configuration" do
       fun = %FunConfig{
         request_type: "test",

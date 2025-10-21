@@ -117,7 +117,28 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   defp valid_args?(nil, nil), do: true
   defp valid_args?(nil, _arg_orders), do: false
-  defp valid_args?(arg_types, _arg_orders) when map_size(arg_types) == 1, do: true
+
+  defp valid_args?(arg_types, arg_orders) when map_size(arg_types) == 0 do
+    cond do
+      arg_orders == [] -> true
+      arg_orders == nil -> true
+      true -> false
+    end
+  end
+
+  defp valid_args?(arg_types, arg_orders) when map_size(arg_types) == 1 do
+    cond do
+      arg_orders == [] ->
+        true
+
+      arg_orders == nil ->
+        true
+
+      true ->
+        MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders)
+    end
+  end
+
   defp valid_args?(_arg_types, nil), do: false
 
   defp valid_args?(arg_types, arg_orders) when map_size(arg_types) != length(arg_orders),
