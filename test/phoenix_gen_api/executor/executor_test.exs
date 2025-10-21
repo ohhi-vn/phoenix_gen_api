@@ -230,6 +230,39 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
   end
 
+  test "executes sync call with list string" do
+    config = %FunConfig{
+      request_type: "test_sync",
+      service: "test_service",
+      nodes: :local,
+      choose_node_mode: :random,
+      timeout: 5000,
+      mfa: {__MODULE__, :test_length_list, []},
+      arg_types: %{"list" => :list_string},
+      response_type: :sync,
+      check_permission: false,
+      request_info: false
+    }
+
+    ConfigDb.add(config)
+
+    request = %Request{
+      request_id: "test_sync_req",
+      request_type: "test_sync",
+      service: "test_service",
+      user_id: "user_123",
+      device_id: "device_456",
+      args: %{"list" => ["Charlie", "David"]}
+    }
+
+    result = Executor.execute!(request)
+
+    assert result.request_id == "test_sync_req"
+    assert result.async == false
+    assert result.success == true
+    assert result.result == 2
+  end
+
   # Helper test functions
   def test_sync_function(name, age) do
     {:ok, "Hello #{name}, age #{age}"}
@@ -241,5 +274,10 @@ defmodule PhoenixGenApi.ExecutorTest do
 
   def test_error_function do
     {:error, "Something went wrong"}
+  end
+
+  # Helper test functions
+  def test_length_list(list) do
+    length(list)
   end
 end

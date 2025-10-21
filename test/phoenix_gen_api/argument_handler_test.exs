@@ -101,5 +101,37 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
         ArgumentHandler.validate_args!(config, request)
       end
     end
+
+    test "valid max length of :list_num" do
+      config = %FunConfig{arg_types: %{"name" => {:list_num, 12}}}
+      request = %Request{args: %{"name" => [1, 2, 3, 4]}}
+
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "raises an error for an invalid max length of :list_num" do
+      config = %FunConfig{arg_types: %{"name" => {:list_num, 2}}}
+      request = %Request{args: %{"name" => [1, 2, 3, 4]}}
+
+      assert_raise RuntimeError, "invalid argument size for [1, 2, 3, 4]", fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "valid max length of :list_string" do
+      config = %FunConfig{arg_types: %{"name" => {:list_string, 12, 1000}}}
+      request = %Request{args: %{"name" => ["John", "Doe", "Smith", "Jones"]}}
+
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "raises an error for an invalid max length of :list_string" do
+      config = %FunConfig{arg_types: %{"name" => {:list_string, 2, 1000}}}
+      request = %Request{args: %{"name" => ["John", "Doe", "Smith", "Jones"]}}
+
+      assert_raise RuntimeError, "invalid argument size for \"name\" in nil", fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
   end
 end

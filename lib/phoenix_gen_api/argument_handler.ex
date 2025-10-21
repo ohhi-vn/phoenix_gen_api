@@ -9,7 +9,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   ## Supported Argument Types
 
   ### Basic Types
-  - `:string` - String with max length of 1000 characters (default)
+  - `:string` - String with max length of 3000 characters (default)
   - `{:string, max_length}` - String with custom max length
   - `:num` - Integer or float
   - `:boolean` - Boolean value (true/false)
@@ -17,7 +17,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   ### Collection Types
   - `:list` - Generic list with max 1000 items (default)
   - `{:list, max_items}` - List with custom max items
-  - `:list_string` - List of strings, max 1000 items, each string max 1000 chars
+  - `:list_string` - List of strings, max 1000 items, each string max 3000 chars
   - `{:list_string, max_items, max_item_length}` - List of strings with custom limits
   - `:list_num` - List of numbers, max 1000 items
   - `{:list_num, max_items}` - List of numbers with custom max items
@@ -26,7 +26,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   ## Size Limits (Defaults)
 
-  - Strings: 1000 characters
+  - Strings: 3000 characters
   - Lists: 1000 items
   - Maps: 1000 entries
 
@@ -102,7 +102,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   require Logger
 
-  @default_string_max_length 1000
+  @default_string_max_length 3000
   @default_list_max_items 1000
   @default_map_max_items 1000
 
@@ -191,7 +191,8 @@ defmodule PhoenixGenApi.ArgumentHandler do
   @doc """
   Validate request arguments.
   """
-  def validate_args!(%FunConfig{arg_types: nil}, %Request{}) do
+  def validate_args!(%FunConfig{arg_types: no_args}, %Request{})
+      when no_args == nil or map_size(no_args) == 0 do
     :ok
   end
 
@@ -239,6 +240,27 @@ defmodule PhoenixGenApi.ArgumentHandler do
             )
 
             raise "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}"
+          end
+
+          arg_list_validation!(value)
+
+        {:list_string, max_items, max_item_length} ->
+          if length(value) > max_items do
+            Logger.error(
+              "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+            )
+
+            raise "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}"
+          end
+
+          if Enum.any?(value, fn item ->
+               String.length(item) > max_item_length || not is_binary(item)
+             end) do
+            Logger.error(
+              "gen_api, request, invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+            )
+
+            raise "invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}"
           end
 
           arg_list_validation!(value)
@@ -434,6 +456,10 @@ defmodule PhoenixGenApi.ArgumentHandler do
     arg
   end
 
+  defp convert_arg!(arg, {:list_string, _, _}) when is_list(arg) do
+    convert_arg!(arg, :list_string)
+  end
+
   defp convert_arg!(arg, :list_string) when is_list(arg) do
     Enum.each(arg, fn
       x when is_binary(x) -> x
@@ -441,6 +467,10 @@ defmodule PhoenixGenApi.ArgumentHandler do
     end)
 
     arg
+  end
+
+  defp convert_arg!(arg, {:list_num, _}) do
+    convert_arg!(arg, :list_num)
   end
 
   defp convert_arg!(arg, :list_num) when is_list(arg) do
