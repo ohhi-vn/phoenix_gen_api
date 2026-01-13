@@ -93,8 +93,24 @@ defmodule PhoenixGenApi.Executor do
       if FunConfig.is_local_service?(fun_config) do
         apply(mod, fun, final_args)
       else
-        node = NodeSelector.get_node(fun_config, request)
-        :rpc.call(node, mod, fun, final_args, fun_config.timeout)
+        case NodeSelector.get_node(fun_config, request) do
+          nil ->
+            Logger.error(
+              "PhoenixGenApi.Executor, call failed: no node found for #{inspect(fun_config)}"
+            )
+
+            {:error, "no target node found"}
+
+          node ->
+            case :rpc.call(node, mod, fun, final_args, fun_config.timeout) do
+              {:badrpc, reason} ->
+                Logger.error("PhoenixGenApi.Executor, call failed: #{inspect(reason)}")
+                {:error, "internal error"}
+
+              result ->
+                result
+            end
+        end
       end
 
     handle_call_result(result, request.request_id)
