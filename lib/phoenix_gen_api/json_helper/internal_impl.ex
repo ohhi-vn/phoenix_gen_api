@@ -5,7 +5,7 @@ alias PhoenixGenApi.Structs.{Response}
 
 require Logger
 
-use PhoenixGenApi.JasonImplHelper,
+use PhoenixGenApi.JSONImplHelper,
   impl: [
     Response
   ]

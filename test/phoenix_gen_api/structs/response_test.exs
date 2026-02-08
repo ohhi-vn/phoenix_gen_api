@@ -83,10 +83,10 @@ defmodule PhoenixGenApi.Structs.ResponseTest do
   end
 
   describe "JSON encoding" do
-    test "encodes response to JSON via Jason" do
+    test "encodes response to JSON via JSON" do
       response = Response.sync_response("req_123", %{data: "test"})
 
-      {:ok, json} = Jason.encode(response)
+      json = JSON.encode!(response)
 
       assert is_binary(json)
       assert json =~ "req_123"

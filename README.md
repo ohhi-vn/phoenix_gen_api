@@ -21,13 +21,15 @@ Supported basic check type & permission.
 
 ## Installation
 
+Note: Require Elixir ~> 1.18 and OTP ~> 27
+
 The package can be installed
 by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
 
 ```Elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 1.1"}
+    {:phoenix_gen_api, "~> 1.3"}
   ]
 end
 ```

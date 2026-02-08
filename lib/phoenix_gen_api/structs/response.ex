@@ -16,8 +16,6 @@ defmodule PhoenixGenApi.Structs.Response do
           can_retry: boolean()
         }
 
-  @derive {Jason.Encoder,
-           only: [:request_id, :result, :success, :error, :async, :has_more, :can_retry]}
   @derive Nestru.Encoder
   defstruct [
     :request_id,
@@ -81,6 +79,7 @@ defmodule PhoenixGenApi.Structs.Response do
   Create Request from params for convert data map from websocket api.
   """
   def encode!(res = %__MODULE__{}) do
-    Nestru.encode!(res)
+    res
+    |> Nestru.encode!()
   end
 end

@@ -1,21 +1,21 @@
-defmodule PhoenixGenApi.JsonrsImplHelper do
+defmodule PhoenixGenApi.JSONImplHelper do
   @doc """
   Macro to generate simple implementation of protocol.
-  Support for easy to use with Jason.Encoder.
+  Support for easy to use with JSON.Encoder.
 
-  Utility macro to generate implementation for Jsonrs.Encoder.
+  Utility macro to generate implementation for JSON.Encoder.
 
   The target struct must have `encode!` function in module.
 
   Usage:
 
   ```Elixir
-  use PhoenixGenApi.JsonrsImplHelper, impl: [AModule1, AModule2, ...]
+  use PhoenixGenApi.JSONImplHelper, impl: [AModule1, AModule2, ...]
   ```
 
   Using macro without option in `use` keyword.
   Target module must have `encode!` function
-  Generate implementation for Jsonrs.Encoder like this:
+  Generate implementation for JSON.Encoder like this:
 
   ```Elixir
   gen_impl AModule
@@ -26,22 +26,21 @@ defmodule PhoenixGenApi.JsonrsImplHelper do
 
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts] do
-      import PhoenixGenApi.JsonrsImplHelper
-
       list_module = Keyword.get(opts, :impl, [])
 
       for mod <- list_module do
-        gen_impl(mod)
+        PhoenixGenApi.JSONImplHelper.gen_impl(mod)
       end
     end
   end
 
   defmacro gen_impl(mod) do
     quote do
-      defimpl Jsonrs.Encoder, for: unquote(mod) do
-        def encode(%unquote(mod){} = data) do
+      defimpl JSON.Encoder, for: unquote(mod) do
+        def encode(%unquote(mod){} = data, _opts) do
           data
           |> unquote(mod).encode!()
+          |> JSON.encode!()
         end
       end
     end

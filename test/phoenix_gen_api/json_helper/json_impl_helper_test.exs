@@ -1,14 +1,14 @@
-defmodule PhoenixGenApi.JasonImplHelperTest do
+defmodule PhoenixGenApi.JSONImplHelperTest do
   use ExUnit.Case, async: true
 
   alias PhoenixGenApi.Structs.Response
 
-  describe "JasonImplHelper macro usage" do
-    test "Response struct has Jason.Encoder implementation" do
+  describe "JSON.Encoder implementation" do
+    test "Response struct has JSON.Encoder implementation" do
       response = Response.sync_response("req_123", %{data: "test"})
 
-      # Test that Jason.encode works with Response
-      {:ok, json} = Jason.encode(response)
+      # Test that JSON.encode works with Response
+      json = JSON.encode!(response)
 
       assert is_binary(json)
       assert json =~ "req_123"
@@ -19,7 +19,7 @@ defmodule PhoenixGenApi.JasonImplHelperTest do
       response = Response.async_response("req_456")
       container = %{response: response, status: "ok"}
 
-      {:ok, json} = Jason.encode(container)
+      json = JSON.encode!(container)
 
       assert is_binary(json)
       assert json =~ "req_456"
@@ -29,7 +29,7 @@ defmodule PhoenixGenApi.JasonImplHelperTest do
     test "encodes Response error correctly" do
       response = Response.error_response("req_err", "Test error")
 
-      {:ok, json} = Jason.encode(response)
+      json = JSON.encode!(response)
 
       assert is_binary(json)
       assert json =~ "req_err"
