@@ -29,7 +29,7 @@ by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
 ```Elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 1.3"}
+    {:phoenix_gen_api, "~> 2.0"}
   ]
 end
 ```
@@ -58,7 +58,7 @@ defmodule MyApp.GenApi.Supporter do
   @doc """
   Support for remote pull general api config.
   """
-  def get_config() do
+  def get_config(_arg) do
     {:ok, my_fun_configs()}
   end
 
@@ -89,15 +89,16 @@ Note: You can add directly in runtime in gateway node without using client mode.
 Add config for Phoenix can pull config from remote nodes(above) like:
 
 ```Elixir
-# Config for general api, lib made by team.
+# Config for general api.
 config :phoenix_gen_api, :gen_api,
   service_configs: [
     # service config for pulling general api config.
     %{
       # service type
-      service: :my_service,
+      service: "my_service",
       # nodes of service in cluster, need to connecto to get config
-      nodes: [:"remote_service@test.local"], # or using MFA like: {ClusterHelper, get_nodes, [:my_api]}
+      # list of nodes or using MFA like: {ClusterHelper, get_nodes, [:my_api]}
+      nodes: [:"remote_service@test.local"], 
       # module to get config
       module: MyApp.GenApi.Supporter,
       # function to get config
@@ -117,7 +118,6 @@ def handle_in("phoenix_gen_api", payload, socket) do
     payload
     |> Map.put("user_id", socket.assigns.user_id) # avoid security issue.
     |> PhoenixGenApi.Executor.execute_params()
-
 
     case result do
       result = %Response{} ->
@@ -222,7 +222,7 @@ We will add a full example in the future.
 - Rate limiter.
 
 
-## Support AI agents & MCP
+## Support AI agents & MCP for dev & improvement
 
 Run this command for update guide & rules from deps to repo for supporting ai agents.
 
