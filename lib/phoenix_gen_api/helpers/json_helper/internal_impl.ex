@@ -9,3 +9,8 @@ use PhoenixGenApi.JSONImplHelper,
   impl: [
     Response
   ]
+
+use PhoenixGenApi.ToonImplHelper,
+  impl: [
+    Response
+  ]

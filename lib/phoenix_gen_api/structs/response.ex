@@ -82,4 +82,12 @@ defmodule PhoenixGenApi.Structs.Response do
     res
     |> Nestru.encode!()
   end
+
+  @doc """
+  Create Request from params for convert data map from websocket api.
+  Opts is not supported yet.
+  """
+  def encode!(res = %__MODULE__{}, _opts) do
+    encode!(res)
+  end
 end

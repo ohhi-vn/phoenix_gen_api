@@ -29,7 +29,7 @@ by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
 ```Elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 2.0"}
+    {:phoenix_gen_api, "~> 2.1"}
   ]
 end
 ```

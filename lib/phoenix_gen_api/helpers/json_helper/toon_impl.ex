@@ -36,7 +36,7 @@ defmodule PhoenixGenApi.ToonImplHelper do
 
   defmacro gen_impl(mod) do
     quote do
-      defimpl Toon.Encoder, for: unquote(mod) do
+      defimpl ToonEx.Encoder, for: unquote(mod) do
         def encode(%unquote(mod){} = data, opts) do
           data
           |> unquote(mod).encode!(opts)
