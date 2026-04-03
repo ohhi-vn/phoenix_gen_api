@@ -12,6 +12,10 @@ defmodule PhoenixGenApi.Permission do
   When `check_permission: false` is set in the FunConfig, all permission checks pass.
   This is useful for public endpoints that don't require authentication or authorization.
 
+  ### Any Authenticated (`:any_authenticated`)
+  When `check_permission: :any_authenticated` is configured, the system verifies that
+  the request has a valid `user_id`. Any authenticated user is allowed access.
+
   ### Argument-Based Permissions (`{:arg, arg_name}`)
   When `check_permission: {:arg, arg_name}` is configured, the system verifies that
   the value of the specified argument matches the request's `user_id`. This ensures
@@ -19,6 +23,14 @@ defmodule PhoenixGenApi.Permission do
 
   For example, with `{:arg, "user_id"}`, a request from user "123" will only be
   allowed if `request.args["user_id"] == "123"`.
+
+  ### Role-Based Permissions (`{:role, allowed_roles}`)
+  When `check_permission: {:role, allowed_roles}` is configured, the system verifies
+  that the user has one of the allowed roles. Roles are checked against the
+  `request.user_roles` field (must be a list of strings or atoms).
+
+  For example, with `{:role, ["admin", "moderator"]}`, only users with those roles
+  are allowed access.
 
   ## Examples
 
@@ -31,6 +43,20 @@ defmodule PhoenixGenApi.Permission do
       request = %Request{user_id: "any_user"}
       Permission.check_permission(request, config)
       # => true
+
+      # Any authenticated user
+      config = %FunConfig{
+        request_type: "get_profile",
+        check_permission: :any_authenticated
+      }
+
+      request = %Request{user_id: "user_123"}
+      Permission.check_permission(request, config)
+      # => true
+
+      request = %Request{user_id: nil}
+      Permission.check_permission(request, config)
+      # => false
 
       # User-specific endpoint - must match user_id
       config = %FunConfig{
@@ -54,12 +80,27 @@ defmodule PhoenixGenApi.Permission do
       Permission.check_permission(request, config)
       # => false
 
+      # Role-based access
+      config = %FunConfig{
+        request_type: "delete_user",
+        check_permission: {:role, ["admin"]}
+      }
+
+      request = %Request{
+        user_id: "user_123",
+        user_roles: ["admin"]
+      }
+      Permission.check_permission(request, config)
+      # => true
+
   ## Security Considerations
 
   - Always use `check_permission!/2` in the execution path to raise on failures
   - The `check_permission/2` function is non-raising and returns a boolean
   - Missing arguments result in permission denial (returns `false`)
   - Permission checks happen before argument validation and function execution
+  - All permission failures are logged for audit purposes
+  - Use specific permission modes rather than `false` when possible
   """
 
   alias PhoenixGenApi.Structs.{FunConfig, Request}
@@ -67,52 +108,116 @@ defmodule PhoenixGenApi.Permission do
   require Logger
 
   @doc """
-  Checks if a request has permission to be executed based on the configuration.
+  Exception raised when a permission check fails.
 
-  This is a non-raising version that returns a boolean result. Use this when you
-  need to check permissions without raising an exception.
-
-  ## Parameters
-
-    - `request` - The `Request` struct containing user information and arguments
-    - `fun_config` - The `FunConfig` struct with permission settings
-
-  ## Returns
-
-    - `true` - Permission check passed
-    - `false` - Permission check failed
-
-  ## Examples
-
-      request = %Request{
-        user_id: "user_123",
-        args: %{"user_id" => "user_123"}
-      }
-
-      config = %FunConfig{check_permission: {:arg, "user_id"}}
-
-      if Permission.check_permission(request, config) do
-        # Execute the request
-      else
-        # Deny access
-      end
+  Contains details about the request and the permission mode that was denied.
   """
+  defmodule PermissionDenied do
+    @moduledoc false
+
+    defexception [:message, :user_id, :request_id, :request_type, :permission_mode]
+
+    @impl true
+    def exception(opts) do
+      user_id = Keyword.get(opts, :user_id)
+      request_id = Keyword.get(opts, :request_id)
+      request_type = Keyword.get(opts, :request_type)
+      permission_mode = Keyword.get(opts, :permission_mode)
+
+      message =
+        "Permission denied for user: #{inspect(user_id)}, " <>
+          "request: #{inspect(request_id)}, " <>
+          "type: #{inspect(request_type)}, " <>
+          "mode: #{inspect(permission_mode)}"
+
+      %__MODULE__{
+        message: message,
+        user_id: user_id,
+        request_id: request_id,
+        request_type: request_type,
+        permission_mode: permission_mode
+      }
+    end
+  end
+
   def check_permission(%Request{}, %FunConfig{check_permission: false}) do
     true
   end
 
-  def check_permission(request = %Request{}, %FunConfig{check_permission: {:arg, arg_name}}) do
+  def check_permission(%Request{user_id: user_id}, %FunConfig{check_permission: :any_authenticated})
+      when is_binary(user_id) or is_nil(user_id) do
+    true
+  end
+
+  def check_permission(%Request{user_id: nil}, %FunConfig{check_permission: :any_authenticated}) do
+    false
+  end
+
+  def check_permission(%Request{user_id: user_id}, %FunConfig{check_permission: :any_authenticated})
+      when is_binary(user_id) and byte_size(user_id) > 0 do
+    true
+  end
+
+  def check_permission(%Request{}, %FunConfig{check_permission: :any_authenticated}) do
+    false
+  end
+
+  def check_permission(
+        request = %Request{user_id: user_id},
+        %FunConfig{check_permission: {:arg, arg_name}}
+      )
+      when is_binary(user_id) and byte_size(user_id) > 0 do
     case Map.get(request.args, arg_name) do
       nil ->
         Logger.warning(
-          "gen_api, check permission, missing argument #{inspect(arg_name)} in request: #{inspect(request)}"
+          "PhoenixGenApi.Permission, check_permission, missing argument #{inspect(arg_name)} in request: #{inspect(request.request_id)}"
         )
 
         false
 
-      user_id ->
-        user_id == request.user_id
+      ^user_id ->
+        true
+
+      _other ->
+        false
     end
+  end
+
+  def check_permission(%Request{}, %FunConfig{check_permission: {:arg, _arg_name}}) do
+    false
+  end
+
+  def check_permission(
+        %Request{user_roles: user_roles} = request,
+        %FunConfig{check_permission: {:role, allowed_roles}}
+      )
+      when is_list(user_roles) and is_list(allowed_roles) do
+    allowed_roles_set = MapSet.new(allowed_roles)
+    user_roles_set = MapSet.new(user_roles)
+
+    case MapSet.intersection(user_roles_set, allowed_roles_set) |> MapSet.size() do
+      0 ->
+        Logger.warning(
+          "PhoenixGenApi.Permission, check_permission, user #{inspect(request.user_id)} lacks required roles, request: #{inspect(request.request_id)}"
+        )
+
+        false
+
+      _ ->
+        true
+    end
+  end
+
+  def check_permission(%Request{}, %FunConfig{check_permission: {:role, _allowed_roles}}) do
+    false
+  end
+
+  def check_permission(%Request{}, fun_config = %FunConfig{}) do
+    Logger.error(
+      "PhoenixGenApi.Permission, check_permission, invalid permission mode: #{inspect(fun_config.check_permission)}"
+    )
+
+    false
   end
 
   @doc """
@@ -132,7 +237,7 @@ defmodule PhoenixGenApi.Permission do
 
   ## Raises
 
-    - `RuntimeError` - If the permission check fails
+    - `PermissionDenied` - If the permission check fails
 
   ## Examples
 
@@ -145,7 +250,7 @@ defmodule PhoenixGenApi.Permission do
 
       # This will raise because user_ids don't match
       Permission.check_permission!(request, config)
-      # ** (RuntimeError) Permission denied for request from user: "user_123"
+      # ** (PhoenixGenApi.Permission.PermissionDenied) Permission denied...
 
   ## Notes
 
@@ -156,10 +261,19 @@ defmodule PhoenixGenApi.Permission do
   def check_permission!(request = %Request{}, fun_config = %FunConfig{}) do
     if not check_permission(request, fun_config) do
       Logger.warning(
-        " gen_api, check permission, failed, request: #{inspect(request)}, fun config: #{inspect(fun_config)}"
+        "PhoenixGenApi.Permission, check_permission!, denied, user: #{inspect(request.user_id)}, " <>
+          "request_id: #{inspect(request.request_id)}, " <>
+          "request_type: #{inspect(request.request_type)}, " <>
+          "permission_mode: #{inspect(fun_config.check_permission)}"
       )
 
-      raise "Permission denied for request from user: #{inspect(request.user_id)}, request: #{inspect(request.request_id)}"
+      raise PermissionDenied,
+        user_id: request.user_id,
+        request_id: request.request_id,
+        request_type: request.request_type,
+        permission_mode: fun_config.check_permission
     end
+
+    nil
   end
 end

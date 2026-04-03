@@ -8,6 +8,26 @@ defmodule PhoenixGenApi.ConfigDb do
 
   The cache is populated and updated by the `ConfigPuller` module, which fetches
   configurations from remote nodes.
+
+  ## Multi-Version Support
+
+  Configurations can have multiple versions identified by the `version` field.
+  The ETS key is `{service, request_type, version}` to support multiple versions
+  of the same function. When retrieving configs, you can specify a version or
+  get the latest version.
+
+  ## Fault Tolerance
+
+  - ETS table is automatically cleaned up on process termination
+  - Invalid configurations are rejected before insertion
+  - Atomic operations prevent race conditions
+  - Read concurrency is enabled for high-throughput scenarios
+
+  ## Security
+
+  - Configurations are validated before being added to the cache
+  - Service names and request types are sanitized
+  - Only valid `FunConfig` structs are accepted
   """
 
   use GenServer, restart: :permanent
@@ -20,6 +40,10 @@ defmodule PhoenixGenApi.ConfigDb do
 
   @doc """
   Starts the `ConfigDb` GenServer.
+
+  ## Options
+
+    - `:ets_options` - Additional options for the ETS table (default: `[]`)
   """
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -27,67 +51,250 @@ defmodule PhoenixGenApi.ConfigDb do
 
   @doc """
   Adds a new function configuration to the cache.
+
+  The configuration is validated before insertion. If validation fails,
+  an error is logged and `{:error, :invalid_config}` is returned.
+
+  ## Returns
+
+    - `:ok` - Configuration was added successfully
+    - `{:error, :invalid_config}` - Configuration failed validation
   """
-  @spec add(FunConfig.t()) :: :ok
+  @spec add(FunConfig.t()) :: :ok | {:error, :invalid_config}
   def add(config = %FunConfig{}) do
-    GenServer.call(__MODULE__, {:add, config})
+    if FunConfig.valid?(config) do
+      GenServer.call(__MODULE__, {:add, config})
+    else
+      Logger.error("PhoenixGenApi.ConfigDb, add, invalid config: #{inspect(config)}")
+      {:error, :invalid_config}
+    end
+  end
+
+  @doc """
+  Disables a function configuration by marking it as disabled.
+  Disabled configurations will not be returned by `get/3` or executed.
+
+  ## Parameters
+
+    - `service` - The service name (string or atom)
+    - `request_type` - The request type (string)
+    - `version` - The version to disable (string, defaults to "0.0.0")
+
+  ## Returns
+
+    - `:ok` - Configuration was disabled successfully
+    - `{:error, :not_found}` - Configuration does not exist
+  """
+  @spec disable(String.t() | atom(), String.t(), String.t()) :: :ok | {:error, :not_found}
+  def disable(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+    GenServer.call(__MODULE__, {:disable, {service, request_type, version}})
+  end
+
+  @doc """
+  Enables a previously disabled function configuration.
+
+  ## Parameters
+
+    - `service` - The service name (string or atom)
+    - `request_type` - The request type (string)
+    - `version` - The version to enable (string, defaults to "0.0.0")
+
+  ## Returns
+
+    - `:ok` - Configuration was enabled successfully
+    - `{:error, :not_found}` - Configuration does not exist
+  """
+  @spec enable(String.t() | atom(), String.t(), String.t()) :: :ok | {:error, :not_found}
+  def enable(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+    GenServer.call(__MODULE__, {:enable, {service, request_type, version}})
   end
 
   @doc """
   Updates an existing function configuration in the cache.
   If the configuration does not exist, it will be added.
+
+  The configuration is validated before insertion. If validation fails,
+  an error is logged and `{:error, :invalid_config}` is returned.
+
+  ## Returns
+
+    - `:ok` - Configuration was updated successfully
+    - `{:error, :invalid_config}` - Configuration failed validation
   """
-  @spec update(FunConfig.t()) :: :ok
+  @spec update(FunConfig.t()) :: :ok | {:error, :invalid_config}
   def update(config = %FunConfig{}) do
-    GenServer.call(__MODULE__, {:update, config})
+    if FunConfig.valid?(config) do
+      GenServer.call(__MODULE__, {:update, config})
+    else
+      Logger.error("PhoenixGenApi.ConfigDb, update, invalid config: #{inspect(config)}")
+      {:error, :invalid_config}
+    end
   end
 
   @doc """
   Deletes a function configuration from the cache.
+
+  ## Parameters
+
+    - `service` - The service name (string or atom)
+    - `request_type` - The request type (string)
+    - `version` - The version to delete (string, defaults to "0.0.0")
+
+  ## Returns
+
+    - `:ok` - Configuration was deleted (or didn't exist)
   """
-  @spec delete(String.t(), String.t()) :: :ok
-  def delete(service, request_type) do
-    GenServer.call(__MODULE__, {:delete, {service, request_type}})
+  @spec delete(String.t() | atom(), String.t(), String.t()) :: :ok
+  def delete(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+    GenServer.call(__MODULE__, {:delete, {service, request_type, version}})
   end
 
   @doc """
   Retrieves a function configuration from the cache.
 
-  Returns `{:ok, config}` if the configuration is found, or `{:error, :not_found}`
-  if it is not.
+  This operation is atomic and uses ETS read concurrency for optimal performance.
+
+  ## Parameters
+
+    - `service` - The service name (string or atom)
+    - `request_type` - The request type (string)
+    - `version` - The version to retrieve (string, defaults to "0.0.0")
+
+  ## Returns
+
+    - `{:ok, config}` - Configuration was found and is enabled
+    - `{:error, :not_found}` - Configuration does not exist
+    - `{:error, :disabled}` - Configuration exists but is disabled
   """
-  @spec get(String.t(), String.t()) :: {:ok, FunConfig.t()} | {:error, :not_found}
-  def get(service, request_type) do
-    case :ets.lookup(__MODULE__, {service, request_type}) do
-      [{_, config}] ->
-        {:ok, config}
+  @spec get(String.t() | atom(), String.t(), String.t()) :: {:ok, FunConfig.t()} | {:error, :not_found} | {:error, :disabled}
+  def get(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+    case :ets.lookup(__MODULE__, {service, request_type, version}) do
+      [{_key, config}] ->
+        if Map.get(config, :disabled, false) do
+          {:error, :disabled}
+        else
+          {:ok, config}
+        end
 
       [] ->
+        {:error, :not_found}
+
+      _ ->
+        Logger.error("PhoenixGenApi.ConfigDb, get, unexpected ETS result for #{inspect({service, request_type, version})}")
         {:error, :not_found}
     end
   end
 
   @doc """
-  Returns a list of all request types (keys) in the cache.
+  Retrieves the latest version of a function configuration from the cache.
+
+  This operation is atomic and uses ETS read concurrency for optimal performance.
+
+  ## Parameters
+
+    - `service` - The service name (string or atom)
+    - `request_type` - The request type (string)
+
+  ## Returns
+
+    - `{:ok, config}` - Latest enabled configuration was found
+    - `{:error, :not_found}` - No configuration exists
   """
-  @spec get_all_functions() :: %{String.t() => [String.t()]}
-  def get_all_functions() do
-    :ets.tab2list(__MODULE__)
-    |> Enum.map(fn {key, _} -> key end)
-    |> Enum.group_by(&elem(&1, 0))
-    |> Enum.map(fn {service, keys} -> {service, Enum.map(keys, &elem(&1, 1))} end)
-    |> Enum.into(%{})
+  @spec get_latest(String.t() | atom(), String.t()) :: {:ok, FunConfig.t()} | {:error, :not_found}
+  def get_latest(service, request_type) when is_binary(request_type) do
+    result =
+      :ets.foldl(
+        fn {{svc, req_type, _version}, config}, acc ->
+          if svc == service and req_type == request_type and not Map.get(config, :disabled, false) do
+            case acc do
+              {:ok, existing_config} ->
+                existing_version = FunConfig.version(existing_config)
+                new_version = FunConfig.version(config)
+
+                if Version.compare(new_version, existing_version) == :gt do
+                  {:ok, config}
+                else
+                  acc
+                end
+
+              :not_found ->
+                {:ok, config}
+            end
+          else
+            acc
+          end
+        end,
+        :not_found,
+        __MODULE__
+      )
+
+    case result do
+      {:ok, config} -> {:ok, config}
+      :not_found -> {:error, :not_found}
+    end
   end
 
   @doc """
-  Returns a list of all request types (keys) in the cache.
+  Returns a map of all services and their request types in the cache.
+
+  ## Returns
+
+    A map where keys are service names and values are maps of request types to lists of versions.
   """
-  @spec get_all_services() :: [String.t()]
+  @spec get_all_functions() :: %{(String.t() | atom()) => %{String.t() => [String.t()]}}
+  def get_all_functions() do
+    :ets.foldl(
+      fn {{service, request_type, version}, _config}, acc ->
+        service_map = Map.get(acc, service, %{})
+        version_list = Map.get(service_map, request_type, [])
+        new_service_map = Map.put(service_map, request_type, [version | version_list])
+        Map.put(acc, service, new_service_map)
+      end,
+      %{},
+      __MODULE__
+    )
+  end
+
+  @doc """
+  Returns a list of all service names in the cache.
+
+  ## Returns
+
+    A list of unique service names.
+  """
+  @spec get_all_services() :: [String.t() | atom()]
   def get_all_services() do
-    :ets.tab2list(__MODULE__)
-    |> Enum.map(fn {key, _} -> key end)
-    |> Enum.group_by(&elem(&1, 0))
-    |> Enum.map(fn {service, _} -> service end)
+    :ets.foldl(
+      fn {{service, _request_type, _version}, _config}, acc ->
+        if service in acc, do: acc, else: [service | acc]
+      end,
+      [],
+      __MODULE__
+    )
+  end
+
+  @doc """
+  Returns the total number of configurations in the cache.
+
+  ## Returns
+
+    The count of cached configurations.
+  """
+  @spec count() :: non_neg_integer()
+  def count() do
+    :ets.info(__MODULE__, :size)
+  end
+
+  @doc """
+  Clears all configurations from the cache.
+
+  ## Returns
+
+    - `:ok` - Cache was cleared successfully
+  """
+  @spec clear() :: :ok
+  def clear() do
+    GenServer.call(__MODULE__, :clear)
   end
 
   ### Callbacks
@@ -96,28 +303,85 @@ defmodule PhoenixGenApi.ConfigDb do
   def init(_opts) do
     access = if Mix.env() == :test, do: :public, else: :protected
 
-    :ets.new(__MODULE__, [access, :set, :named_table, read_concurrency: true])
+    :ets.new(__MODULE__, [
+      access,
+      :set,
+      :named_table,
+      read_concurrency: true,
+      write_concurrency: true
+    ])
+
+    Logger.info("PhoenixGenApi.ConfigDb, initialized ETS table with read/write concurrency")
     {:ok, %{}}
   end
 
   @impl true
   def handle_call({:add, config}, _from, state) do
-    :ets.insert(__MODULE__, {{config.service, config.request_type}, config})
+    version = FunConfig.version(config)
+    :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
+    Logger.debug("PhoenixGenApi.ConfigDb, added config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}")
     {:reply, :ok, state}
   end
 
   def handle_call({:update, config}, _from, state) do
-    :ets.insert(__MODULE__, {{config.service, config.request_type}, config})
+    version = FunConfig.version(config)
+    :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
+    Logger.debug("PhoenixGenApi.ConfigDb, updated config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}")
     {:reply, :ok, state}
   end
 
-  def handle_call({:delete, {service, request_type}}, _from, state) do
-    :ets.delete(__MODULE__, {service, request_type})
+  def handle_call({:delete, {service, request_type, version}}, _from, state) do
+    :ets.delete(__MODULE__, {service, request_type, version})
+    Logger.debug("PhoenixGenApi.ConfigDb, deleted config for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:disable, {service, request_type, version}}, _from, state) do
+    case :ets.lookup(__MODULE__, {service, request_type, version}) do
+      [{_key, config}] ->
+        disabled_config = Map.put(config, :disabled, true)
+        :ets.insert(__MODULE__, { {service, request_type, version}, disabled_config})
+        Logger.info("PhoenixGenApi.ConfigDb, disabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        {:reply, :ok, state}
+
+      [] ->
+        Logger.warning("PhoenixGenApi.ConfigDb, disable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call({:enable, {service, request_type, version}}, _from, state) do
+    case :ets.lookup(__MODULE__, {service, request_type, version}) do
+      [{_key, config}] ->
+        enabled_config = Map.put(config, :disabled, false)
+        :ets.insert(__MODULE__, { {service, request_type, version}, enabled_config})
+        Logger.info("PhoenixGenApi.ConfigDb, enabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        {:reply, :ok, state}
+
+      [] ->
+        Logger.warning("PhoenixGenApi.ConfigDb, enable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  def handle_call(:clear, _from, state) do
+    :ets.delete_all_objects(__MODULE__)
+    Logger.info("PhoenixGenApi.ConfigDb, cleared all configurations")
     {:reply, :ok, state}
   end
 
   @impl true
   def terminate(_reason, _state) do
+    # Clean up ETS table on termination
+    try do
+      :ets.delete(__MODULE__)
+      Logger.debug("PhoenixGenApi.ConfigDb, ETS table deleted on terminate")
+    catch
+      :error, :badarg ->
+        # Table already deleted or doesn't exist
+        :ok
+    end
+
     :ok
   end
 end

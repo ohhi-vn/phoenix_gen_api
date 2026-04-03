@@ -9,16 +9,16 @@ defmodule PhoenixGenApi.ArgumentHandler do
   ## Supported Argument Types
 
   ### Basic Types
-  - `:string` - String with max length of 3000 characters (default)
-  - `{:string, max_length}` - String with custom max length
+  - `:string` - String with max byte size of 3000 (default)
+  - `{:string, max_bytes}` - String with custom max byte size
   - `:num` - Integer or float
   - `:boolean` - Boolean value (true/false)
 
   ### Collection Types
   - `:list` - Generic list with max 1000 items (default)
   - `{:list, max_items}` - List with custom max items
-  - `:list_string` - List of strings, max 1000 items, each string max 3000 chars
-  - `{:list_string, max_items, max_item_length}` - List of strings with custom limits
+  - `:list_string` - List of strings, max 1000 items, each string max 3000 bytes
+  - `{:list_string, max_items, max_item_bytes}` - List of strings with custom limits
   - `:list_num` - List of numbers, max 1000 items
   - `{:list_num, max_items}` - List of numbers with custom max items
   - `:map` - Generic map with max 1000 items (default)
@@ -26,11 +26,18 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   ## Size Limits (Defaults)
 
-  - Strings: 3000 characters
+  - Strings: 3000 bytes (not characters, to prevent UTF-8 bypass attacks)
   - Lists: 1000 items
   - Maps: 1000 entries
 
   These limits help prevent denial-of-service attacks through oversized payloads.
+
+  ## Security Considerations
+
+  - Uses `byte_size/1` instead of `String.length/1` to prevent UTF-8 bypass attacks
+  - Validates against oversized payloads that could cause memory exhaustion
+  - Rejects nested structures to prevent deep recursion attacks
+  - Strict type checking prevents type confusion vulnerabilities
 
   ## Validation Rules
 
@@ -81,11 +88,11 @@ defmodule PhoenixGenApi.ArgumentHandler do
       }
 
       ArgumentHandler.convert_args!(config, request)
-      # ** (RuntimeError) invalid argument type for "thirty"
+      # ** (ArgumentError) invalid argument type for "age": expected :num, got "thirty"
 
   ## Error Handling
 
-  All validation functions raise `RuntimeError` on validation failures with descriptive
+  All validation functions raise `ArgumentError` on validation failures with descriptive
   messages. The `InvalidType` exception is raised for type conversion errors.
 
   ## Notes
@@ -102,7 +109,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   require Logger
 
-  @default_string_max_length 3000
+  @default_string_max_bytes 3000
   @default_list_max_items 1000
   @default_map_max_items 1000
 
@@ -176,12 +183,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
                   "gen_api, request, missing argument #{inspect(name)} in #{inspect(request.request_type)}"
                 )
 
-                raise "missing argument #{inspect(name)} in #{inspect(request.request_type)}"
+                raise ArgumentError,
+                      "missing argument #{inspect(name)} in #{inspect(request.request_type)}"
 
               arg ->
-                acc ++ [arg]
+                [arg | acc]
             end
           end)
+          |> Enum.reverse()
 
         Logger.debug("gen_api, request, converted args: #{inspect(result)}")
         result
@@ -205,18 +214,23 @@ defmodule PhoenixGenApi.ArgumentHandler do
         "gen_api, request, invalid number of arguments for #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
       )
 
-      raise "invalid number of arguments for #{inspect(request.request_type)}"
+      raise ArgumentError,
+            "invalid number of arguments for #{inspect(request.request_type)}, expected #{map_size(arg_types)}, got #{map_size(args)}"
     end
 
     config_args = MapSet.new(Map.keys(arg_types))
     request_args = MapSet.new(Map.keys(args))
 
     if !MapSet.equal?(config_args, request_args) do
+      extra_args = MapSet.difference(request_args, config_args)
+      missing_args = MapSet.difference(config_args, request_args)
+
       Logger.error(
-        "gen_api, request, invalid arguments for #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+        "gen_api, request, invalid arguments for #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}, extra: #{inspect(extra_args)}, missing: #{inspect(missing_args)}"
       )
 
-      raise "invalid arguments for #{inspect(request.request_type)}"
+      raise ArgumentError,
+            "invalid arguments for #{inspect(request.request_type)}, extra: #{inspect(MapSet.to_list(extra_args))}, missing: #{inspect(MapSet.to_list(missing_args))}"
     end
 
     # Verify argument types & values.
@@ -228,7 +242,8 @@ defmodule PhoenixGenApi.ArgumentHandler do
               "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
             )
 
-            raise "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}"
+            raise ArgumentError,
+                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{@default_list_max_items} items"
           end
 
           arg_list_validation!(value)
@@ -239,28 +254,31 @@ defmodule PhoenixGenApi.ArgumentHandler do
               "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
             )
 
-            raise "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}"
+            raise ArgumentError,
+                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
           end
 
           arg_list_validation!(value)
 
-        {:list_string, max_items, max_item_length} ->
+        {:list_string, max_items, max_item_bytes} ->
           if length(value) > max_items do
             Logger.error(
               "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
             )
 
-            raise "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}"
+            raise ArgumentError,
+                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
           end
 
           if Enum.any?(value, fn item ->
-               String.length(item) > max_item_length || not is_binary(item)
+               not is_binary(item) or byte_size(item) > max_item_bytes
              end) do
             Logger.error(
               "gen_api, request, invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
             )
 
-            raise "invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}"
+            raise ArgumentError,
+                  "invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}"
           end
 
           arg_list_validation!(value)
@@ -272,7 +290,8 @@ defmodule PhoenixGenApi.ArgumentHandler do
               "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
             )
 
-            raise "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}"
+            raise ArgumentError,
+                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{@default_map_max_items} items"
           end
 
           arg_map_validation!(value)
@@ -284,19 +303,20 @@ defmodule PhoenixGenApi.ArgumentHandler do
               "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
             )
 
-            raise "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}"
+            raise ArgumentError,
+                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
           end
 
           arg_map_validation!(value)
 
         other ->
-          arg_validation!(other, value)
+          arg_validation!(other, value, name, request)
       end
     end)
   end
 
   defp arg_map_validation!(value) when is_map(value) do
-    Enum.each(value, fn {_key, val} ->
+    Enum.each(value, fn {key, val} ->
       cond do
         is_boolean(val) ->
           :ok
@@ -305,14 +325,34 @@ defmodule PhoenixGenApi.ArgumentHandler do
           :ok
 
         is_binary(val) ->
-          arg_validation!(:string, val)
+          if byte_size(val) > @default_string_max_bytes do
+            Logger.error(
+              "gen_api, request, nested map string value exceeds max byte size for key #{inspect(key)}"
+            )
+
+            raise ArgumentError,
+                  "nested map string value exceeds max byte size for key #{inspect(key)}"
+          end
 
         is_list(val) ->
-          arg_validation!(:list, val)
+          if length(val) > @default_list_max_items do
+            Logger.error(
+              "gen_api, request, nested map list value exceeds max items for key #{inspect(key)}"
+            )
+
+            raise ArgumentError,
+                  "nested map list value exceeds max items for key #{inspect(key)}"
+          end
+
+          arg_list_validation!(val)
 
         is_map(val) ->
           Logger.error("gen_api, request, nested map is not supported yet")
-          raise "nested map is not supported yet"
+          raise ArgumentError, "nested map is not supported yet"
+
+        true ->
+          Logger.error("gen_api, request, unsupported type #{inspect(val)} in map for key #{inspect(key)}")
+          raise ArgumentError, "unsupported type #{inspect(val)} in map for key #{inspect(key)}"
       end
     end)
   end
@@ -327,19 +367,22 @@ defmodule PhoenixGenApi.ArgumentHandler do
           :ok
 
         is_binary(item) ->
-          arg_validation!(:string, item)
+          if byte_size(item) > @default_string_max_bytes do
+            Logger.error("gen_api, request, string item in list exceeds max byte size")
+            raise ArgumentError, "string item in list exceeds max byte size"
+          end
 
         is_map(item) ->
           Logger.error("gen_api, request, nested map is not supported yet")
-          raise "nested map is not supported yet"
+          raise ArgumentError, "nested map is not supported yet"
 
         is_list(item) ->
           Logger.error("gen_api, request, nested list is not supported yet")
-          raise "nested list is not supported yet"
+          raise ArgumentError, "nested list is not supported yet"
 
         true ->
           Logger.error("gen_api, request, unsupported type #{inspect(item)}")
-          raise "unsupported type #{inspect(item)}"
+          raise ArgumentError, "unsupported type #{inspect(item)}"
       end
     end)
   end
@@ -355,143 +398,258 @@ defmodule PhoenixGenApi.ArgumentHandler do
     end)
   end
 
-  defp arg_validation!(_type, nil) do
-    Logger.error("gen_api, request, invalid argument type for nil")
-    raise "invalid argument, not accept nil"
+  defp arg_validation!(_type, nil, name, _request) do
+    Logger.error(
+      "gen_api, request, nil value not accepted for argument #{inspect(name)}"
+    )
+
+    raise ArgumentError, "nil value not accepted for argument #{inspect(name)}"
   end
 
-  defp arg_validation!(type, value) do
+  defp arg_validation!(type, value, name, _request) do
     case type do
       nil ->
-        Logger.error("gen_api, request, invalid argument type for #{inspect(value)}")
-        raise "invalid argument type for #{inspect(value)}"
+        Logger.error("gen_api, request, unknown type for argument #{inspect(name)}")
+        raise ArgumentError, "unknown type for argument #{inspect(name)}"
 
       :boolean ->
         if value in [true, false] do
           :ok
         else
-          Logger.error("gen_api, request, invalid argument type for #{inspect(value)}")
-          raise "invalid argument type for #{inspect(value)}"
+          Logger.error(
+            "gen_api, request, invalid argument type for #{inspect(name)}, expected :boolean, got #{inspect(value)}"
+          )
+
+          raise ArgumentError,
+                "invalid argument type for #{inspect(name)}, expected :boolean, got #{inspect(value)}"
         end
 
       :num ->
         if is_float(value) or is_integer(value) do
           :ok
         else
-          Logger.error("gen_api, request, invalid argument type for #{inspect(value)}")
-          raise "invalid argument type for #{inspect(value)}"
+          Logger.error(
+            "gen_api, request, invalid argument type for #{inspect(name)}, expected :num, got #{inspect(value)}"
+          )
+
+          raise ArgumentError,
+                "invalid argument type for #{inspect(name)}, expected :num, got #{inspect(value)}"
         end
 
       :string ->
-        if String.length(value) > @default_string_max_length do
-          Logger.error("gen_api, request, invalid argument size for #{inspect(value)}")
-          raise "invalid argument size for #{inspect(value)}"
+        if byte_size(value) > @default_string_max_bytes do
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, max #{@default_string_max_bytes} bytes"
+          )
+
+          raise ArgumentError,
+                "invalid argument size for #{inspect(name)}, max #{@default_string_max_bytes} bytes"
         end
 
-      {:string, max_length} ->
-        if String.length(value) > max_length do
-          Logger.error("gen_api, request, invalid argument size for #{inspect(value)}")
-          raise "invalid argument size for #{inspect(value)}"
+      {:string, max_bytes} ->
+        if byte_size(value) > max_bytes do
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, max #{max_bytes} bytes"
+          )
+
+          raise ArgumentError,
+                "invalid argument size for #{inspect(name)}, max #{max_bytes} bytes"
         end
 
       :list ->
         if length(value) > @default_list_max_items do
-          Logger.error("gen_api, request, invalid argument size for #{inspect(value)}")
-          raise "invalid argument size for #{inspect(value)}"
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, max #{@default_list_max_items} items"
+          )
+
+          raise ArgumentError,
+                "invalid argument size for #{inspect(name)}, max #{@default_list_max_items} items"
         end
 
         arg_list_validation!(value)
 
       :list_string ->
         if length(value) > @default_list_max_items do
-          Logger.error("gen_api, request, invalid argument size for #{inspect(value)}")
-          raise "invalid argument size for #{inspect(value)}"
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, max #{@default_list_max_items} items"
+          )
+
+          raise ArgumentError,
+                "invalid argument size for #{inspect(name)}, max #{@default_list_max_items} items"
         end
 
         arg_list_validation!(value, fn item ->
-          is_binary(item) and String.length(item) < @default_string_max_length
+          is_binary(item) and byte_size(item) <= @default_string_max_bytes
         end)
 
-      {:list_string, max_items, max_item_length} ->
+      {:list_string, max_items, max_item_bytes} ->
         if length(value) > max_items do
-          Logger.error("gen_api, request, invalid argument size for #{inspect(value)}")
-          raise "invalid argument size for #{inspect(value)}"
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, max #{max_items} items"
+          )
+
+          raise ArgumentError,
+                "invalid argument size for #{inspect(name)}, max #{max_items} items"
         end
 
         arg_list_validation!(value, fn item ->
-          is_binary(item) and String.length(item) < max_item_length
+          is_binary(item) and byte_size(item) <= max_item_bytes
         end)
 
       :list_num ->
         if length(value) > @default_list_max_items do
-          Logger.error("gen_api, request, invalid argument size for #{inspect(value)}")
-          raise "invalid argument size for #{inspect(value)}"
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, max #{@default_list_max_items} items"
+          )
+
+          raise ArgumentError,
+                "invalid argument size for #{inspect(name)}, max #{@default_list_max_items} items"
         end
 
         arg_list_validation!(value, fn item -> is_float(item) or is_integer(item) end)
 
       {:list_num, max_items} ->
         if length(value) > max_items do
-          Logger.error("gen_api, request, invalid argument size for #{inspect(value)}")
-          raise "invalid argument size for #{inspect(value)}"
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, max #{max_items} items"
+          )
+
+          raise ArgumentError,
+                "invalid argument size for #{inspect(name)}, max #{max_items} items"
         end
 
         arg_list_validation!(value, fn item -> is_float(item) or is_integer(item) end)
 
       _ ->
-        Logger.error("gen_api, request, unsupported type #{inspect(type)} for #{inspect(value)}")
-        raise "unsupported type #{inspect(type)} for #{inspect(value)}"
+        Logger.error(
+          "gen_api, request, unsupported type #{inspect(type)} for argument #{inspect(name)}"
+        )
+
+        raise ArgumentError,
+              "unsupported type #{inspect(type)} for argument #{inspect(name)}"
     end
   end
 
   defp convert_arg!(arg, :string) when is_binary(arg) do
+    if byte_size(arg) > @default_string_max_bytes do
+      raise ArgumentError, "string argument exceeds max byte size of #{@default_string_max_bytes}"
+    end
+
     arg
   end
 
-  defp convert_arg!(arg, :boolean) when arg in [true, false] do
+  defp convert_arg!(arg, {:string, max_bytes}) when is_binary(arg) do
+    if byte_size(arg) > max_bytes do
+      raise ArgumentError, "string argument exceeds max byte size of #{max_bytes}"
+    end
+
     arg
   end
 
-  defp convert_arg!(arg, :num) when is_float(arg) or is_integer(arg) do
+  defp convert_arg!(arg, :boolean) when is_boolean(arg) do
     arg
   end
 
-  defp convert_arg!(arg, {:list_string, _, _}) when is_list(arg) do
-    convert_arg!(arg, :list_string)
+  defp convert_arg!(arg, :num) when is_number(arg) do
+    arg
+  end
+
+  defp convert_arg!(arg, {:list_string, max_items, max_item_bytes}) when is_list(arg) do
+    if length(arg) > max_items do
+      raise ArgumentError, "list_string argument exceeds max items of #{max_items}"
+    end
+
+    Enum.each(arg, fn
+      item when is_binary(item) ->
+        if byte_size(item) > max_item_bytes do
+          raise ArgumentError, "string item in list_string exceeds max byte size of #{max_item_bytes}"
+        end
+
+      item ->
+        raise InvalidType, item
+    end)
+
+    arg
   end
 
   defp convert_arg!(arg, :list_string) when is_list(arg) do
+    if length(arg) > @default_list_max_items do
+      raise ArgumentError, "list_string argument exceeds max items of #{@default_list_max_items}"
+    end
+
     Enum.each(arg, fn
-      x when is_binary(x) -> x
+      item when is_binary(item) ->
+        if byte_size(item) > @default_string_max_bytes do
+          raise ArgumentError, "string item in list_string exceeds max byte size of #{@default_string_max_bytes}"
+        end
+
+      item ->
+        raise InvalidType, item
+    end)
+
+    arg
+  end
+
+  defp convert_arg!(arg, {:list_num, max_items}) when is_list(arg) do
+    if length(arg) > max_items do
+      raise ArgumentError, "list_num argument exceeds max items of #{max_items}"
+    end
+
+    Enum.each(arg, fn
+      x when is_number(x) -> x
       x -> raise InvalidType, x
     end)
 
     arg
   end
 
-  defp convert_arg!(arg, {:list_num, _}) do
-    convert_arg!(arg, :list_num)
-  end
-
   defp convert_arg!(arg, :list_num) when is_list(arg) do
+    if length(arg) > @default_list_max_items do
+      raise ArgumentError, "list_num argument exceeds max items of #{@default_list_max_items}"
+    end
+
     Enum.each(arg, fn
-      x when is_float(x) or is_integer(x) -> x
+      x when is_number(x) -> x
       x -> raise InvalidType, x
     end)
+
+    arg
+  end
+
+  defp convert_arg!(arg, {:list, max_items}) when is_list(arg) do
+    if length(arg) > max_items do
+      raise ArgumentError, "list argument exceeds max items of #{max_items}"
+    end
 
     arg
   end
 
   defp convert_arg!(arg, :list) when is_list(arg) do
+    if length(arg) > @default_list_max_items do
+      raise ArgumentError, "list argument exceeds max items of #{@default_list_max_items}"
+    end
+
+    arg
+  end
+
+  defp convert_arg!(arg, {:map, max_items}) when is_map(arg) do
+    if map_size(arg) > max_items do
+      raise ArgumentError, "map argument exceeds max items of #{max_items}"
+    end
+
     arg
   end
 
   defp convert_arg!(arg, :map) when is_map(arg) do
+    if map_size(arg) > @default_map_max_items do
+      raise ArgumentError, "map argument exceeds max items of #{@default_map_max_items}"
+    end
+
     arg
   end
 
-  defp convert_arg!(arg, type) do
-    Logger.error("gen_api, request, unsupported type #{inspect(type)} for #{inspect(arg)}")
-    raise InvalidType, message: "unsupported type #{inspect(type)} for #{inspect(arg)}"
+  defp convert_arg!(_arg, type) do
+    Logger.error("gen_api, request, unsupported type #{inspect(type)} for argument")
+    raise InvalidType, message: "unsupported type #{inspect(type)}"
   end
 end

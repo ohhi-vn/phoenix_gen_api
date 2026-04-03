@@ -35,6 +35,13 @@ defmodule PhoenixGenApi.NodeSelector do
 
   This allows for dynamic node discovery and automatic adaptation to cluster changes.
 
+  ## Fault Tolerance
+
+  - Nodes are validated before selection
+  - Empty node lists return `{:error, :no_nodes_available}`
+  - Invalid node formats are filtered out
+  - Failed node resolution is logged with details
+
   ## Examples
 
       # Random selection
@@ -42,14 +49,14 @@ defmodule PhoenixGenApi.NodeSelector do
         nodes: ["node1@host", "node2@host", "node3@host"],
         choose_node_mode: :random
       }
-      node = NodeSelector.get_node(config, request)
+      {:ok, node} = NodeSelector.get_node(config, request)
 
       # Hash by request ID (consistent)
       config = %FunConfig{
         nodes: ["node1@host", "node2@host"],
         choose_node_mode: :hash
       }
-      node = NodeSelector.get_node(config, request)
+      {:ok, node} = NodeSelector.get_node(config, request)
       # Same request ID will always return same node
 
       # Hash by custom field
@@ -64,7 +71,7 @@ defmodule PhoenixGenApi.NodeSelector do
         nodes: ["node1@host", "node2@host"],
         choose_node_mode: {:hash, "user_id"}
       }
-      node = NodeSelector.get_node(config, request)
+      {:ok, node} = NodeSelector.get_node(config, request)
       # All requests from same user go to same node
 
       # Round-robin
@@ -72,17 +79,18 @@ defmodule PhoenixGenApi.NodeSelector do
         nodes: ["node1@host", "node2@host", "node3@host"],
         choose_node_mode: :round_robin
       }
-      node1 = NodeSelector.get_node(config, request)  # node1@host
-      node2 = NodeSelector.get_node(config, request)  # node2@host
-      node3 = NodeSelector.get_node(config, request)  # node3@host
-      node4 = NodeSelector.get_node(config, request)  # node1@host (wraps around)
+      {:ok, node1} = NodeSelector.get_node(config, request)  # node1@host
+      {:ok, node2} = NodeSelector.get_node(config, request)  # node2@host
+      {:ok, node3} = NodeSelector.get_node(config, request)  # node3@host
+      {:ok, node4} = NodeSelector.get_node(config, request)  # node1@host (wraps around)
 
   ## Notes
 
   - Round-robin state is maintained per process using the process dictionary
   - Hash functions use `:erlang.phash2/2` for deterministic hashing
   - Dynamic node resolution happens on every call, allowing real-time cluster updates
-  - If a hash_key is not found in the request, an error is raised
+  - If a hash_key is not found in the request, falls back to random selection
+  - Returns `{:ok, node}` on success or `{:error, reason}` on failure
   """
 
   alias PhoenixGenApi.Structs.{FunConfig, Request}
@@ -131,23 +139,78 @@ defmodule PhoenixGenApi.NodeSelector do
       # => "node1@host" or "node2@host"
   """
   def get_node(config = %FunConfig{nodes: {m, f, a}}, request = %Request{}) do
-    case apply(m, f, a) do
-      nodes when is_list(nodes) ->
+    case resolve_dynamic_nodes(m, f, a) do
+      {:ok, nodes} ->
         config = %{config | nodes: nodes}
         get_node(config, request)
 
-      other ->
-        Logger.error("gen_api, get_node, invalid nodes #{inspect(other)}")
-        raise "invalid nodes #{inspect(other)}"
+      {:error, reason} ->
+        Logger.error("PhoenixGenApi.NodeSelector, get_node, failed to resolve dynamic nodes: #{inspect(reason)}")
+        {:error, {:dynamic_node_resolution_failed, reason}}
     end
   end
 
   def get_node(config = %FunConfig{}, request = %Request{}) do
+    nodes = validate_nodes(config.nodes)
+
+    if nodes == [] do
+      Logger.error("PhoenixGenApi.NodeSelector, get_node, no valid nodes available")
+      {:error, :no_nodes_available}
+    else
+      config = %{config | nodes: nodes}
+      select_node(config, request)
+    end
+  end
+
+  defp resolve_dynamic_nodes(m, f, a) when is_atom(m) and is_atom(f) and is_list(a) do
+    try do
+      case apply(m, f, a) do
+        nodes when is_list(nodes) ->
+          {:ok, nodes}
+
+        other ->
+          {:error, {:invalid_return_type, other}}
+      end
+    rescue
+      error ->
+        {:error, {:exception, Exception.message(error)}}
+    catch
+      kind, value ->
+        {:error, {kind, value}}
+    end
+  end
+
+  defp resolve_dynamic_nodes(_, _, _) do
+    {:error, :invalid_mfa_format}
+  end
+
+  defp validate_nodes(nodes) when is_list(nodes) do
+    Enum.filter(nodes, &is_valid_node?/1)
+  end
+
+  defp validate_nodes(_), do: []
+
+  defp is_valid_node?(node) when is_atom(node), do: true
+  defp is_valid_node?(node) when is_binary(node), do: true
+  defp is_valid_node?(_), do: false
+
+  defp select_node(config, request) do
     case config.choose_node_mode do
-      :random -> Enum.random(config.nodes)
-      :hash -> hash_node(request, config)
-      {:hash, hash_key} -> hash_node(request, config, hash_key)
-      :round_robin -> round_robin_node(request, config)
+      :random ->
+        {:ok, Enum.random(config.nodes)}
+
+      :hash ->
+        {:ok, hash_node(request, config)}
+
+      {:hash, hash_key} ->
+        hash_node_with_fallback(request, config, hash_key)
+
+      :round_robin ->
+        {:ok, round_robin_node(request, config)}
+
+      _ ->
+        Logger.error("PhoenixGenApi.NodeSelector, invalid choose_node_mode: #{inspect(config.choose_node_mode)}")
+        {:error, {:invalid_choose_node_mode, config.choose_node_mode}}
     end
   end
 
@@ -166,19 +229,22 @@ defmodule PhoenixGenApi.NodeSelector do
     Enum.at(config.nodes, hash_order)
   end
 
-  defp hash_node(request, config, hash_key) do
+  defp hash_node_with_fallback(request, config, hash_key) do
     value =
       Map.get(request.args, hash_key) ||
         Map.get(request, hash_key)
 
     case value do
       nil ->
-        Logger.error("gen_api, hash key #{inspect(hash_key)} does not existed in request")
-        raise "hash_key #{inspect(hash_key)} does not existed in request"
+        Logger.warning(
+          "PhoenixGenApi.NodeSelector, hash key #{inspect(hash_key)} not found in request, falling back to random"
+        )
+
+        {:ok, Enum.random(config.nodes)}
 
       val ->
         hash_order = :erlang.phash2(val, length(config.nodes))
-        Enum.at(config.nodes, hash_order)
+        {:ok, Enum.at(config.nodes, hash_order)}
     end
   end
 
@@ -192,21 +258,15 @@ defmodule PhoenixGenApi.NodeSelector do
   end
 
   defp next_round_robin_node_num(nodes_length) do
-    case Process.get(:round_robin_num, nil) do
+    case Process.get(:phoenix_gen_api_round_robin_num, nil) do
       nil ->
-        Process.put(:round_robin_num, 0)
+        Process.put(:phoenix_gen_api_round_robin_num, 0)
         0
 
       curr_num ->
-        next_num = curr_num + 1
-
-        if next_num < nodes_length do
-          Process.put(:round_robin_num, next_num)
-          next_num
-        else
-          Process.put(:round_robin_num, 0)
-          0
-        end
+        next_num = rem(curr_num + 1, nodes_length)
+        Process.put(:phoenix_gen_api_round_robin_num, next_num)
+        next_num
     end
   end
 end

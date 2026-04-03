@@ -18,6 +18,8 @@ defmodule PhoenixGenApi.Application do
         []
       else
         [
+          # Rate limiter for global and per-API rate limiting
+          PhoenixGenApi.RateLimiter,
           # Worker pools for async and stream execution
           PhoenixGenApi.WorkerPool.WorkerPoolSupervisor,
           # Configuration cache and puller

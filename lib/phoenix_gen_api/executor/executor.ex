@@ -11,16 +11,67 @@ defmodule PhoenixGenApi.Executor do
   Async and stream calls now use dedicated worker pools instead of spawning
   unlimited processes. This provides better resource management and prevents
   system overload.
+
+  ## Error Handling
+
+  All execution paths catch errors, exits, and throws, converting them to
+  safe error responses. Internal error details are only exposed when
+  `:detail_error` is enabled in configuration.
+
+  ## Node Fallback
+
+  When executing on remote nodes, if the primary node fails, the executor
+  will attempt to fall back to another available node (if configured).
   """
 
   alias PhoenixGenApi.Structs.{Request, FunConfig, Response}
   alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.StreamCall
   alias PhoenixGenApi.ArgumentHandler
-  alias PhoenixGenApi.NodeSelector
   alias PhoenixGenApi.Permission
+  alias PhoenixGenApi.RateLimiter
 
   require Logger
+
+  @default_rpc_timeout 5000
+
+  @doc """
+  Attaches a telemetry handler to executor events.
+
+  ## Events
+
+  - `[:phoenix_gen_api, :executor, :request, :start]` - Emitted when request execution starts
+  - `[:phoenix_gen_api, :executor, :request, :stop]` - Emitted when request execution completes
+  - `[:phoenix_gen_api, :executor, :request, :exception]` - Emitted when request execution fails
+
+  ## Examples
+
+      :telemetry.attach(
+        "my-executor-handler",
+        [:phoenix_gen_api, :executor, :request, :stop],
+        fn event, measurements, metadata, config ->
+          ...
+        end,
+        %{}
+      )
+  """
+  def attach_telemetry(handler_id, function, config \\ %{})
+      when is_binary(handler_id) and is_function(function, 4) do
+    :telemetry.attach("#{handler_id}-start", [:phoenix_gen_api, :executor, :request, :start], function, config)
+    :telemetry.attach("#{handler_id}-stop", [:phoenix_gen_api, :executor, :request, :stop], function, config)
+    :telemetry.attach("#{handler_id}-exception", [:phoenix_gen_api, :executor, :request, :exception], function, config)
+    :ok
+  end
+
+  @doc """
+  Detaches telemetry handlers by ID.
+  """
+  def detach_telemetry(handler_id) when is_binary(handler_id) do
+    :telemetry.detach("#{handler_id}-start")
+    :telemetry.detach("#{handler_id}-stop")
+    :telemetry.detach("#{handler_id}-exception")
+    :ok
+  end
 
   @doc """
   Executes a request from a map of parameters.
@@ -39,17 +90,85 @@ defmodule PhoenixGenApi.Executor do
   """
   @spec execute!(Request.t()) :: Response.t()
   def execute!(request = %Request{}) do
-    case ConfigDb.get(request.service, request.request_type) do
-      {:ok, fun_config} ->
-        execute_with_config!(request, fun_config)
+    start_time = System.monotonic_time(:microsecond)
 
-      {:error, :not_found} ->
-        Logger.warning("PhoenixGenApi.Executor, unsupported function: #{request.request_type}")
+    :telemetry.execute(
+      [:phoenix_gen_api, :executor, :request, :start],
+      %{system_time: System.system_time()},
+      %{
+        request_id: request.request_id,
+        request_type: request.request_type,
+        service: request.service,
+        user_id: request.user_id
+      }
+    )
 
-        Response.error_response(
-          request.request_id,
-          "unsupported function: #{request.request_type}"
+    try do
+      version = request.version || "0.0.0"
+
+      result =
+        case ConfigDb.get(request.service, request.request_type, version) do
+          {:ok, fun_config} ->
+            execute_with_config!(request, fun_config)
+
+          {:error, :not_found} ->
+            Logger.warning("PhoenixGenApi.Executor, unsupported function: #{request.request_type} version #{version}")
+
+            Response.error_response(
+              request.request_id,
+              "unsupported function: #{request.request_type} version #{version}"
+            )
+
+          {:error, :disabled} ->
+            Logger.warning("PhoenixGenApi.Executor, disabled function: #{request.request_type} version #{version}")
+
+            Response.error_response(
+              request.request_id,
+              "disabled function: #{request.request_type} version #{version}"
+            )
+        end
+
+      duration = System.monotonic_time(:microsecond) - start_time
+
+      {success, async} =
+        case result do
+          %Response{success: s, async: a} -> {s, a}
+          _ -> {true, false}
+        end
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :executor, :request, :stop],
+        %{duration_us: duration},
+        %{
+          request_id: request.request_id,
+          request_type: request.request_type,
+          service: request.service,
+          user_id: request.user_id,
+          success: success,
+          async: async
+        }
+      )
+
+      result
+    rescue
+      e ->
+        duration = System.monotonic_time(:microsecond) - start_time
+
+        :telemetry.execute(
+          [:phoenix_gen_api, :executor, :request, :exception],
+          %{duration_us: duration},
+          %{
+            request_id: request.request_id,
+            request_type: request.request_type,
+            service: request.service,
+            user_id: request.user_id,
+            kind: :error,
+            reason: Exception.message(e),
+            stacktrace: __STACKTRACE__
+          }
         )
+
+        reraise e, __STACKTRACE__
     end
   end
 
@@ -58,6 +177,36 @@ defmodule PhoenixGenApi.Executor do
       "PhoenixGenApi.Executor, executing request: #{request.request_id}, " <>
         "response_type: #{fun_config.response_type}"
     )
+
+    # Check rate limits before permission check
+    case RateLimiter.check_rate_limit(request) do
+      :ok ->
+        :ok
+
+      {:error, :rate_limited, details} ->
+        Logger.warning(
+          "PhoenixGenApi.Executor, rate limit exceeded for request: #{request.request_id}, " <>
+            "details: #{inspect(details)}"
+        )
+
+        retry_after_ms = Map.get(details, :retry_after_ms, 0)
+
+        Response.error_response(
+          request.request_id,
+          "Rate limit exceeded. Please retry after #{div(retry_after_ms, 1000)} seconds.",
+          true
+        )
+        |> Map.put(:can_retry, true)
+        |> then(& &1)
+
+      {:error, :rate_limiter_error, error_details} ->
+        # Fail-open: log error but allow request to proceed
+        Logger.error(
+          "PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request"
+        )
+
+        :ok
+    end
 
     Permission.check_permission!(request, fun_config)
 
@@ -73,12 +222,23 @@ defmodule PhoenixGenApi.Executor do
     try do
       do_call(request, fun_config)
     rescue
-      e in [RuntimeError] ->
-        Logger.error("PhoenixGenApi.Executor, call failed: #{inspect(e)}")
+      e ->
+        Logger.error(
+          "PhoenixGenApi.Executor, sync_call rescued: #{Exception.message(e)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
+        )
+
         Response.error_response(request.request_id, get_error_message(e))
     catch
       :exit, reason ->
-        Logger.error("PhoenixGenApi.Executor, call exited: #{inspect(reason)}")
+        Logger.error("PhoenixGenApi.Executor, sync_call exited: #{inspect(reason)}")
+        Response.error_response(request.request_id, get_error_message(reason))
+
+      :throw, reason ->
+        Logger.error("PhoenixGenApi.Executor, sync_call threw: #{inspect(reason)}")
+        Response.error_response(request.request_id, get_error_message(reason))
+
+      kind, reason ->
+        Logger.error("PhoenixGenApi.Executor, sync_call caught #{inspect(kind)}: #{inspect(reason)}")
         Response.error_response(request.request_id, get_error_message(reason))
     end
   end
@@ -91,29 +251,110 @@ defmodule PhoenixGenApi.Executor do
 
     result =
       if FunConfig.is_local_service?(fun_config) do
-        apply(mod, fun, final_args)
+        execute_local(mod, fun, final_args, fun_config.timeout)
       else
-        case NodeSelector.get_node(fun_config, request) do
-          nil ->
-            Logger.error(
-              "PhoenixGenApi.Executor, call failed: no node found for #{inspect(fun_config)}"
-            )
-
-            {:error, "no target node found"}
-
-          node ->
-            case :rpc.call(node, mod, fun, final_args, fun_config.timeout) do
-              {:badrpc, reason} ->
-                Logger.error("PhoenixGenApi.Executor, call failed: #{inspect(reason)}")
-                {:error, "internal error"}
-
-              result ->
-                result
-            end
-        end
+        execute_remote(mod, fun, final_args, fun_config, request)
       end
 
     handle_call_result(result, request.request_id)
+  end
+
+  defp execute_local(mod, fun, args, timeout) do
+    task = Task.async(fn -> apply(mod, fun, args) end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task) do
+      {:ok, result} -> result
+      nil -> {:error, "local execution timed out after #{timeout}ms"}
+      {:exit, reason} -> {:error, "local execution failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp execute_remote(mod, fun, args, fun_config, request) do
+    nodes = get_nodes_list(fun_config, request)
+    rpc_timeout = get_rpc_timeout(fun_config)
+
+    execute_remote_with_fallback(nodes, mod, fun, args, rpc_timeout, request.request_id)
+  end
+
+  defp execute_remote_with_fallback([], _mod, _fun, _args, _timeout, _request_id) do
+    Logger.error("PhoenixGenApi.Executor, no nodes available for remote execution")
+    {:error, "no target nodes available"}
+  end
+
+  defp execute_remote_with_fallback([node | remaining_nodes], mod, fun, args, timeout, request_id) do
+    case :rpc.call(node, mod, fun, args, timeout) do
+      {:badrpc, :timeout} ->
+        Logger.warning(
+          "PhoenixGenApi.Executor, RPC timeout on node #{inspect(node)}, trying fallback"
+        )
+
+        execute_remote_with_fallback(remaining_nodes, mod, fun, args, timeout, request_id)
+
+      {:badrpc, reason} ->
+        Logger.warning(
+          "PhoenixGenApi.Executor, RPC failed on node #{inspect(node)}: #{inspect(reason)}, trying fallback"
+        )
+
+        execute_remote_with_fallback(remaining_nodes, mod, fun, args, timeout, request_id)
+
+      result ->
+        result
+    end
+  end
+
+  defp get_nodes_list(fun_config, request) do
+    config_with_nodes =
+      case fun_config.nodes do
+        {m, f, a} ->
+          case apply(m, f, a) do
+            nodes when is_list(nodes) -> %{fun_config | nodes: nodes}
+            other ->
+              Logger.error("PhoenixGenApi.Executor, invalid nodes from MFA: #{inspect(other)}")
+              %{fun_config | nodes: []}
+          end
+
+        nodes when is_list(nodes) ->
+          fun_config
+
+        _ ->
+          Logger.error("PhoenixGenApi.Executor, invalid nodes configuration: #{inspect(fun_config.nodes)}")
+          %{fun_config | nodes: []}
+      end
+
+    case config_with_nodes.choose_node_mode do
+      :random ->
+        [Enum.random(config_with_nodes.nodes)]
+
+      :hash ->
+        hash_order = :erlang.phash2(request.request_id, length(config_with_nodes.nodes))
+        [Enum.at(config_with_nodes.nodes, hash_order)]
+
+      {:hash, hash_key} ->
+        value = Map.get(request.args, hash_key) || Map.get(request, hash_key)
+
+        if value do
+          hash_order = :erlang.phash2(value, length(config_with_nodes.nodes))
+          [Enum.at(config_with_nodes.nodes, hash_order)]
+        else
+          Logger.error("PhoenixGenApi.Executor, hash key #{inspect(hash_key)} not found in request")
+          config_with_nodes.nodes
+        end
+
+      :round_robin ->
+        config_with_nodes.nodes
+
+      _ ->
+        Logger.error("PhoenixGenApi.Executor, invalid choose_node_mode: #{inspect(config_with_nodes.choose_node_mode)}")
+        config_with_nodes.nodes
+    end
+  end
+
+  defp get_rpc_timeout(fun_config) do
+    case fun_config.timeout do
+      :infinity -> @default_rpc_timeout * 5
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _ -> @default_rpc_timeout
+    end
   end
 
   defp info_args(request, fun_config) do
@@ -131,9 +372,17 @@ defmodule PhoenixGenApi.Executor do
     else
       []
     end
+  rescue
+    e ->
+      Logger.error("PhoenixGenApi.Executor, failed to build info_args: #{Exception.message(e)}")
+      []
   end
 
   defp handle_call_result({:error, reason}, request_id) do
+    Response.error_response(request_id, get_error_message(reason))
+  end
+
+  defp handle_call_result({:error, reason, _metadata}, request_id) do
     Response.error_response(request_id, get_error_message(reason))
   end
 
@@ -146,10 +395,20 @@ defmodule PhoenixGenApi.Executor do
 
     # Use worker pool for async execution
     task = fn ->
-      result = sync_call(request, fun_config)
+      try do
+        result = sync_call(request, fun_config)
 
-      if fun_config.response_type != :none do
-        send(receiver, {:async_call, result})
+        if fun_config.response_type != :none do
+          send(receiver, {:async_call, result})
+        end
+      catch
+        kind, reason ->
+          Logger.error(
+            "PhoenixGenApi.Executor, async_call task failed: #{inspect(kind)}: #{inspect(reason)}"
+          )
+
+          error_response = Response.error_response(request.request_id, "Async execution failed")
+          send(receiver, {:async_call, error_response})
       end
     end
 
@@ -176,26 +435,45 @@ defmodule PhoenixGenApi.Executor do
 
     # Use worker pool for stream execution
     task = fn ->
-      case StreamCall.start_link(%{request: request, fun_config: fun_config, receiver: receiver}) do
-        {:ok, pid} ->
-          # Store the stream PID for potential cancellation
-          send(receiver, {:stream_started, request_id, pid})
+      try do
+        case StreamCall.start_link(%{request: request, fun_config: fun_config, receiver: receiver}) do
+          {:ok, pid} ->
+            # Store the stream PID for potential cancellation
+            send(receiver, {:stream_started, request_id, pid})
 
-          # Wait for stream to complete
-          ref = Process.monitor(pid)
+            # Wait for stream to complete with timeout
+            ref = Process.monitor(pid)
 
-          receive do
-            {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
-          end
+            receive do
+              {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+            after
+              fun_config.timeout ->
+                Logger.warning(
+                  "PhoenixGenApi.Executor, stream_call timed out after #{fun_config.timeout}ms"
+                )
 
-        {:error, reason} ->
+                GenServer.stop(pid, :timeout)
+            end
+
+          {:error, reason} ->
+            Logger.error(
+              "PhoenixGenApi.Executor, stream_call start_link failed: #{inspect(reason)}"
+            )
+
+            send(
+              receiver,
+              {:stream_response, Response.error_response(request_id, "Failed to start stream")}
+            )
+        end
+      catch
+        kind, reason ->
           Logger.error(
-            "PhoenixGenApi.Executor, stream_call start_link failed: #{inspect(reason)}"
+            "PhoenixGenApi.Executor, stream_call task failed: #{inspect(kind)}: #{inspect(reason)}"
           )
 
           send(
             receiver,
-            {:stream_response, Response.error_response(request_id, "Failed to start stream")}
+            {:stream_response, Response.error_response(request_id, "Stream execution failed")}
           )
       end
     end
@@ -233,6 +511,32 @@ defmodule PhoenixGenApi.Executor do
       "Internal Server Error: #{inspect(reason)}"
     else
       "Internal Server Error"
+    end
+  end
+
+  @doc """
+  Executes a request with a custom timeout.
+
+  This function wraps `execute!/1` with a timeout to prevent long-running
+  requests from blocking the caller indefinitely.
+
+  ## Parameters
+
+    - `request` - The request to execute
+    - `timeout` - Timeout in milliseconds (default: 5000)
+
+  ## Returns
+
+    - `Response.t()` - The execution result or timeout error
+  """
+  @spec execute_with_timeout!(Request.t(), non_neg_integer()) :: Response.t()
+  def execute_with_timeout!(request, timeout \\ @default_rpc_timeout) do
+    task = Task.async(fn -> execute!(request) end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task) do
+      {:ok, result} -> result
+      nil -> Response.error_response(request.request_id, "Request timed out after #{timeout}ms")
+      {:exit, reason} -> Response.error_response(request.request_id, "Request failed: #{inspect(reason)}")
     end
   end
 end

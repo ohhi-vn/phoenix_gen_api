@@ -35,7 +35,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
 
       request = %Request{args: %{"name" => "John"}}
 
-      assert_raise RuntimeError, "invalid number of arguments for nil", fn ->
+      assert_raise ArgumentError, ~r/invalid number of arguments/, fn ->
         ArgumentHandler.convert_args!(config, request)
       end
     end
@@ -58,7 +58,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"name" => :string, "age" => :num}}
       request = %Request{args: %{"name" => "John"}}
 
-      assert_raise RuntimeError, "invalid number of arguments for nil", fn ->
+      assert_raise ArgumentError, ~r/invalid number of arguments/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -67,7 +67,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"name" => :string, "age" => :num}}
       request = %Request{args: %{"name" => "John", "city" => "New York"}}
 
-      assert_raise RuntimeError, "invalid arguments for nil", fn ->
+      assert_raise ArgumentError, ~r/invalid arguments for nil, extra:.*missing:/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -82,7 +82,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"list" => {:list, 2}}}
       request = %Request{args: %{"list" => [1, 2, 3]}}
 
-      assert_raise RuntimeError, "invalid argument size for \"list\" in nil", fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "list" in nil, max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -97,7 +97,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"map" => {:map, 1}}}
       request = %Request{args: %{"map" => %{"a" => 1, "b" => 2}}}
 
-      assert_raise RuntimeError, "invalid argument size for \"map\" in nil", fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "map" in nil, max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -113,7 +113,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"name" => {:list_num, 2}}}
       request = %Request{args: %{"name" => [1, 2, 3, 4]}}
 
-      assert_raise RuntimeError, "invalid argument size for [1, 2, 3, 4]", fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "name", max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -129,7 +129,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"name" => {:list_string, 2, 1000}}}
       request = %Request{args: %{"name" => ["John", "Doe", "Smith", "Jones"]}}
 
-      assert_raise RuntimeError, "invalid argument size for \"name\" in nil", fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "name" in nil, max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end

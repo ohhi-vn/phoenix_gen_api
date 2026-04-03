@@ -26,7 +26,7 @@ defmodule PhoenixGenApi.NodeSelectorTest do
         choose_node_mode: :random
       }
 
-      node = NodeSelector.get_node(config, request)
+      assert {:ok, node} = NodeSelector.get_node(config, request)
       assert node in nodes
     end
 
@@ -38,8 +38,8 @@ defmodule PhoenixGenApi.NodeSelectorTest do
       }
 
       # Hash should be deterministic based on request_id
-      node1 = NodeSelector.get_node(config, request)
-      node2 = NodeSelector.get_node(config, request)
+      assert {:ok, node1} = NodeSelector.get_node(config, request)
+      assert {:ok, node2} = NodeSelector.get_node(config, request)
 
       assert node1 == node2
       assert node1 in nodes
@@ -52,11 +52,11 @@ defmodule PhoenixGenApi.NodeSelectorTest do
         choose_node_mode: {:hash, "session_id"}
       }
 
-      node = NodeSelector.get_node(config, request)
+      assert {:ok, node} = NodeSelector.get_node(config, request)
       assert node in nodes
 
       # Same hash_key value should give same node
-      node2 = NodeSelector.get_node(config, request)
+      assert {:ok, node2} = NodeSelector.get_node(config, request)
       assert node == node2
     end
 
@@ -75,20 +75,20 @@ defmodule PhoenixGenApi.NodeSelectorTest do
         choose_node_mode: {:hash, "user_id"}
       }
 
-      node = NodeSelector.get_node(config, request)
+      assert {:ok, node} = NodeSelector.get_node(config, request)
       assert node in nodes
     end
 
-    test "raises error when hash_key does not exist", %{request: request, nodes: nodes} do
+    test "falls back to random when hash_key does not exist", %{request: request, nodes: nodes} do
       config = %FunConfig{
         request_type: "test",
         nodes: nodes,
         choose_node_mode: {:hash, "nonexistent_key"}
       }
 
-      assert_raise RuntimeError, ~r/hash_key/, fn ->
-        NodeSelector.get_node(config, request)
-      end
+      # Should fall back to random selection instead of raising
+      assert {:ok, node} = NodeSelector.get_node(config, request)
+      assert node in nodes
     end
 
     test "selects node using round_robin", %{request: request, nodes: nodes} do
@@ -99,19 +99,19 @@ defmodule PhoenixGenApi.NodeSelectorTest do
       }
 
       # Get first node
-      node1 = NodeSelector.get_node(config, request)
+      assert {:ok, node1} = NodeSelector.get_node(config, request)
       assert node1 in nodes
 
       # Get second node (should be different in round robin)
-      node2 = NodeSelector.get_node(config, request)
+      assert {:ok, node2} = NodeSelector.get_node(config, request)
       assert node2 in nodes
 
       # Get third node
-      node3 = NodeSelector.get_node(config, request)
+      assert {:ok, node3} = NodeSelector.get_node(config, request)
       assert node3 in nodes
 
       # Fourth call should wrap around to first node
-      node4 = NodeSelector.get_node(config, request)
+      assert {:ok, node4} = NodeSelector.get_node(config, request)
       assert node4 == node1
     end
 
@@ -122,8 +122,8 @@ defmodule PhoenixGenApi.NodeSelectorTest do
         choose_node_mode: :round_robin
       }
 
-      node1 = NodeSelector.get_node(config, request)
-      node2 = NodeSelector.get_node(config, request)
+      assert {:ok, node1} = NodeSelector.get_node(config, request)
+      assert {:ok, node2} = NodeSelector.get_node(config, request)
 
       assert node1 == "single_node@localhost"
       assert node2 == "single_node@localhost"
@@ -136,20 +136,28 @@ defmodule PhoenixGenApi.NodeSelectorTest do
         choose_node_mode: :random
       }
 
-      node = NodeSelector.get_node(config, request)
+      assert {:ok, node} = NodeSelector.get_node(config, request)
       assert node in nodes
     end
 
-    test "raises error when MFA returns invalid nodes", %{request: request} do
+    test "returns error when MFA returns invalid nodes", %{request: request} do
       config = %FunConfig{
         request_type: "test",
         nodes: {__MODULE__, :get_invalid_nodes, []},
         choose_node_mode: :random
       }
 
-      assert_raise RuntimeError, ~r/invalid nodes/, fn ->
-        NodeSelector.get_node(config, request)
-      end
+      assert {:error, {:dynamic_node_resolution_failed, _}} = NodeSelector.get_node(config, request)
+    end
+
+    test "returns error when nodes list is empty", %{request: request} do
+      config = %FunConfig{
+        request_type: "test",
+        nodes: [],
+        choose_node_mode: :random
+      }
+
+      assert {:error, :no_nodes_available} = NodeSelector.get_node(config, request)
     end
   end
 

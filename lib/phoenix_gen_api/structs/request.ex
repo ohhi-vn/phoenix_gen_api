@@ -55,19 +55,21 @@ defmodule PhoenixGenApi.Structs.Request do
   @typedoc "Request struct for internal using, convert data map from websocket api."
 
   @type t :: %__MODULE__{
-          user_id: String.t(),
-          device_id: String.t(),
+          user_id: String.t() | nil,
+          device_id: String.t() | nil,
           request_type: String.t(),
           request_id: String.t(),
           service: String.t(),
-          args: map()
+          args: map(),
+          user_roles: [String.t()] | nil,
+          version: String.t() | nil
         }
 
   @derive Nestru.Decoder
   defstruct [
-    # string, user's id in system.
+    # string | nil, user's id in system.
     :user_id,
-    # string, device id of current connection.
+    # string | nil, device id of current connection.
     :device_id,
     # string, request type.
     :request_type,
@@ -76,7 +78,11 @@ defmodule PhoenixGenApi.Structs.Request do
     # string, service name.
     :service,
     # map, field -> value, arguments for request.
-    args: %{}
+    args: %{},
+    # list of strings | nil, user roles for permission checking.
+    user_roles: nil,
+    # string | nil, version of the API request.
+    version: nil
   ]
 
   @doc """
@@ -86,10 +92,31 @@ defmodule PhoenixGenApi.Structs.Request do
     request = Nestru.decode!(params, Request)
 
     # set args to empty map if args is nil (function with no args in request)
-    if request.args == nil do
-      %{request | args: %{}}
-    else
-      request
-    end
+    request =
+      if request.args == nil do
+        %{request | args: %{}}
+      else
+        request
+      end
+
+    # validate user_roles is a list of strings if present
+    request =
+      case request.user_roles do
+        nil ->
+          request
+
+        roles when is_list(roles) ->
+          validated_roles =
+            Enum.filter(roles, fn role ->
+              is_binary(role) and byte_size(role) > 0
+            end)
+
+          %{request | user_roles: validated_roles}
+
+        _ ->
+          %{request | user_roles: nil}
+      end
+
+    request
   end
 end

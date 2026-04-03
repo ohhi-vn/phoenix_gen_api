@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "2.1.1",
+      version: "2.2.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -33,7 +33,8 @@ defmodule PhoenixGenApi.MixProject do
   defp deps do
     [
       {:nestru, "~> 1.0"},
-      {:toon_ex, "~> 0.1"},
+      {:toon_ex, "~> 0.5"},
+      {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:benchee, "~> 1.5", only: :dev},
       {:tidewave, "~> 0.5", only: [:dev]},
@@ -43,7 +44,7 @@ defmodule PhoenixGenApi.MixProject do
 
   defp package() do
     [
-      maintainers: ["Manh Van Vu"],
+      maintainers: ["Manh Vu"],
       licenses: ["MPL-2.0"],
       links: %{
         "GitHub" => "https://github.com/ohhi-vn/phoenix_gen_api",

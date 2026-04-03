@@ -70,7 +70,7 @@ defmodule PhoenixGenApi.PermissionTest do
         check_permission: {:arg, "other_user_id"}
       }
 
-      assert_raise RuntimeError, ~r/Permission denied/, fn ->
+      assert_raise PhoenixGenApi.Permission.PermissionDenied, ~r/Permission denied/, fn ->
         Permission.check_permission!(request, config)
       end
     end
@@ -81,7 +81,7 @@ defmodule PhoenixGenApi.PermissionTest do
         check_permission: {:arg, "nonexistent_arg"}
       }
 
-      assert_raise RuntimeError, ~r/Permission denied/, fn ->
+      assert_raise PhoenixGenApi.Permission.PermissionDenied, ~r/Permission denied/, fn ->
         Permission.check_permission!(request, config)
       end
     end

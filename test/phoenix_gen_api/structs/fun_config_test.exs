@@ -31,7 +31,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
 
   describe "get_node/2" do
     test "delegates to NodeSelector", %{config: config, request: request} do
-      node = FunConfig.get_node(config, request)
+      assert {:ok, node} = FunConfig.get_node(config, request)
       assert node in config.nodes
     end
   end
@@ -75,7 +75,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
         args: %{"user_id" => "different_user"}
       }
 
-      assert_raise RuntimeError, ~r/Permission denied/, fn ->
+      assert_raise PhoenixGenApi.Permission.PermissionDenied, ~r/Permission denied/, fn ->
         FunConfig.check_permission!(request, config)
       end
     end
@@ -140,6 +140,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
         arg_types: %{
           "user1" => :string
         },
+        arg_orders: ["user1"],
         mfa: {Test, :test, []},
         response_type: :async
       }
@@ -183,6 +184,50 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       }
 
       assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "version/1" do
+    test "returns version when set" do
+      config = %FunConfig{version: "1.0.0"}
+      assert FunConfig.version(config) == "1.0.0"
+    end
+
+    test "returns default 0.0.0 when version is empty string" do
+      config = %FunConfig{version: ""}
+      assert FunConfig.version(config) == "0.0.0"
+    end
+
+    test "returns default 0.0.0 when version is nil" do
+      config = %FunConfig{version: nil}
+      assert FunConfig.version(config) == "0.0.0"
+    end
+
+    test "returns default 0.0.0 for old configs without :version key" do
+      # Simulate old FunConfig struct from remote node without :version key
+      # This happens when old nodes send configs via RPC
+      config = struct(FunConfig, %{
+        request_type: "test",
+        service: "test_service",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {String, :upcase, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :sync,
+        check_permission: false,
+        request_info: false
+      })
+
+      # Remove the :version key to simulate old struct from RPC
+      config_without_version = Map.delete(config, :version)
+
+      # Verify :version key is not present
+      refute Map.has_key?(config_without_version, :version)
+
+      # Should return default version
+      assert FunConfig.version(config_without_version) == "0.0.0"
     end
   end
 end
