@@ -242,7 +242,11 @@ defmodule PhoenixGenApi do
       # Reset API-specific rate limit
       PhoenixGenApi.reset_rate_limit("user_123", {"my_service", "my_api"}, :user_id)
   """
-  @spec reset_rate_limit(String.t(), :global | {String.t() | atom(), String.t()}, atom() | String.t()) ::
+  @spec reset_rate_limit(
+          String.t(),
+          :global | {String.t() | atom(), String.t()},
+          atom() | String.t()
+        ) ::
           :ok
   def reset_rate_limit(key_value, scope, rate_limit_key) do
     RateLimiter.reset_rate_limit(key_value, scope, rate_limit_key)
@@ -255,7 +259,11 @@ defmodule PhoenixGenApi do
 
     A list of maps with current usage information for all applicable rate limits.
   """
-  @spec get_rate_limit_status(String.t(), :global | {String.t() | atom(), String.t()}, atom() | String.t()) ::
+  @spec get_rate_limit_status(
+          String.t(),
+          :global | {String.t() | atom(), String.t()},
+          atom() | String.t()
+        ) ::
           list(map())
   def get_rate_limit_status(key_value, scope, rate_limit_key) do
     RateLimiter.get_rate_limit_status(key_value, scope, rate_limit_key)
@@ -462,19 +470,26 @@ defmodule PhoenixGenApi do
     IO.puts("\n=== Rate Limit Status for #{user_id} ===\n")
 
     IO.puts("Global Limits:")
+
     get_rate_limit_status(user_id, :global, :user_id)
     |> Enum.each(fn info ->
-      IO.puts("  Scope: #{inspect(info.scope)} | Used: #{info.current_requests}/#{info.max_requests} | Remaining: #{info.remaining}")
+      IO.puts(
+        "  Scope: #{inspect(info.scope)} | Used: #{info.current_requests}/#{info.max_requests} | Remaining: #{info.remaining}"
+      )
     end)
 
     IO.puts("\nAPI Limits:")
+
     get_rate_limit_config().api
     |> Enum.filter(&(&1.key == :user_id))
     |> Enum.each(fn limit ->
       scope = {limit.service, limit.request_type}
       status = get_rate_limit_status(user_id, scope, :user_id)
+
       Enum.each(status, fn info ->
-        IO.puts("  #{limit.service}/#{limit.request_type} | Used: #{info.current_requests}/#{info.max_requests} | Remaining: #{info.remaining}")
+        IO.puts(
+          "  #{limit.service}/#{limit.request_type} | Used: #{info.current_requests}/#{info.max_requests} | Remaining: #{info.remaining}"
+        )
       end)
     end)
 
@@ -500,10 +515,12 @@ defmodule PhoenixGenApi do
   """
   def rl_global() do
     IO.puts("\n=== Global Rate Limits ===\n")
+
     get_global_limits()
     |> Enum.each(fn l ->
       IO.puts("  Key: #{inspect(l.key)} | Max: #{l.max_requests} | Window: #{l.window_ms}ms")
     end)
+
     :ok
   end
 
@@ -536,13 +553,19 @@ defmodule PhoenixGenApi do
     config = get_rate_limit_config()
     IO.puts("\n=== Rate Limit Configuration ===\n")
     IO.puts("Global Limits:")
+
     Enum.each(config.global, fn l ->
       IO.puts("  Key: #{inspect(l.key)} | Max: #{l.max_requests} | Window: #{l.window_ms}ms")
     end)
+
     IO.puts("\nAPI Limits:")
+
     Enum.each(config.api, fn l ->
-      IO.puts("  #{l.service}/#{l.request_type} | Key: #{inspect(l.key)} | Max: #{l.max_requests} | Window: #{l.window_ms}ms")
+      IO.puts(
+        "  #{l.service}/#{l.request_type} | Key: #{inspect(l.key)} | Max: #{l.max_requests} | Window: #{l.window_ms}ms"
+      )
     end)
+
     :ok
   end
 
@@ -573,24 +596,89 @@ defmodule PhoenixGenApi do
     stream_status = PhoenixGenApi.WorkerPool.status(:stream_pool)
 
     IO.puts("Async Pool:")
-    IO.puts("  Idle: #{async_status.idle_workers} | Busy: #{async_status.busy_workers} | Queued: #{async_status.queued_tasks}")
+
+    IO.puts(
+      "  Idle: #{async_status.idle_workers} | Busy: #{async_status.busy_workers} | Queued: #{async_status.queued_tasks}"
+    )
+
     IO.puts("  Circuit Open: #{async_status.circuit_open}")
 
     IO.puts("\nStream Pool:")
-    IO.puts("  Idle: #{stream_status.idle_workers} | Busy: #{stream_status.busy_workers} | Queued: #{stream_status.queued_tasks}")
+
+    IO.puts(
+      "  Idle: #{stream_status.idle_workers} | Busy: #{stream_status.busy_workers} | Queued: #{stream_status.queued_tasks}"
+    )
+
     IO.puts("  Circuit Open: #{stream_status.circuit_open}")
     :ok
   end
 
-
-
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts] do
       use PhoenixGenApi.ImplHelper,
-        encoder: Module.concat(Application.get_env(:phoenix, :json_library, JSON), Encoder),
+        encoder: Module.concat(Application.compile_env(:phoenix, :json_library, JSON), Encoder),
         impl: [
           PhoenixGenApi.Structs.Response
         ]
+
+      @phoenix_gen_api_override_user_id Keyword.get(opts, :override_user_id, true)
+      @phoenix_gen_api_event Keyword.get(opts, :event, "phoenix_gen_api")
+
+      require Logger
+
+      @impl true
+      @doc false
+      def handle_in(@phoenix_gen_api_event, payload, socket) do
+        Logger.debug(fn ->
+          "PhoenixGenApi, #{__MODULE__}, request: #{inspect(payload)}"
+        end)
+
+        payload =
+          if @phoenix_gen_api_override_user_id do
+            Map.put(payload, "user_id", socket.assigns.user_id)
+          else
+            payload
+          end
+
+        request = PhoenixGenApi.Structs.Request.decode!(payload)
+
+        case PhoenixGenApi.Executor.execute!(request) do
+          %PhoenixGenApi.Structs.Response{} = result ->
+            push(socket, @phoenix_gen_api_event, result)
+
+          {:ok, :no_response} ->
+            :ok
+        end
+
+        {:reply, {:ok, "#{request.request_type}"}, socket}
+      end
+
+      @doc false
+      @impl true
+      def handle_info({:push, result}, socket) do
+        Logger.debug(fn -> "PhoenixGenApi, #{__MODULE__}, push result: #{inspect(result)}" end)
+        push(socket, @phoenix_gen_api_event, result)
+        {:noreply, socket}
+      end
+
+      @doc false
+      def handle_info({:stream_response, result}, socket) do
+        Logger.debug(fn ->
+          "PhoenixGenApi, #{__MODULE__}, stream response: #{inspect(result)}"
+        end)
+
+        push(socket, @phoenix_gen_api_event, result)
+        {:noreply, socket}
+      end
+
+      @doc false
+      def handle_info({:async_call, result}, socket) do
+        Logger.debug(fn ->
+          "PhoenixGenApi, #{__MODULE__}, async call result: #{inspect(result)}" end)
+
+        push(socket, @phoenix_gen_api_event, result)
+        {:noreply, socket}
+      end
     end
   end
 end

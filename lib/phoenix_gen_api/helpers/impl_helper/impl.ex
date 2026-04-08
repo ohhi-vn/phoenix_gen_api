@@ -10,7 +10,7 @@ defmodule PhoenixGenApi.ImplHelper do
   Usage:
 
   ```Elixir
-  use PhoenixGenApi.ImplHelper, encoder: ToonEx, impl: [AModule1, AModule2, ...]
+  use PhoenixGenApi.ImplHelper, encoder: JSON.Encoder, impl: [AModule1, AModule2, ...]
   ```
 
   Using macro without option in `use` keyword.
@@ -18,6 +18,8 @@ defmodule PhoenixGenApi.ImplHelper do
   Generate implementation from struct for JSON.Encoder like this:
 
   ```Elixir
+  require PhoenixGenApi.ImplHelper
+
   gen_impl JSON.Encoder, AModule
   ```
   """
@@ -27,7 +29,7 @@ defmodule PhoenixGenApi.ImplHelper do
       list_module = Keyword.get(opts, :impl, [])
       encoder = Keyword.get(opts, :encoder)
 
-      if (encoder == nil), do: raise "missing encoder option"
+      if encoder == nil, do: raise("missing encoder option")
 
       for module <- list_module do
         PhoenixGenApi.ImplHelper.gen_impl(encoder, module)

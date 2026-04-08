@@ -137,52 +137,23 @@ config :phoenix_gen_api, :rate_limiter,
   ]
 ```
 
-In Phoenix Channel you can add a lit of bit code like:
+In Phoenix Channel you can add add this line for apply PhoenixGenApi:
 
 ```Elixir
-use  PhoenixGenApi
-
-@impl true
-def handle_in("phoenix_gen_api", payload, socket) do
-  result =
-    payload
-    |> Map.put("user_id", socket.assigns.user_id) # avoid security issue.
-    |> PhoenixGenApi.Executor.execute_params()
-
-    case result do
-      result = %Response{} ->
-
-      # not a final result for async/stream call.
-      push(socket, "gen_api_result", result)
-
-    # request type is :none, no response.
-    {:ok, :none} ->
-      :ok
-    end
-
-  {:noreply, socket}
-end
-
-@impl true
-def handle_info({:push, result}, socket) do
-  push(socket, "phoenix_gen_api_result", result)
-
-  {:noreply, socket}
-end
-
-def handle_info({:async_call, result = %Response{}}, socket) do
-  push(socket, "phoenix_gen_api_result", result)
-
-  {:noreply, socket}
-end
-
-# For receiving data from stream.
-def handle_info({:stream_response, result}, socket) do
-  push(socket, "gen_api_result", result)
-
-  {:noreply, socket}
-end
+use  PhoenixGenApi, event: "phoenix_gen_api"
 ```
+
+Follow functions will be expanded and reserved for PhoenixGenApi.
+
+```Elixir
+handle_in("phoenix_gen_api", payload, socket) 
+handle_info({:push, result}, socket)
+handle_info({:async_call, result = %Response{}}, socket)
+handle_info({:stream_response, result}, socket)
+```
+
+Default PhoenixGenApi will overwrite user_id in `Request`.
+Disable this by add option: `override_user_id: false` to `use PhoenixGenApi`
 
 In this case, if need you can authenticate by using Phoenix framework.
 
