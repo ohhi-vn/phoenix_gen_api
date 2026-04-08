@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "2.2.0",
+      version: "2.3.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -33,7 +33,6 @@ defmodule PhoenixGenApi.MixProject do
   defp deps do
     [
       {:nestru, "~> 1.0"},
-      {:toon_ex, "~> 0.5"},
       {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:benchee, "~> 1.5", only: :dev},
@@ -54,7 +53,7 @@ defmodule PhoenixGenApi.MixProject do
   end
 
   defp description() do
-    "A library for fast develop APIs for backend side, using Phoenix Channels for transport data, auto pull configs from service nodes. Scalable and easy to use."
+    "A library for fast develop APIs for backend side run in Elixir cluster, using Phoenix Channels for transport data, auto pull configs from service nodes."
   end
 
   defp docs do

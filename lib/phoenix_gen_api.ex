@@ -54,6 +54,7 @@ defmodule PhoenixGenApi do
       PhoenixGenApi.ConfigDb.add(config)
 
   ### Execute Requests
+      use PhoenixGenApi
 
       # Create a request
       request = %PhoenixGenApi.Structs.Request{
@@ -579,5 +580,17 @@ defmodule PhoenixGenApi do
     IO.puts("  Idle: #{stream_status.idle_workers} | Busy: #{stream_status.busy_workers} | Queued: #{stream_status.queued_tasks}")
     IO.puts("  Circuit Open: #{stream_status.circuit_open}")
     :ok
+  end
+
+
+
+  defmacro __using__(opts) do
+    quote location: :keep, bind_quoted: [opts: opts] do
+      use PhoenixGenApi.ImplHelper,
+        encoder: Module.concat(Application.get_env(:phoenix, :json_library, JSON), Encoder),
+        impl: [
+          PhoenixGenApi.Structs.Response
+        ]
+    end
   end
 end

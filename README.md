@@ -140,6 +140,8 @@ config :phoenix_gen_api, :rate_limiter,
 In Phoenix Channel you can add a lit of bit code like:
 
 ```Elixir
+use  PhoenixGenApi
+
 @impl true
 def handle_in("phoenix_gen_api", payload, socket) do
   result =

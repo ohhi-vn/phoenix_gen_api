@@ -456,6 +456,11 @@ defmodule PhoenixGenApi.RateLimiter do
         ]
       })
   """
+  @spec update_config(map()) :: :ok
+  def update_config(config) when is_map(config) do
+    GenServer.call(__MODULE__, {:update_config, config})
+  end
+
   @doc """
   Clears all rate limit data from ETS tables.
 
@@ -464,11 +469,6 @@ defmodule PhoenixGenApi.RateLimiter do
   @spec clear() :: :ok
   def clear() do
     GenServer.call(__MODULE__, :clear)
-  end
-
-  @spec update_config(map()) :: :ok
-  def update_config(config) when is_map(config) do
-    GenServer.call(__MODULE__, {:update_config, config})
   end
 
   ### Callbacks

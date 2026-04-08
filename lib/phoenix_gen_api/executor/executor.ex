@@ -273,29 +273,34 @@ defmodule PhoenixGenApi.Executor do
     nodes = get_nodes_list(fun_config, request)
     rpc_timeout = get_rpc_timeout(fun_config)
 
-    execute_remote_with_fallback(nodes, mod, fun, args, rpc_timeout, request.request_id)
+    execute_remote_with_fallback(nodes, nodes, mod, fun, args, rpc_timeout, request.request_id)
   end
 
-  defp execute_remote_with_fallback([], _mod, _fun, _args, _timeout, _request_id) do
+  defp execute_remote_with_fallback([], [], _mod, _fun, _args, _timeout, _request_id) do
     Logger.error("PhoenixGenApi.Executor, no nodes available for remote execution")
     {:error, "no target nodes available"}
   end
 
-  defp execute_remote_with_fallback([node | remaining_nodes], mod, fun, args, timeout, request_id) do
+  defp execute_remote_with_fallback([], all_nodes, mod, fun, args, timeout, request_id) do
+    # rotate nodes
+    execute_remote_with_fallback(all_nodes, all_nodes, mod, fun, args, timeout, request_id)
+  end
+
+  defp execute_remote_with_fallback([node | remaining_nodes], all_nodes, mod, fun, args, timeout, request_id) do
     case :rpc.call(node, mod, fun, args, timeout) do
       {:badrpc, :timeout} ->
         Logger.warning(
           "PhoenixGenApi.Executor, RPC timeout on node #{inspect(node)}, trying fallback"
         )
 
-        execute_remote_with_fallback(remaining_nodes, mod, fun, args, timeout, request_id)
+        execute_remote_with_fallback(remaining_nodes, all_nodes, mod, fun, args, timeout, request_id)
 
       {:badrpc, reason} ->
         Logger.warning(
           "PhoenixGenApi.Executor, RPC failed on node #{inspect(node)}: #{inspect(reason)}, trying fallback"
         )
 
-        execute_remote_with_fallback(remaining_nodes, mod, fun, args, timeout, request_id)
+        execute_remote_with_fallback(remaining_nodes, all_nodes, mod, fun, args, timeout, request_id)
 
       result ->
         result
