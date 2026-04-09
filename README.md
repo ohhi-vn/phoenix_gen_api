@@ -27,6 +27,7 @@ Supported basic check type & permission.
 - **Permission System**: Flexible authentication and authorization modes
 - **Worker Pools**: Dedicated pools for async and stream operations
 - **Node Selection**: Random, hash-based, and round-robin strategies
+- **Retry on failure**: Configurable retry with same-node or all-nodes strategies
 - **Response Types**: Sync, async, stream, and fire-and-forget
 
 ## Installation
@@ -519,6 +520,87 @@ request = %Request{
 - Missing arguments result in permission denial
 - All permission failures are logged for audit purposes
 - Permission checks happen before argument validation and function execution
+
+## Retry
+
+PhoenixGenApi supports configurable retry behavior when request execution fails. The `retry` field in `FunConfig` controls how failed requests are retried.
+
+### Retry Configuration
+
+The `retry` field accepts the following values:
+
+| Value | Meaning |
+|-------|---------|
+| `nil` | No retry (default, backward compatible) |
+| `3` (number) | Equivalent to `{:all_nodes, 3}` — retry across all available nodes |
+| `{:same_node, 2}` | Retry on the same node(s) originally selected by `choose_node_mode` |
+| `{:all_nodes, 3}` | Retry across all available nodes in the cluster |
+
+### How It Works
+
+When a request execution fails (returns `{:error, _}` or `{:error, _, _}`), the executor retries according to the retry configuration:
+
+- **`{:same_node, n}`**: Retries the request on the same node(s) that were originally selected by the `choose_node_mode` strategy. This is useful when the failure might be transient (e.g., temporary network glitch).
+
+- **`{:all_nodes, n}`**: On each retry, fetches the full list of available nodes and tries all of them. This is useful when a node might be down and you want to try other nodes.
+
+- **Local execution**: For `nodes: :local`, both `:same_node` and `:all_nodes` retry on the same local machine since there's only one node.
+
+### Validation
+
+The `retry` field is validated as follows:
+
+- `nil` is valid (no retry)
+- A positive number is valid
+- `{:same_node, positive_number}` is valid
+- `{:all_nodes, positive_number}` is valid
+- Zero, negative numbers, strings, and other formats are invalid
+
+### Normalization
+
+`FunConfig.normalize_retry/1` converts the raw config to a standard format:
+
+| Input | Normalized |
+|-------|-----------|
+| `nil` | `nil` |
+| `3` | `{:all_nodes, 3}` |
+| `{:same_node, 2}` | `{:same_node, 2}` |
+| `{:all_nodes, 5}` | `{:all_nodes, 5}` |
+| `2.7` (float) | `{:all_nodes, 2}` (truncated) |
+
+### Telemetry
+
+Retry attempts emit telemetry events at `[:phoenix_gen_api, :executor, :retry]` with:
+
+- **measurements**: `%{attempt: n}` — the remaining retry count
+- **metadata**: `%{mode: :same_node | :all_nodes, type: :local | :remote}`
+
+```elixir
+:telemetry.attach(
+  "retry-monitor",
+  [:phoenix_gen_api, :executor, :retry],
+  fn _event, measurements, metadata, _config ->
+    Logger.info("Retry attempt #{measurements.attempt}, mode: #{metadata.mode}, type: #{metadata.type}")
+  end,
+  %{}
+)
+```
+
+### Example FunConfig with Retry
+
+```elixir
+%FunConfig{
+  request_type: "get_data",
+  service: "my_service",
+  nodes: [:"node1@host", :"node2@host", :"node3@host"],
+  choose_node_mode: :random,
+  timeout: 5_000,
+  mfa: {MyApp.Interface.Api, :get_data, []},
+  arg_types: %{"id" => :string},
+  response_type: :sync,
+  retry: {:all_nodes, 3}  # Retry up to 3 times across all available nodes
+}
+```
 
 ## Full Example
 

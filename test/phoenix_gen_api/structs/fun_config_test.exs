@@ -185,6 +185,172 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
 
       assert false == FunConfig.valid?(fun)
     end
+
+    test "valid retry with nil" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: nil
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid retry with number" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: 3
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid retry with {:same_node, number}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: {:same_node, 2}
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid retry with {:all_nodes, number}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: {:all_nodes, 5}
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid retry with zero" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: 0
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid retry with negative number" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: -1
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid retry with wrong tuple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: {:other_mode, 3}
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid retry with string" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :async,
+        retry: "3"
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "normalize_retry/1" do
+    test "returns nil for nil" do
+      assert FunConfig.normalize_retry(nil) == nil
+    end
+
+    test "converts number to {:all_nodes, number}" do
+      assert FunConfig.normalize_retry(3) == {:all_nodes, 3}
+    end
+
+    test "converts float to {:all_nodes, truncated}" do
+      assert FunConfig.normalize_retry(3.7) == {:all_nodes, 3}
+    end
+
+    test "returns {:same_node, n} as-is" do
+      assert FunConfig.normalize_retry({:same_node, 2}) == {:same_node, 2}
+    end
+
+    test "returns {:all_nodes, n} as-is" do
+      assert FunConfig.normalize_retry({:all_nodes, 5}) == {:all_nodes, 5}
+    end
+
+    test "truncates float in {:same_node, n}" do
+      assert FunConfig.normalize_retry({:same_node, 2.9}) == {:same_node, 2}
+    end
+
+    test "truncates float in {:all_nodes, n}" do
+      assert FunConfig.normalize_retry({:all_nodes, 5.5}) == {:all_nodes, 5}
+    end
   end
 
   describe "version/1" do
@@ -206,19 +372,20 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
     test "returns default 0.0.0 for old configs without :version key" do
       # Simulate old FunConfig struct from remote node without :version key
       # This happens when old nodes send configs via RPC
-      config = struct(FunConfig, %{
-        request_type: "test",
-        service: "test_service",
-        nodes: [Node.self()],
-        choose_node_mode: :random,
-        timeout: 5000,
-        mfa: {String, :upcase, []},
-        arg_types: %{},
-        arg_orders: [],
-        response_type: :sync,
-        check_permission: false,
-        request_info: false
-      })
+      config =
+        struct(FunConfig, %{
+          request_type: "test",
+          service: "test_service",
+          nodes: [Node.self()],
+          choose_node_mode: :random,
+          timeout: 5000,
+          mfa: {String, :upcase, []},
+          arg_types: %{},
+          arg_orders: [],
+          response_type: :sync,
+          check_permission: false,
+          request_info: false
+        })
 
       # Remove the :version key to simulate old struct from RPC
       config_without_version = Map.delete(config, :version)

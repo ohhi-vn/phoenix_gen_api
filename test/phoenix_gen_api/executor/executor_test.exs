@@ -102,7 +102,7 @@ defmodule PhoenixGenApi.ExecutorTest do
       result = Executor.execute!(request)
 
       assert result.success == true
-      assert result.result == {:ok, "Hello Bob, age 25"}
+      assert result.result == "Hello Bob, age 25"
     end
 
     test "returns error when function is disabled" do
@@ -178,7 +178,7 @@ defmodule PhoenixGenApi.ExecutorTest do
       result = Executor.execute!(request)
 
       assert result.success == true
-      assert result.result == {:ok, "Hello Dave, age 28"}
+      assert result.result == "Hello Dave, age 28"
     end
 
     test "disabling one version does not affect other versions" do
@@ -246,7 +246,7 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       result_v2 = Executor.execute!(request_v2)
       assert result_v2.success == true
-      assert result_v2.result == {:ok, "Hello Frank, age 35"}
+      assert result_v2.result == "Hello Frank, age 35"
     end
 
     test "defaults to version 0.0.0 when version is nil in request" do
@@ -281,7 +281,7 @@ defmodule PhoenixGenApi.ExecutorTest do
       result = Executor.execute!(request)
 
       assert result.success == true
-      assert result.result == {:ok, "Hello Grace, age 40"}
+      assert result.result == "Hello Grace, age 40"
     end
 
     test "executes sync call successfully" do
@@ -313,7 +313,7 @@ defmodule PhoenixGenApi.ExecutorTest do
       result = Executor.execute!(request)
 
       assert result.success == true
-      assert result.result == {:ok, "Hello Alice, age 30"}
+      assert result.result == "Hello Alice, age 30"
     end
 
     test "executes sync call with request_info" do
@@ -475,7 +475,7 @@ defmodule PhoenixGenApi.ExecutorTest do
       result = Executor.execute_params!(params)
 
       assert result.success == true
-      assert result.result == {:ok, "Hello Eve, age 28"}
+      assert result.result == "Hello Eve, age 28"
     end
   end
 

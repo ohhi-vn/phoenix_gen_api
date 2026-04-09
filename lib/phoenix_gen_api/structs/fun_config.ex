@@ -5,6 +5,28 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   This struct holds all the necessary information to route, validate, and execute
   a function call based on an incoming request.
 
+  ## Retry
+
+  The `retry` field configures retry behavior when request execution fails
+  (returns `{:error, _}` or `{:error, _, _}`).
+
+  Possible values:
+
+  - `nil` - No retry (default, backward compatible)
+  - A positive number (e.g., `3`) - Equivalent to `{:all_nodes, 3}`.
+    Retry across all available nodes.
+  - `{:same_node, positive_number}` (e.g., `{:same_node, 2}`) - Retry on the
+    same node(s) that were originally selected by the `choose_node_mode` strategy.
+    Useful when the failure might be transient.
+  - `{:all_nodes, positive_number}` (e.g., `{:all_nodes, 3}`) - Retry across
+    all available nodes in the cluster. Useful when a node might be down.
+
+  For `nodes: :local`, both `:same_node` and `:all_nodes` retry on the same
+  local machine since there's only one node.
+
+  Use `normalize_retry/1` to convert a raw config value to the standard tuple
+  format. Zero, negative numbers, strings, and other formats are invalid.
+
   ## Security Considerations
 
   - MFA tuples are validated to ensure modules are loaded and functions exist
@@ -36,7 +58,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           check_permission: false | :any_authenticated | {:arg, String.t()} | {:role, list()},
           request_info: boolean(),
           version: String.t(),
-          disabled: boolean()
+          disabled: boolean(),
+          retry: {:same_node, number()} | {:all_nodes, number()} | number() | nil
         }
 
   defstruct [
@@ -52,7 +75,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     request_info: false,
     check_permission: false,
     version: "0.0.0",
-    disabled: false
+    disabled: false,
+    retry: nil
   ]
 
   @doc """
@@ -129,7 +153,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       response_type: config.response_type in [:sync, :async, :stream, :none],
       check_permission: valid_check_permission?(config.check_permission, config.arg_types),
       request_info: is_boolean(config.request_info),
-      version: valid_version?(config.version)
+      version: valid_version?(config.version),
+      retry: valid_retry?(config.retry)
     ]
 
     invalid_keys =
@@ -186,7 +211,10 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
     errors =
       unless valid_timeout?(config.timeout) do
-        ["timeout must be a positive integer between #{@min_timeout} and #{@max_timeout}, or :infinity" | errors]
+        [
+          "timeout must be a positive integer between #{@min_timeout} and #{@max_timeout}, or :infinity"
+          | errors
+        ]
       else
         errors
       end
@@ -213,7 +241,10 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
     errors =
       unless valid_check_permission?(config.check_permission, config.arg_types) do
-        ["check_permission must be false, :any_authenticated, {:arg, arg_name}, or {:role, roles}" | errors]
+        [
+          "check_permission must be false, :any_authenticated, {:arg, arg_name}, or {:role, roles}"
+          | errors
+        ]
       else
         errors
       end
@@ -232,6 +263,16 @@ defmodule PhoenixGenApi.Structs.FunConfig do
         errors
       end
 
+    errors =
+      unless valid_retry?(config.retry) do
+        [
+          "retry must be nil, a positive number, {:same_node, number}, or {:all_nodes, number}"
+          | errors
+        ]
+      else
+        errors
+      end
+
     if Enum.empty?(errors) do
       {:ok, config}
     else
@@ -239,7 +280,9 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     end
   end
 
-  defp valid_request_type?(request_type) when is_binary(request_type) and byte_size(request_type) > 0, do: true
+  defp valid_request_type?(request_type)
+       when is_binary(request_type) and byte_size(request_type) > 0, do: true
+
   defp valid_request_type?(_), do: false
 
   defp valid_nodes?(:local), do: true
@@ -266,8 +309,9 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   defp valid_timeout?(:infinity), do: true
 
-  defp valid_timeout?(timeout) when is_integer(timeout) and timeout >= @min_timeout and timeout <= @max_timeout,
-    do: true
+  defp valid_timeout?(timeout)
+       when is_integer(timeout) and timeout >= @min_timeout and timeout <= @max_timeout,
+       do: true
 
   defp valid_timeout?(_), do: false
 
@@ -309,7 +353,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_args?(_arg_types, nil), do: false
 
   defp valid_args?(arg_types, arg_orders)
-       when is_map(arg_types) and is_list(arg_orders) and map_size(arg_types) != length(arg_orders),
+       when is_map(arg_types) and is_list(arg_orders) and
+              map_size(arg_types) != length(arg_orders),
        do: false
 
   defp valid_args?(arg_types, arg_orders) when is_map(arg_types) and is_list(arg_orders) do
@@ -321,11 +366,46 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_version?(version) when is_binary(version) and byte_size(version) > 0, do: true
   defp valid_version?(_), do: false
 
+  defp valid_retry?(nil), do: true
+  defp valid_retry?(n) when is_number(n) and n > 0, do: true
+  defp valid_retry?({:same_node, n}) when is_number(n) and n > 0, do: true
+  defp valid_retry?({:all_nodes, n}) when is_number(n) and n > 0, do: true
+  defp valid_retry?(_), do: false
+
+  @doc """
+  Normalizes the retry configuration into a standard tuple format.
+
+  - `nil` remains `nil` (no retry)
+  - A number `n` is converted to `{:all_nodes, n}`
+  - `{:same_node, n}` and `{:all_nodes, n}` are returned as-is
+
+  ## Examples
+
+      iex> FunConfig.normalize_retry(nil)
+      nil
+
+      iex> FunConfig.normalize_retry(3)
+      {:all_nodes, 3}
+
+      iex> FunConfig.normalize_retry({:same_node, 2})
+      {:same_node, 2}
+
+      iex> FunConfig.normalize_retry({:all_nodes, 5})
+      {:all_nodes, 5}
+  """
+  @spec normalize_retry(nil | number() | {:same_node, number()} | {:all_nodes, number()}) ::
+          nil | {:same_node, pos_integer()} | {:all_nodes, pos_integer()}
+  def normalize_retry(nil), do: nil
+  def normalize_retry(n) when is_number(n), do: {:all_nodes, trunc(n)}
+  def normalize_retry({:same_node, n}) when is_number(n), do: {:same_node, trunc(n)}
+  def normalize_retry({:all_nodes, n}) when is_number(n), do: {:all_nodes, trunc(n)}
+
   defp validate_args_details(nil, nil), do: :ok
   defp validate_args_details(nil, arg_orders) when arg_orders == [] or arg_orders == nil, do: :ok
   defp validate_args_details(nil, _), do: {:error, "arg_types is nil but arg_orders is not empty"}
 
-  defp validate_args_details(arg_types, arg_orders) when is_map(arg_types) and map_size(arg_types) == 0 do
+  defp validate_args_details(arg_types, arg_orders)
+       when is_map(arg_types) and map_size(arg_types) == 0 do
     if arg_orders == [] or arg_orders == nil do
       :ok
     else
@@ -333,9 +413,11 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     end
   end
 
-  defp validate_args_details(arg_types, arg_orders) when is_map(arg_types) and is_list(arg_orders) do
+  defp validate_args_details(arg_types, arg_orders)
+       when is_map(arg_types) and is_list(arg_orders) do
     if map_size(arg_types) != length(arg_orders) do
-      {:error, "arg_types count (#{map_size(arg_types)}) does not match arg_orders count (#{length(arg_orders)})"}
+      {:error,
+       "arg_types count (#{map_size(arg_types)}) does not match arg_orders count (#{length(arg_orders)})"}
     else
       args_set = MapSet.new(Map.keys(arg_types))
       orders_set = MapSet.new(arg_orders)

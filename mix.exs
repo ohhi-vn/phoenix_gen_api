@@ -4,10 +4,11 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "2.4.0",
+      version: "2.5.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
 
       # Docs
       name: "PhoenixGenApi",
@@ -53,7 +54,7 @@ defmodule PhoenixGenApi.MixProject do
   end
 
   defp description() do
-    "A library for fast develop APIs for backend side run in Elixir cluster, using Phoenix Channels for transport data, auto pull configs from service nodes."
+    "A library for fast develop APIs in Elixir cluster, using Phoenix Channels for transport data, auto pull api configs from service nodes."
   end
 
   defp docs do
@@ -62,6 +63,10 @@ defmodule PhoenixGenApi.MixProject do
       extras: extras()
     ]
   end
+
+  # Specifies which paths to compile per environment.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   defp extras do
     list =

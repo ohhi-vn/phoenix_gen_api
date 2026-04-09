@@ -22,6 +22,31 @@ defmodule PhoenixGenApi.Executor do
 
   When executing on remote nodes, if the primary node fails, the executor
   will attempt to fall back to another available node (if configured).
+
+  ## Retry
+
+  When a request execution fails (returns `{:error, _}` or `{:error, _, _}`),
+  the executor can retry according to the `retry` field in `FunConfig`.
+
+  - **`{:same_node, n}`**: Retries the request on the same node(s) that were
+    originally selected by the `choose_node_mode` strategy. Useful when the
+    failure might be transient (e.g., temporary network glitch).
+
+  - **`{:all_nodes, n}`**: On each retry, fetches the full list of available
+    nodes and tries all of them. Useful when a node might be down and you
+    want to try other nodes.
+
+  - **Local execution**: For `nodes: :local`, both `:same_node` and
+    `:all_nodes` retry on the same local machine since there's only one node.
+
+  - **Shorthand**: A plain number (e.g., `3`) is equivalent to
+    `{:all_nodes, 3}`.
+
+  - **`nil`**: No retry (default, backward compatible).
+
+  Retry attempts emit telemetry events at `[:phoenix_gen_api, :executor, :retry]`
+  with measurements `%{attempt: n}` and metadata
+  `%{mode: :same_node | :all_nodes, type: :local | :remote}`.
   """
 
   alias PhoenixGenApi.Structs.{Request, FunConfig, Response}
@@ -57,9 +82,27 @@ defmodule PhoenixGenApi.Executor do
   """
   def attach_telemetry(handler_id, function, config \\ %{})
       when is_binary(handler_id) and is_function(function, 4) do
-    :telemetry.attach("#{handler_id}-start", [:phoenix_gen_api, :executor, :request, :start], function, config)
-    :telemetry.attach("#{handler_id}-stop", [:phoenix_gen_api, :executor, :request, :stop], function, config)
-    :telemetry.attach("#{handler_id}-exception", [:phoenix_gen_api, :executor, :request, :exception], function, config)
+    :telemetry.attach(
+      "#{handler_id}-start",
+      [:phoenix_gen_api, :executor, :request, :start],
+      function,
+      config
+    )
+
+    :telemetry.attach(
+      "#{handler_id}-stop",
+      [:phoenix_gen_api, :executor, :request, :stop],
+      function,
+      config
+    )
+
+    :telemetry.attach(
+      "#{handler_id}-exception",
+      [:phoenix_gen_api, :executor, :request, :exception],
+      function,
+      config
+    )
+
     :ok
   end
 
@@ -112,7 +155,9 @@ defmodule PhoenixGenApi.Executor do
             execute_with_config!(request, fun_config)
 
           {:error, :not_found} ->
-            Logger.warning("PhoenixGenApi.Executor, unsupported function: #{request.request_type} version #{version}")
+            Logger.warning(
+              "PhoenixGenApi.Executor, unsupported function: #{request.request_type} version #{version}"
+            )
 
             Response.error_response(
               request.request_id,
@@ -120,7 +165,9 @@ defmodule PhoenixGenApi.Executor do
             )
 
           {:error, :disabled} ->
-            Logger.warning("PhoenixGenApi.Executor, disabled function: #{request.request_type} version #{version}")
+            Logger.warning(
+              "PhoenixGenApi.Executor, disabled function: #{request.request_type} version #{version}"
+            )
 
             Response.error_response(
               request.request_id,
@@ -238,7 +285,10 @@ defmodule PhoenixGenApi.Executor do
         Response.error_response(request.request_id, get_error_message(reason))
 
       kind, reason ->
-        Logger.error("PhoenixGenApi.Executor, sync_call caught #{inspect(kind)}: #{inspect(reason)}")
+        Logger.error(
+          "PhoenixGenApi.Executor, sync_call caught #{inspect(kind)}: #{inspect(reason)}"
+        )
+
         Response.error_response(request.request_id, get_error_message(reason))
     end
   end
@@ -248,12 +298,13 @@ defmodule PhoenixGenApi.Executor do
     {mod, fun, predefined_args} = fun_config.mfa
 
     final_args = predefined_args ++ args ++ info_args(request, fun_config)
+    retry_config = FunConfig.normalize_retry(fun_config.retry)
 
     result =
       if FunConfig.is_local_service?(fun_config) do
-        execute_local(mod, fun, final_args, fun_config.timeout)
+        execute_local_with_retry(mod, fun, final_args, fun_config.timeout, retry_config)
       else
-        execute_remote(mod, fun, final_args, fun_config, request)
+        execute_remote_with_retry(mod, fun, final_args, fun_config, request, retry_config)
       end
 
     handle_call_result(result, request.request_id)
@@ -269,38 +320,207 @@ defmodule PhoenixGenApi.Executor do
     end
   end
 
-  defp execute_remote(mod, fun, args, fun_config, request) do
+  # Retry helpers for local execution
+
+  defp execute_local_with_retry(mod, fun, args, timeout, retry_config) do
+    result = execute_local(mod, fun, args, timeout)
+    apply_local_retry(result, mod, fun, args, timeout, retry_config)
+  end
+
+  defp apply_local_retry(result, mod, fun, args, timeout, retry_config) do
+    if is_retryable_error?(result) and has_retry_remaining?(retry_config) do
+      {mode, n} = retry_config
+
+      Logger.info("PhoenixGenApi.Executor, local retry (#{mode}), #{n} attempts remaining")
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :executor, :retry],
+        %{attempt: n},
+        %{mode: mode, type: :local}
+      )
+
+      new_result = execute_local(mod, fun, args, timeout)
+      apply_local_retry(new_result, mod, fun, args, timeout, {mode, n - 1})
+    else
+      result
+    end
+  end
+
+  # Retry helpers for remote execution
+
+  defp execute_remote_with_retry(mod, fun, args, fun_config, request, retry_config) do
     nodes = get_nodes_list(fun_config, request)
     rpc_timeout = get_rpc_timeout(fun_config)
 
-    execute_remote_with_fallback(nodes, nodes, mod, fun, args, rpc_timeout, request.request_id)
+    result = execute_remote_with_fallback(nodes, mod, fun, args, rpc_timeout, request.request_id)
+
+    apply_remote_retry(
+      result,
+      mod,
+      fun,
+      args,
+      fun_config,
+      request,
+      rpc_timeout,
+      nodes,
+      retry_config
+    )
   end
 
-  defp execute_remote_with_fallback([], [], _mod, _fun, _args, _timeout, _request_id) do
+  defp apply_remote_retry(
+         result,
+         mod,
+         fun,
+         args,
+         fun_config,
+         request,
+         rpc_timeout,
+         original_nodes,
+         {:same_node, n}
+       )
+       when n > 0 do
+    if is_retryable_error?(result) do
+      Logger.info("PhoenixGenApi.Executor, remote retry (same_node), #{n} attempts remaining")
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :executor, :retry],
+        %{attempt: n},
+        %{mode: :same_node, type: :remote, nodes: original_nodes}
+      )
+
+      # Retry on the same nodes that were originally selected
+      new_result =
+        execute_remote_with_fallback(
+          original_nodes,
+          mod,
+          fun,
+          args,
+          rpc_timeout,
+          request.request_id
+        )
+
+      apply_remote_retry(
+        new_result,
+        mod,
+        fun,
+        args,
+        fun_config,
+        request,
+        rpc_timeout,
+        original_nodes,
+        {:same_node, n - 1}
+      )
+    else
+      result
+    end
+  end
+
+  defp apply_remote_retry(
+         result,
+         mod,
+         fun,
+         args,
+         fun_config,
+         request,
+         rpc_timeout,
+         _original_nodes,
+         {:all_nodes, n}
+       )
+       when n > 0 do
+    if is_retryable_error?(result) do
+      # Retry on ALL available nodes
+      all_nodes = get_all_nodes_list(fun_config, request)
+
+      Logger.info("PhoenixGenApi.Executor, remote retry (all_nodes), #{n} attempts remaining")
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :executor, :retry],
+        %{attempt: n},
+        %{mode: :all_nodes, type: :remote, nodes: all_nodes}
+      )
+
+      new_result =
+        execute_remote_with_fallback(all_nodes, mod, fun, args, rpc_timeout, request.request_id)
+
+      apply_remote_retry(
+        new_result,
+        mod,
+        fun,
+        args,
+        fun_config,
+        request,
+        rpc_timeout,
+        all_nodes,
+        {:all_nodes, n - 1}
+      )
+    else
+      result
+    end
+  end
+
+  defp apply_remote_retry(
+         result,
+         _mod,
+         _fun,
+         _args,
+         _fun_config,
+         _request,
+         _rpc_timeout,
+         _original_nodes,
+         _retry_config
+       ) do
+    result
+  end
+
+  defp is_retryable_error?({:error, _}), do: true
+  defp is_retryable_error?({:error, _, _}), do: true
+  defp is_retryable_error?(_), do: false
+
+  defp has_retry_remaining?({:same_node, n}) when n > 0, do: true
+  defp has_retry_remaining?({:all_nodes, n}) when n > 0, do: true
+  defp has_retry_remaining?(_), do: false
+
+  defp execute_remote_with_fallback([], _mod, _fun, _args, _timeout, _request_id) do
     Logger.error("PhoenixGenApi.Executor, no nodes available for remote execution")
     {:error, "no target nodes available"}
   end
 
-  defp execute_remote_with_fallback([], all_nodes, mod, fun, args, timeout, request_id) do
-    # rotate nodes
-    execute_remote_with_fallback(all_nodes, all_nodes, mod, fun, args, timeout, request_id)
-  end
-
-  defp execute_remote_with_fallback([node | remaining_nodes], all_nodes, mod, fun, args, timeout, request_id) do
+  defp execute_remote_with_fallback(
+         [node | remaining_nodes],
+         mod,
+         fun,
+         args,
+         timeout,
+         request_id
+       ) do
     case :rpc.call(node, mod, fun, args, timeout) do
       {:badrpc, :timeout} ->
         Logger.warning(
           "PhoenixGenApi.Executor, RPC timeout on node #{inspect(node)}, trying fallback"
         )
 
-        execute_remote_with_fallback(remaining_nodes, all_nodes, mod, fun, args, timeout, request_id)
+        execute_remote_with_fallback(
+          remaining_nodes,
+          mod,
+          fun,
+          args,
+          timeout,
+          request_id
+        )
 
       {:badrpc, reason} ->
         Logger.warning(
           "PhoenixGenApi.Executor, RPC failed on node #{inspect(node)}: #{inspect(reason)}, trying fallback"
         )
 
-        execute_remote_with_fallback(remaining_nodes, all_nodes, mod, fun, args, timeout, request_id)
+        execute_remote_with_fallback(
+          remaining_nodes,
+          mod,
+          fun,
+          args,
+          timeout,
+          request_id
+        )
 
       result ->
         result
@@ -312,7 +532,9 @@ defmodule PhoenixGenApi.Executor do
       case fun_config.nodes do
         {m, f, a} ->
           case apply(m, f, a) do
-            nodes when is_list(nodes) -> %{fun_config | nodes: nodes}
+            nodes when is_list(nodes) ->
+              %{fun_config | nodes: nodes}
+
             other ->
               Logger.error("PhoenixGenApi.Executor, invalid nodes from MFA: #{inspect(other)}")
               %{fun_config | nodes: []}
@@ -322,7 +544,10 @@ defmodule PhoenixGenApi.Executor do
           fun_config
 
         _ ->
-          Logger.error("PhoenixGenApi.Executor, invalid nodes configuration: #{inspect(fun_config.nodes)}")
+          Logger.error(
+            "PhoenixGenApi.Executor, invalid nodes configuration: #{inspect(fun_config.nodes)}"
+          )
+
           %{fun_config | nodes: []}
       end
 
@@ -341,7 +566,10 @@ defmodule PhoenixGenApi.Executor do
           hash_order = :erlang.phash2(value, length(config_with_nodes.nodes))
           [Enum.at(config_with_nodes.nodes, hash_order)]
         else
-          Logger.error("PhoenixGenApi.Executor, hash key #{inspect(hash_key)} not found in request")
+          Logger.error(
+            "PhoenixGenApi.Executor, hash key #{inspect(hash_key)} not found in request"
+          )
+
           config_with_nodes.nodes
         end
 
@@ -349,9 +577,39 @@ defmodule PhoenixGenApi.Executor do
         config_with_nodes.nodes
 
       _ ->
-        Logger.error("PhoenixGenApi.Executor, invalid choose_node_mode: #{inspect(config_with_nodes.choose_node_mode)}")
+        Logger.error(
+          "PhoenixGenApi.Executor, invalid choose_node_mode: #{inspect(config_with_nodes.choose_node_mode)}"
+        )
+
         config_with_nodes.nodes
     end
+  end
+
+  defp get_all_nodes_list(fun_config, _request) do
+    config_with_nodes =
+      case fun_config.nodes do
+        {m, f, a} ->
+          case apply(m, f, a) do
+            nodes when is_list(nodes) ->
+              %{fun_config | nodes: nodes}
+
+            other ->
+              Logger.error("PhoenixGenApi.Executor, invalid nodes from MFA: #{inspect(other)}")
+              %{fun_config | nodes: []}
+          end
+
+        nodes when is_list(nodes) ->
+          fun_config
+
+        _ ->
+          Logger.error(
+            "PhoenixGenApi.Executor, invalid nodes configuration: #{inspect(fun_config.nodes)}"
+          )
+
+          %{fun_config | nodes: []}
+      end
+
+    config_with_nodes.nodes
   end
 
   defp get_rpc_timeout(fun_config) do
@@ -391,6 +649,11 @@ defmodule PhoenixGenApi.Executor do
     Response.error_response(request_id, get_error_message(reason))
   end
 
+  defp handle_call_result({:ok, result}, request_id) do
+    Response.sync_response(request_id, result)
+  end
+
+  # action as successful request.
   defp handle_call_result(result, request_id) do
     Response.sync_response(request_id, result)
   end
@@ -441,7 +704,11 @@ defmodule PhoenixGenApi.Executor do
     # Use worker pool for stream execution
     task = fn ->
       try do
-        case StreamCall.start_link(%{request: request, fun_config: fun_config, receiver: receiver}) do
+        case StreamCall.start_link(%{
+               request: request,
+               fun_config: fun_config,
+               receiver: receiver
+             }) do
           {:ok, pid} ->
             # Store the stream PID for potential cancellation
             send(receiver, {:stream_started, request_id, pid})
@@ -483,9 +750,8 @@ defmodule PhoenixGenApi.Executor do
       end
     end
 
-    case PhoenixGenApi.WorkerPool.execute_async(:stream_pool, task) do
+    case PhoenixGenApi.WorkerPool.execute_async(:async_pool, task) do
       :ok ->
-        # Wait for stream to actually start or fail
         receive do
           {:stream_started, ^request_id, pid} ->
             Process.put({:phoenix_gen_api, :stream_call_pid, request_id}, pid)
@@ -539,9 +805,14 @@ defmodule PhoenixGenApi.Executor do
     task = Task.async(fn -> execute!(request) end)
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
-      {:ok, result} -> result
-      nil -> Response.error_response(request.request_id, "Request timed out after #{timeout}ms")
-      {:exit, reason} -> Response.error_response(request.request_id, "Request failed: #{inspect(reason)}")
+      {:ok, result} ->
+        result
+
+      nil ->
+        Response.error_response(request.request_id, "Request timed out after #{timeout}ms")
+
+      {:exit, reason} ->
+        Response.error_response(request.request_id, "Request failed: #{inspect(reason)}")
     end
   end
 end

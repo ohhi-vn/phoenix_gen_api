@@ -90,4 +90,21 @@ defmodule PhoenixGenApi.Structs.Response do
   def encode!(res = %__MODULE__{}, _opts) do
     encode!(res)
   end
+
+  def encode(res = %__MODULE__{}, _opts) do
+    try do
+      encode!(res)
+    rescue
+      _ -> {:error, "cannot convert to map type"}
+    end
+  end
+
+  # special impl for JSON library
+  defimpl JSON.Encoder, for: PhoenixGenApi.Structs.Response do
+    def encode(data, opts) do
+      data
+      |> PhoenixGenApi.Structs.Response.encode!(opts)
+      |> JSON.encode!()
+    end
+  end
 end
