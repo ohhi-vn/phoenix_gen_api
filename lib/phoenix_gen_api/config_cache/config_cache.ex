@@ -364,7 +364,7 @@ defmodule PhoenixGenApi.ConfigDb do
 
   @impl true
   def init(_opts) do
-    access = if Mix.env() == :test, do: :public, else: :protected
+    access = :public
 
     :ets.new(__MODULE__, [
       access,
@@ -431,7 +431,6 @@ defmodule PhoenixGenApi.ConfigDb do
         Logger.warning(
           "PhoenixGenApi.ConfigDb, enable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}"
         )
-
         {:reply, {:error, :not_found}, state}
     end
   end
