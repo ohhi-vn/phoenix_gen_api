@@ -52,8 +52,9 @@ defmodule PhoenixGenApi.ConfigDb do
   @doc """
   Adds a new function configuration to the cache.
 
-  The configuration is validated before insertion. If validation fails,
-  an error is logged and `{:error, :invalid_config}` is returned.
+  Validation is performed on the calling process. The ETS write is then done
+  directly (safe because the table has `write_concurrency: true`) without
+  routing through the GenServer mailbox, keeping throughput high under load.
 
   ## Returns
 
@@ -63,10 +64,60 @@ defmodule PhoenixGenApi.ConfigDb do
   @spec add(FunConfig.t()) :: :ok | {:error, :invalid_config}
   def add(config = %FunConfig{}) do
     if FunConfig.valid?(config) do
-      GenServer.call(__MODULE__, {:add, config})
+      version = FunConfig.version(config)
+      :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
+
+      Logger.debug(
+        "PhoenixGenApi.ConfigDb, added config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}"
+      )
+
+      :ok
     else
       Logger.error("PhoenixGenApi.ConfigDb, add, invalid config: #{inspect(config)}")
       {:error, :invalid_config}
+    end
+  end
+
+  @doc """
+  Adds multiple function configurations to the cache in a single ETS call.
+
+  Each config is validated on the calling process. All valid configs are then
+  inserted atomically in one `:ets.insert/2` call, which is significantly faster
+  than calling `add/1` in a loop (avoids N GenServer round-trips and N ETS calls).
+
+  Invalid configs are logged and skipped; they do not abort the batch.
+
+  ## Returns
+
+    - `{:ok, count}` - Number of configs successfully inserted
+    - `{:error, :all_invalid}` - Every config in the batch failed validation
+  """
+  @spec batch_add([FunConfig.t()]) :: {:ok, non_neg_integer()} | {:error, :all_invalid}
+  def batch_add(configs) when is_list(configs) do
+    entries =
+      Enum.flat_map(configs, fn
+        config = %FunConfig{} ->
+          if FunConfig.valid?(config) do
+            version = FunConfig.version(config)
+            [{{config.service, config.request_type, version}, config}]
+          else
+            Logger.error("PhoenixGenApi.ConfigDb, batch_add, invalid config: #{inspect(config)}")
+            []
+          end
+
+        other ->
+          Logger.error("PhoenixGenApi.ConfigDb, batch_add, unexpected item: #{inspect(other)}")
+          []
+      end)
+
+    case entries do
+      [] ->
+        {:error, :all_invalid}
+
+      _ ->
+        :ets.insert(__MODULE__, entries)
+        Logger.debug("PhoenixGenApi.ConfigDb, batch_add inserted #{length(entries)} configs")
+        {:ok, length(entries)}
     end
   end
 
@@ -113,8 +164,9 @@ defmodule PhoenixGenApi.ConfigDb do
   Updates an existing function configuration in the cache.
   If the configuration does not exist, it will be added.
 
-  The configuration is validated before insertion. If validation fails,
-  an error is logged and `{:error, :invalid_config}` is returned.
+  Validation is performed on the calling process. The ETS write is then done
+  directly (safe because the table has `write_concurrency: true`) without
+  routing through the GenServer mailbox.
 
   ## Returns
 
@@ -124,7 +176,14 @@ defmodule PhoenixGenApi.ConfigDb do
   @spec update(FunConfig.t()) :: :ok | {:error, :invalid_config}
   def update(config = %FunConfig{}) do
     if FunConfig.valid?(config) do
-      GenServer.call(__MODULE__, {:update, config})
+      version = FunConfig.version(config)
+      :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
+
+      Logger.debug(
+        "PhoenixGenApi.ConfigDb, updated config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}"
+      )
+
+      :ok
     else
       Logger.error("PhoenixGenApi.ConfigDb, update, invalid config: #{inspect(config)}")
       {:error, :invalid_config}
@@ -166,7 +225,8 @@ defmodule PhoenixGenApi.ConfigDb do
     - `{:error, :not_found}` - Configuration does not exist
     - `{:error, :disabled}` - Configuration exists but is disabled
   """
-  @spec get(String.t() | atom(), String.t(), String.t()) :: {:ok, FunConfig.t()} | {:error, :not_found} | {:error, :disabled}
+  @spec get(String.t() | atom(), String.t(), String.t()) ::
+          {:ok, FunConfig.t()} | {:error, :not_found} | {:error, :disabled}
   def get(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
     case :ets.lookup(__MODULE__, {service, request_type, version}) do
       [{_key, config}] ->
@@ -180,7 +240,10 @@ defmodule PhoenixGenApi.ConfigDb do
         {:error, :not_found}
 
       _ ->
-        Logger.error("PhoenixGenApi.ConfigDb, get, unexpected ETS result for #{inspect({service, request_type, version})}")
+        Logger.error(
+          "PhoenixGenApi.ConfigDb, get, unexpected ETS result for #{inspect({service, request_type, version})}"
+        )
+
         {:error, :not_found}
     end
   end
@@ -315,24 +378,19 @@ defmodule PhoenixGenApi.ConfigDb do
     {:ok, %{}}
   end
 
+  # NOTE: handle_call for :add and :update are intentionally removed.
+  # add/1, update/1, and batch_add/1 now write directly to ETS after
+  # validating on the caller's process, which is safe with write_concurrency: true
+  # and avoids serialising bulk inserts through the GenServer mailbox.
+
   @impl true
-  def handle_call({:add, config}, _from, state) do
-    version = FunConfig.version(config)
-    :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
-    Logger.debug("PhoenixGenApi.ConfigDb, added config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}")
-    {:reply, :ok, state}
-  end
-
-  def handle_call({:update, config}, _from, state) do
-    version = FunConfig.version(config)
-    :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
-    Logger.debug("PhoenixGenApi.ConfigDb, updated config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}")
-    {:reply, :ok, state}
-  end
-
   def handle_call({:delete, {service, request_type, version}}, _from, state) do
     :ets.delete(__MODULE__, {service, request_type, version})
-    Logger.debug("PhoenixGenApi.ConfigDb, deleted config for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+
+    Logger.debug(
+      "PhoenixGenApi.ConfigDb, deleted config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+    )
+
     {:reply, :ok, state}
   end
 
@@ -340,12 +398,19 @@ defmodule PhoenixGenApi.ConfigDb do
     case :ets.lookup(__MODULE__, {service, request_type, version}) do
       [{_key, config}] ->
         disabled_config = Map.put(config, :disabled, true)
-        :ets.insert(__MODULE__, { {service, request_type, version}, disabled_config})
-        Logger.info("PhoenixGenApi.ConfigDb, disabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        :ets.insert(__MODULE__, {{service, request_type, version}, disabled_config})
+
+        Logger.info(
+          "PhoenixGenApi.ConfigDb, disabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+        )
+
         {:reply, :ok, state}
 
       [] ->
-        Logger.warning("PhoenixGenApi.ConfigDb, disable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        Logger.warning(
+          "PhoenixGenApi.ConfigDb, disable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+        )
+
         {:reply, {:error, :not_found}, state}
     end
   end
@@ -354,12 +419,19 @@ defmodule PhoenixGenApi.ConfigDb do
     case :ets.lookup(__MODULE__, {service, request_type, version}) do
       [{_key, config}] ->
         enabled_config = Map.put(config, :disabled, false)
-        :ets.insert(__MODULE__, { {service, request_type, version}, enabled_config})
-        Logger.info("PhoenixGenApi.ConfigDb, enabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        :ets.insert(__MODULE__, {{service, request_type, version}, enabled_config})
+
+        Logger.info(
+          "PhoenixGenApi.ConfigDb, enabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+        )
+
         {:reply, :ok, state}
 
       [] ->
-        Logger.warning("PhoenixGenApi.ConfigDb, enable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}")
+        Logger.warning(
+          "PhoenixGenApi.ConfigDb, enable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+        )
+
         {:reply, {:error, :not_found}, state}
     end
   end
@@ -372,14 +444,11 @@ defmodule PhoenixGenApi.ConfigDb do
 
   @impl true
   def terminate(_reason, _state) do
-    # Clean up ETS table on termination
     try do
       :ets.delete(__MODULE__)
       Logger.debug("PhoenixGenApi.ConfigDb, ETS table deleted on terminate")
     catch
-      :error, :badarg ->
-        # Table already deleted or doesn't exist
-        :ok
+      :error, :badarg -> :ok
     end
 
     :ok

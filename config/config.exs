@@ -25,7 +25,11 @@ config :phoenix_gen_api, :worker_pool,
 #       nodes: ["node1@hostname", "node2@hostname"],
 #       module: "ExampleService",
 #       function: "get_api_config",
-#       args: []
+#       args: [],
+#       # Optional: version checking — skip full pull when version unchanged
+#       version_module: "ExampleService",
+#       version_function: "get_config_version",
+#       version_args: []
 #     }
 #   ]
 

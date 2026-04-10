@@ -352,7 +352,8 @@ defmodule PhoenixGenApi.Executor do
     nodes = get_nodes_list(fun_config, request)
     rpc_timeout = get_rpc_timeout(fun_config)
 
-    result = execute_remote_with_fallback(nodes, mod, fun, args, rpc_timeout, request.request_id)
+    result =
+      execute_remote_with_fallback(nodes, mod, fun, args, rpc_timeout, request.request_id, nil)
 
     apply_remote_retry(
       result,
@@ -396,7 +397,8 @@ defmodule PhoenixGenApi.Executor do
           fun,
           args,
           rpc_timeout,
-          request.request_id
+          request.request_id,
+          nil
         )
 
       apply_remote_retry(
@@ -440,7 +442,15 @@ defmodule PhoenixGenApi.Executor do
       )
 
       new_result =
-        execute_remote_with_fallback(all_nodes, mod, fun, args, rpc_timeout, request.request_id)
+        execute_remote_with_fallback(
+          all_nodes,
+          mod,
+          fun,
+          args,
+          rpc_timeout,
+          request.request_id,
+          nil
+        )
 
       apply_remote_retry(
         new_result,
@@ -480,9 +490,9 @@ defmodule PhoenixGenApi.Executor do
   defp has_retry_remaining?({:all_nodes, n}) when n > 0, do: true
   defp has_retry_remaining?(_), do: false
 
-  defp execute_remote_with_fallback([], _mod, _fun, _args, _timeout, _request_id) do
+  defp execute_remote_with_fallback([], _mod, _fun, _args, _timeout, _request_id, last_error) do
     Logger.error("PhoenixGenApi.Executor, no nodes available for remote execution")
-    {:error, "no target nodes available"}
+    last_error || {:error, "no target nodes available"}
   end
 
   defp execute_remote_with_fallback(
@@ -491,7 +501,8 @@ defmodule PhoenixGenApi.Executor do
          fun,
          args,
          timeout,
-         request_id
+         request_id,
+         _last_error
        ) do
     case :rpc.call(node, mod, fun, args, timeout) do
       {:badrpc, :timeout} ->
@@ -505,7 +516,8 @@ defmodule PhoenixGenApi.Executor do
           fun,
           args,
           timeout,
-          request_id
+          request_id,
+          {:error, :timeout}
         )
 
       {:badrpc, reason} ->
@@ -519,7 +531,8 @@ defmodule PhoenixGenApi.Executor do
           fun,
           args,
           timeout,
-          request_id
+          request_id,
+          {:error, reason}
         )
 
       result ->
