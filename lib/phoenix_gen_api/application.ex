@@ -24,7 +24,9 @@ defmodule PhoenixGenApi.Application do
           PhoenixGenApi.WorkerPool.WorkerPoolSupervisor,
           # Configuration cache and puller
           PhoenixGenApi.ConfigDb,
-          PhoenixGenApi.ConfigPuller
+          PhoenixGenApi.ConfigPuller,
+          # Configuration receiver for remote node push
+          PhoenixGenApi.ConfigReceiver
         ]
       end
 

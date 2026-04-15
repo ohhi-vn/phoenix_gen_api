@@ -15,6 +15,7 @@ defmodule PhoenixGenApi do
   - **Permission Control**: Built-in permission checking for requests
   - **Streaming Support**: Handle long-running operations with streaming responses
   - **Configuration Caching**: Efficient caching of function configurations with automatic updates
+  - **Configuration Push**: Remote nodes can actively push their service and function configs to the gateway
   - **Rate Limiting**: Global and per-API rate limiting with sliding window algorithm
 
   ## Architecture
@@ -24,6 +25,8 @@ defmodule PhoenixGenApi do
   - `PhoenixGenApi.Executor` - Core execution engine for processing requests
   - `PhoenixGenApi.ConfigDb` - Caches function configurations for fast lookup
   - `PhoenixGenApi.ConfigPuller` - Pulls and updates configurations from remote services
+  - `PhoenixGenApi.ConfigReceiver` - Receives pushed configurations from remote nodes (server-side)
+  - `PhoenixGenApi.ConfigPusher` - Pushes configurations to the gateway node (client-side)
   - `PhoenixGenApi.NodeSelector` - Selects target nodes based on configured strategies
   - `PhoenixGenApi.Permission` - Handles permission checking for requests
   - `PhoenixGenApi.ArgumentHandler` - Validates and converts request arguments
@@ -613,6 +616,104 @@ defmodule PhoenixGenApi do
     :ok
   end
 
+  @doc """
+  Pushes a `PushConfig` to this server node.
+
+  This is the server-side API for receiving pushed configs from remote nodes.
+  Remote nodes should use `ConfigPusher.push/2` or `ConfigPusher.push_on_startup/3`
+  instead, which make RPC calls to this function.
+
+  ## Parameters
+
+    - `push_config` - A `%PushConfig{}` struct or map that can be decoded into one
+    - `opts` - Options keyword list:
+      - `:force` - Force push even if version matches (default: `false`)
+
+  ## Returns
+
+    - `{:ok, :accepted}` - New configs were stored successfully
+    - `{:ok, :skipped, reason}` - Push was skipped (e.g., version matches)
+    - `{:error, reason}` - Push failed (validation error, etc.)
+
+  ## Examples
+
+      alias PhoenixGenApi.Structs.PushConfig
+
+      push_config = %PushConfig{
+        service: "my_service",
+        nodes: [:"node1@host"],
+        config_version: "1.0.0",
+        fun_configs: [%FunConfig{...}]
+      }
+
+      {:ok, :accepted} = PhoenixGenApi.push_config(push_config)
+      {:ok, :skipped, :version_matches} = PhoenixGenApi.push_config(push_config)
+      {:ok, :accepted} = PhoenixGenApi.push_config(push_config, force: true)
+  """
+  @spec push_config(PhoenixGenApi.Structs.PushConfig.t() | map(), keyword()) ::
+          {:ok, :accepted} | {:ok, :skipped, term()} | {:error, term()}
+  def push_config(push_config, opts \\ []) do
+    PhoenixGenApi.ConfigReceiver.push(push_config, opts)
+  end
+
+  @doc """
+  Verifies that the server has the given service and config version.
+
+  Useful for checking whether a push is necessary before sending the full
+  configuration. Remote nodes should use `ConfigPusher.verify/3` instead.
+
+  ## Parameters
+
+    - `service` - The service name (string or atom)
+    - `config_version` - The config version string to verify
+
+  ## Returns
+
+    - `{:ok, :matched}` - Version matches what is stored
+    - `{:ok, :mismatch, stored_version}` - Version differs from what is stored
+    - `{:error, :not_found}` - Service is not known
+
+  ## Examples
+
+      {:ok, :matched} = PhoenixGenApi.verify_config("my_service", "1.0.0")
+      {:ok, :mismatch, "0.9.0"} = PhoenixGenApi.verify_config("my_service", "1.0.0")
+      {:error, :not_found} = PhoenixGenApi.verify_config("unknown_service", "1.0.0")
+  """
+  @spec verify_config(String.t() | atom(), String.t()) ::
+          {:ok, :matched} | {:ok, :mismatch, String.t()} | {:error, :not_found}
+  def verify_config(service, config_version) do
+    PhoenixGenApi.ConfigReceiver.verify(service, config_version)
+  end
+
+  @doc """
+  [Shell Helper] Quick view of pushed services status.
+
+  Shows all services that have been registered via push, along with their
+  config versions and auto-pull registration status.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.pushed_services_status()
+  """
+  def pushed_services_status() do
+    IO.puts("\n=== Pushed Services Status ===\n")
+
+    pushed_services = PhoenixGenApi.ConfigReceiver.get_all_pushed_services()
+
+    if map_size(pushed_services) == 0 do
+      IO.puts("No pushed services registered.")
+    else
+      Enum.each(pushed_services, fn {service, version} ->
+        push_config = PhoenixGenApi.ConfigReceiver.get_pushed_config(service)
+        auto_pull = if push_config.module && push_config.function, do: "Yes", else: "No"
+        IO.puts("  #{inspect(service)}: version=#{inspect(version)}, auto_pull=#{auto_pull}")
+      end)
+    end
+
+    IO.puts("")
+    :ok
+  end
+
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts] do
       use PhoenixGenApi.ImplHelper,
@@ -674,7 +775,8 @@ defmodule PhoenixGenApi do
       @doc false
       def handle_info({:async_call, result}, socket) do
         Logger.debug(fn ->
-          "PhoenixGenApi, #{__MODULE__}, async call result: #{inspect(result)}" end)
+          "PhoenixGenApi, #{__MODULE__}, async call result: #{inspect(result)}"
+        end)
 
         push(socket, @phoenix_gen_api_event, result)
         {:noreply, socket}

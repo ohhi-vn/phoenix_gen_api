@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "2.6.1",
+      version: "2.7.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),

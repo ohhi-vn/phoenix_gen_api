@@ -96,6 +96,99 @@ end
 
 Note: You can add directly in runtime in gateway node without using client mode.
 
+### Active Push (Remote Node → Gateway)
+
+In addition to the pull mechanism, remote nodes can **actively push** their service configuration and function configs to the gateway node. This is useful when you want to register a service immediately on startup rather than waiting for the gateway to pull.
+
+#### How It Works
+
+1. **Remote node** creates a `PushConfig` with service info, function configs, and a config version
+2. **Remote node** calls `ConfigPusher.push_on_startup/3` (or `push/2`) to push to the gateway
+3. **Gateway node** receives the push via `ConfigReceiver`, validates, stores in `ConfigDb`, and optionally registers for auto-pull
+4. If the `PushConfig` includes `module`/`function` for auto-pull, the gateway will also periodically refresh the config
+
+The push is idempotent — if the `config_version` matches what the gateway already has, the push is skipped. Use `force: true` to override.
+
+#### Remote Node Setup
+
+```Elixir
+# In your remote node's application start or GenServer init:
+alias PhoenixGenApi.Structs.FunConfig
+alias PhoenixGenApi.ConfigPusher
+
+fun_configs = [
+  %FunConfig{
+    request_type: "get_data",
+    service: :my_service,
+    nodes: [Node.self()],
+    choose_node_mode: :random,
+    timeout: 5_000,
+    mfa: {MyApp.Interface.Api, :get_data, []},
+    arg_types: %{"id" => :string},
+    response_type: :sync,
+    version: "1.0.0"
+  }
+]
+
+# Option 1: Build PushConfig manually
+push_config = %PhoenixGenApi.Structs.PushConfig{
+  service: :my_service,
+  nodes: [Node.self()],
+  config_version: "1.0.0",
+  fun_configs: fun_configs,
+  # Optional: enable auto-pull after initial push
+  module: MyApp.GenApi.Supporter,
+  function: :get_config,
+  args: []
+}
+
+# Option 2: Build PushConfig using helper
+push_config = ConfigPusher.from_service_config(
+  :my_service,
+  [Node.self()],
+  fun_configs,
+  config_version: "1.0.0",
+  module: MyApp.GenApi.Supporter,
+  function: :get_config
+)
+
+# Push once on startup
+ConfigPusher.push_on_startup(:gateway@host, push_config)
+
+# Or verify first, then push only if needed
+case ConfigPusher.verify(:gateway@host, :my_service, "1.0.0") do
+  {:ok, :matched} -> :already_registered
+  {:ok, :mismatch, _} -> ConfigPusher.push(:gateway@host, push_config)
+  {:error, :not_found} -> ConfigPusher.push(:gateway@host, push_config)
+end
+```
+
+#### Force Push
+
+```Elixir
+# Force push even if version matches (e.g., after hot code upgrade)
+ConfigPusher.push(:gateway@host, push_config, force: true)
+```
+
+#### Gateway Node API
+
+On the gateway node, you can also use the server-side API directly:
+
+```Elixir
+# Receive a push (typically called via RPC from remote node)
+{:ok, :accepted} = PhoenixGenApi.push_config(push_config)
+{:ok, :skipped, :version_matches} = PhoenixGenApi.push_config(push_config)
+{:ok, :accepted} = PhoenixGenApi.push_config(push_config, force: true)
+
+# Verify a service's config version
+{:ok, :matched} = PhoenixGenApi.verify_config("my_service", "1.0.0")
+{:ok, :mismatch, "0.9.0"} = PhoenixGenApi.verify_config("my_service", "1.0.0")
+{:error, :not_found} = PhoenixGenApi.verify_config("unknown_service", "1.0.0")
+
+# Check pushed services status (IEx helper)
+PhoenixGenApi.pushed_services_status()
+```
+
 ### Phoenix Node (Gateway node)
 
 Add config for Phoenix can pull config from remote nodes(above) like:
@@ -611,6 +704,7 @@ We will add a full example in the future.
 - [DONE] Add pool processes for save/limit resource.
 - [DONE] Function versioning with enable/disable support.
 - [DONE] Rate limiter with sliding window algorithm.
+- [DONE] Active push FunConfig from remote node to gateway.
 - Sticky node.
 
 ## Support AI agents & MCP for dev & improvement
