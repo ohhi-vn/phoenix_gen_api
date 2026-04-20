@@ -53,7 +53,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           timeout: integer() | :infinity,
           mfa: {module(), function(), args :: list()},
           arg_types: map() | nil,
-          arg_orders: list(String.t()),
+          arg_orders: list(String.t()) | :map,
           response_type: :sync | :async | :stream | :none,
           check_permission: false | :any_authenticated | {:arg, String.t()} | {:role, list()},
           request_info: boolean(),
@@ -345,6 +345,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     arg_orders == [] or arg_orders == nil
   end
 
+  defp valid_args?(arg_types, :map) when is_map(arg_types) and map_size(arg_types) > 0, do: true
+
   defp valid_args?(arg_types, arg_orders) when is_map(arg_types) and map_size(arg_types) == 1 do
     arg_orders == [] or arg_orders == nil or
       MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders)
@@ -431,6 +433,9 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       end
     end
   end
+
+  defp validate_args_details(arg_types, :map) when is_map(arg_types) and map_size(arg_types) > 0,
+    do: :ok
 
   defp validate_args_details(_, _), do: {:error, "invalid arg_types or arg_orders format"}
 end

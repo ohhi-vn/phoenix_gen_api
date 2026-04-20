@@ -169,6 +169,10 @@ defmodule PhoenixGenApi.ArgumentHandler do
       arg_types == nil or map_size(arg_types) == 0 ->
         []
 
+      # arg_orders is :map, return a map instead of a list.
+      config.arg_orders == :map ->
+        [converted_args]
+
       # function has only one argument.
       map_size(arg_types) == 1 ->
         Map.values(converted_args)
@@ -351,7 +355,10 @@ defmodule PhoenixGenApi.ArgumentHandler do
           raise ArgumentError, "nested map is not supported yet"
 
         true ->
-          Logger.error("gen_api, request, unsupported type #{inspect(val)} in map for key #{inspect(key)}")
+          Logger.error(
+            "gen_api, request, unsupported type #{inspect(val)} in map for key #{inspect(key)}"
+          )
+
           raise ArgumentError, "unsupported type #{inspect(val)} in map for key #{inspect(key)}"
       end
     end)
@@ -399,9 +406,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   end
 
   defp arg_validation!(_type, nil, name, _request) do
-    Logger.error(
-      "gen_api, request, nil value not accepted for argument #{inspect(name)}"
-    )
+    Logger.error("gen_api, request, nil value not accepted for argument #{inspect(name)}")
 
     raise ArgumentError, "nil value not accepted for argument #{inspect(name)}"
   end
@@ -562,7 +567,8 @@ defmodule PhoenixGenApi.ArgumentHandler do
     Enum.each(arg, fn
       item when is_binary(item) ->
         if byte_size(item) > max_item_bytes do
-          raise ArgumentError, "string item in list_string exceeds max byte size of #{max_item_bytes}"
+          raise ArgumentError,
+                "string item in list_string exceeds max byte size of #{max_item_bytes}"
         end
 
       item ->
@@ -580,7 +586,8 @@ defmodule PhoenixGenApi.ArgumentHandler do
     Enum.each(arg, fn
       item when is_binary(item) ->
         if byte_size(item) > @default_string_max_bytes do
-          raise ArgumentError, "string item in list_string exceeds max byte size of #{@default_string_max_bytes}"
+          raise ArgumentError,
+                "string item in list_string exceeds max byte size of #{@default_string_max_bytes}"
         end
 
       item ->

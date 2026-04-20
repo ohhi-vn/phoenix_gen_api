@@ -8,8 +8,10 @@ erl_crash.dump
 *.beam
 /config/*.secret.exs
 .elixir_ls/
-mix.lock
+
 .tool-versions
 .DS_Store
 PROJECT_SUMMARY.md
 DOCUMENTATION_SUMMARY.md
+
+.dexter.db*
