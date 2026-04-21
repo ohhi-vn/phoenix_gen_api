@@ -409,7 +409,33 @@ defmodule PhoenixGenApi.ConfigPuller do
       |> Task.async_stream(
         fn service ->
           stored_version = Map.get(service_versions, service.service)
-          {service.service, fetch_and_process_service(service, stored_version)}
+
+          :telemetry.execute(
+            [:phoenix_gen_api, :config, :pull, :start],
+            %{system_time: System.system_time()},
+            %{service: service.service}
+          )
+
+          start_time = System.monotonic_time(:microsecond)
+
+          result = fetch_and_process_service(service, stored_version)
+
+          duration = System.monotonic_time(:microsecond) - start_time
+
+          {count, new_version} =
+            case result do
+              {:ok, fun_list, version} -> {length(fun_list), version}
+              {:skipped, version} -> {0, version}
+              _ -> {0, nil}
+            end
+
+          :telemetry.execute(
+            [:phoenix_gen_api, :config, :pull, :stop],
+            %{duration_us: duration, count: count},
+            %{service: service.service, version: new_version}
+          )
+
+          {service.service, result}
         end,
         timeout: task_timeout,
         on_timeout: :kill_task,

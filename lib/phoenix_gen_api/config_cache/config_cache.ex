@@ -67,6 +67,16 @@ defmodule PhoenixGenApi.ConfigDb do
       version = FunConfig.version(config)
       :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
 
+      :telemetry.execute(
+        [:phoenix_gen_api, :config, :add],
+        %{},
+        %{
+          service: config.service,
+          request_type: config.request_type,
+          version: version
+        }
+      )
+
       Logger.debug(
         "PhoenixGenApi.ConfigDb, added config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}"
       )
@@ -116,6 +126,13 @@ defmodule PhoenixGenApi.ConfigDb do
 
       _ ->
         :ets.insert(__MODULE__, entries)
+
+        :telemetry.execute(
+          [:phoenix_gen_api, :config, :batch_add],
+          %{count: length(entries)},
+          %{service: List.first(entries) |> elem(1) |> Map.get(:service)}
+        )
+
         Logger.debug("PhoenixGenApi.ConfigDb, batch_add inserted #{length(entries)} configs")
         {:ok, length(entries)}
     end
@@ -179,6 +196,16 @@ defmodule PhoenixGenApi.ConfigDb do
       version = FunConfig.version(config)
       :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
 
+      :telemetry.execute(
+        [:phoenix_gen_api, :config, :add],
+        %{},
+        %{
+          service: config.service,
+          request_type: config.request_type,
+          version: version
+        }
+      )
+
       Logger.debug(
         "PhoenixGenApi.ConfigDb, updated config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}"
       )
@@ -205,6 +232,16 @@ defmodule PhoenixGenApi.ConfigDb do
   """
   @spec delete(String.t() | atom(), String.t(), String.t()) :: :ok
   def delete(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+    :telemetry.execute(
+      [:phoenix_gen_api, :config, :delete],
+      %{},
+      %{
+        service: service,
+        request_type: request_type,
+        version: version
+      }
+    )
+
     GenServer.call(__MODULE__, {:delete, {service, request_type, version}})
   end
 
@@ -357,6 +394,12 @@ defmodule PhoenixGenApi.ConfigDb do
   """
   @spec clear() :: :ok
   def clear() do
+    :telemetry.execute(
+      [:phoenix_gen_api, :config, :clear],
+      %{},
+      %{service: :all, request_type: :all, version: :all}
+    )
+
     GenServer.call(__MODULE__, :clear)
   end
 
@@ -400,6 +443,16 @@ defmodule PhoenixGenApi.ConfigDb do
         disabled_config = Map.put(config, :disabled, true)
         :ets.insert(__MODULE__, {{service, request_type, version}, disabled_config})
 
+        :telemetry.execute(
+          [:phoenix_gen_api, :config, :disable],
+          %{},
+          %{
+            service: service,
+            request_type: request_type,
+            version: version
+          }
+        )
+
         Logger.info(
           "PhoenixGenApi.ConfigDb, disabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
         )
@@ -421,6 +474,16 @@ defmodule PhoenixGenApi.ConfigDb do
         enabled_config = Map.put(config, :disabled, false)
         :ets.insert(__MODULE__, {{service, request_type, version}, enabled_config})
 
+        :telemetry.execute(
+          [:phoenix_gen_api, :config, :enable],
+          %{},
+          %{
+            service: service,
+            request_type: request_type,
+            version: version
+          }
+        )
+
         Logger.info(
           "PhoenixGenApi.ConfigDb, enabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
         )
@@ -431,6 +494,7 @@ defmodule PhoenixGenApi.ConfigDb do
         Logger.warning(
           "PhoenixGenApi.ConfigDb, enable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}"
         )
+
         {:reply, {:error, :not_found}, state}
     end
   end

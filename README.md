@@ -495,18 +495,9 @@ Supported key types:
 
 ### Telemetry
 
-The rate limiter emits telemetry events for monitoring:
+The rate limiter emits telemetry events for monitoring (e.g., `[:phoenix_gen_api, :rate_limiter, :exceeded]`).
 
-```elixir
-:telemetry.attach(
-  "rate-limiter-monitor",
-  [:phoenix_gen_api, :rate_limiter, :exceeded],
-  fn event, measurements, metadata, config ->
-    Logger.warning("Rate limit exceeded: #{inspect(metadata)}")
-  end,
-  %{}
-)
-```
+See the [Telemetry Guide](guides/telemetry.md) for the full event reference and integration examples.
 
 ## Permission System
 
@@ -663,21 +654,9 @@ The `retry` field is validated as follows:
 
 ### Telemetry
 
-Retry attempts emit telemetry events at `[:phoenix_gen_api, :executor, :retry]` with:
+Retry attempts emit telemetry events at `[:phoenix_gen_api, :executor, :retry]` with measurements `%{attempt: n}` and metadata `%{mode: :same_node | :all_nodes, type: :local | :remote}`.
 
-- **measurements**: `%{attempt: n}` — the remaining retry count
-- **metadata**: `%{mode: :same_node | :all_nodes, type: :local | :remote}`
-
-```elixir
-:telemetry.attach(
-  "retry-monitor",
-  [:phoenix_gen_api, :executor, :retry],
-  fn _event, measurements, metadata, _config ->
-    Logger.info("Retry attempt #{measurements.attempt}, mode: #{metadata.mode}, type: #{metadata.type}")
-  end,
-  %{}
-)
-```
+See the [Telemetry Guide](guides/telemetry.md) for the full event reference and integration examples.
 
 ### Example FunConfig with Retry
 
@@ -694,6 +673,81 @@ Retry attempts emit telemetry events at `[:phoenix_gen_api, :executor, :retry]` 
   retry: {:all_nodes, 3}  # Retry up to 3 times across all available nodes
 }
 ```
+
+## Telemetry
+
+PhoenixGenApi emits **28 telemetry events** across 5 categories using the [`:telemetry`](https://hexdocs.pm/telemetry/) library. The `PhoenixGenApi.Telemetry` module provides a centralized API for discovering and attaching to these events.
+
+### Event Categories
+
+| Category | Events | Description |
+|----------|--------|-------------|
+| Executor | 4 | Request lifecycle (`start`/`stop`/`exception`) and retry events |
+| Rate Limiter | 4 | Check, exceeded, reset, and cleanup events |
+| Hooks | 6 | Before/after hook `start`/`stop`/`exception` events |
+| Worker Pool | 5 | Task `start`/`stop`/`exception` and circuit breaker `open`/`close` |
+| Config Cache | 9 | Pull/push, add, batch_add, delete, clear, disable, enable |
+
+### Quick Start
+
+```elixir
+# Attach to all events
+PhoenixGenApi.Telemetry.attach_all("my-app", fn event, measurements, metadata, _config ->
+  Logger.info("[Telemetry] #{inspect(event)} #{inspect(measurements)}")
+end)
+
+# Attach to a specific category
+PhoenixGenApi.Telemetry.attach_executor("my-app-executor", fn event, measurements, metadata, _config ->
+  case event do
+    [:phoenix_gen_api, :executor, :request, :stop] ->
+      Logger.info("Request #{metadata.request_id} completed in #{measurements.duration_us}µs")
+    [:phoenix_gen_api, :executor, :request, :exception] ->
+      Logger.error("Request #{metadata.request_id} failed: #{metadata.reason}")
+    _ ->
+      :ok
+  end
+end)
+
+# Built-in debug logger
+PhoenixGenApi.Telemetry.attach_default_logger()
+
+# Discover all available events
+PhoenixGenApi.Telemetry.list_events()
+```
+
+### Integration with Telemetry.Metrics
+
+```elixir
+defmodule MyApp.Metrics do
+  def metrics do
+    [
+      Telemetry.Metrics.distribution(
+        "phoenix_gen_api.executor.request.duration_us",
+        event_name: [:phoenix_gen_api, :executor, :request, :stop],
+        measurement: :duration_us,
+        tags: [:service, :request_type, :success]
+      ),
+      Telemetry.Metrics.counter(
+        "phoenix_gen_api.executor.exceptions.count",
+        event_name: [:phoenix_gen_api, :executor, :request, :exception],
+        tags: [:service, :request_type]
+      ),
+      Telemetry.Metrics.counter(
+        "phoenix_gen_api.rate_limiter.exceeded.count",
+        event_name: [:phoenix_gen_api, :rate_limiter, :exceeded],
+        tags: [:key, :scope]
+      ),
+      Telemetry.Metrics.counter(
+        "phoenix_gen_api.worker_pool.task.exceptions.count",
+        event_name: [:phoenix_gen_api, :worker_pool, :task, :exception],
+        tags: [:pool_name, :kind]
+      )
+    ]
+  end
+end
+```
+
+📖 **For the complete event reference, integration patterns, and best practices, see the [Telemetry Integration Guide](guides/telemetry.md).**
 
 ## Full Example
 

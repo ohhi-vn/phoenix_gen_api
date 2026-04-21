@@ -330,6 +330,12 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
     case ConfigDb.batch_add(prepared_configs) do
       {:ok, count} ->
+        :telemetry.execute(
+          [:phoenix_gen_api, :config, :push],
+          %{count: count},
+          %{service: service, version: version}
+        )
+
         Logger.info(
           "PhoenixGenApi.ConfigReceiver, stored #{count} configs for service #{inspect(service)} version #{inspect(version)}"
         )

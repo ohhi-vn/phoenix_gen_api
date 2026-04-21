@@ -43,6 +43,8 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
       :pool_name,
       :current_task,
       :current_task_pid,
+      :task_start_time,
+      task_exception: false,
       consecutive_failures: 0,
       circuit_open_at: nil,
       task_timeout: @default_task_timeout
@@ -108,6 +110,13 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
       parent = self()
       pool = state.pool_name
       timeout = state.task_timeout
+      start_time = System.monotonic_time(:microsecond)
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :task, :start],
+        %{system_time: System.system_time()},
+        %{pool_name: pool}
+      )
 
       task_pid =
         spawn(fn ->
@@ -115,12 +124,44 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
             task.()
           rescue
             error ->
+              duration = System.monotonic_time(:microsecond) - start_time
+
+              :telemetry.execute(
+                [:phoenix_gen_api, :worker_pool, :task, :exception],
+                %{duration_us: duration},
+                %{
+                  pool_name: pool,
+                  kind: :error,
+                  reason: Exception.message(error),
+                  stacktrace: Exception.format_stacktrace(__STACKTRACE__)
+                }
+              )
+
               Logger.error(
                 "WorkerPool.Worker: task failed: #{Exception.message(error)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
               )
+
+              # Notify worker that task failed so it can record the failure
+              send(parent, {:task_exception, self()})
           catch
             kind, value ->
+              duration = System.monotonic_time(:microsecond) - start_time
+
+              :telemetry.execute(
+                [:phoenix_gen_api, :worker_pool, :task, :exception],
+                %{duration_us: duration},
+                %{
+                  pool_name: pool,
+                  kind: kind,
+                  reason: inspect(value),
+                  stacktrace: nil
+                }
+              )
+
               Logger.error("WorkerPool.Worker: task crashed: #{kind}: #{inspect(value)}")
+
+              # Notify worker that task failed so it can record the failure
+              send(parent, {:task_exception, self()})
           after
             # Always notify pool that worker is done
             send(pool, {:worker_done, parent})
@@ -131,7 +172,8 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
       Process.monitor(task_pid)
       Process.send_after(self(), {:task_timeout, task_pid}, timeout)
 
-      {:noreply, %{state | current_task: task, current_task_pid: task_pid}}
+      {:noreply,
+       %{state | current_task: task, current_task_pid: task_pid, task_start_time: start_time}}
     end
   end
 
@@ -142,10 +184,36 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
         "WorkerPool.Worker: task timed out after #{state.task_timeout}ms, terminating task"
       )
 
+      duration = System.monotonic_time(:microsecond) - state.task_start_time
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :task, :exception],
+        %{duration_us: duration},
+        %{
+          pool_name: state.pool_name,
+          kind: :timeout,
+          reason: "task timed out after #{state.task_timeout}ms",
+          stacktrace: nil
+        }
+      )
+
       Process.exit(task_pid, :kill)
       new_state = record_failure(state)
       send(state.pool_name, {:worker_done, self()})
-      {:noreply, %{new_state | current_task: nil, current_task_pid: nil}}
+      {:noreply, %{new_state | current_task: nil, current_task_pid: nil, task_start_time: nil}}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:task_exception, task_pid}, state) do
+    if state.current_task_pid == task_pid do
+      # Exception telemetry was already emitted from the spawned task process.
+      # Record the failure and mark that we've already handled this exception
+      # so the :DOWN handler doesn't emit duplicate telemetry.
+      new_state = record_failure(state)
+      {:noreply, %{new_state | task_exception: true}}
     else
       {:noreply, state}
     end
@@ -154,19 +222,51 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   @impl true
   def handle_info({:DOWN, _ref, :process, task_pid, reason}, state) do
     if state.current_task_pid == task_pid do
-      new_state =
-        if reason != :normal and reason != :shutdown do
-          Logger.warning(
-            "WorkerPool.Worker: task process died: #{inspect(reason)}"
-          )
+      duration = System.monotonic_time(:microsecond) - state.task_start_time
 
-          record_failure(state)
-        else
-          record_success(state)
+      new_state =
+        cond do
+          # Exception telemetry was already emitted from the spawned task process
+          state.task_exception ->
+            # Failure was already recorded in handle_info({:task_exception, ...})
+            state
+
+          reason != :normal and reason != :shutdown ->
+            Logger.warning("WorkerPool.Worker: task process died: #{inspect(reason)}")
+
+            :telemetry.execute(
+              [:phoenix_gen_api, :worker_pool, :task, :exception],
+              %{duration_us: duration},
+              %{
+                pool_name: state.pool_name,
+                kind: :error,
+                reason: inspect(reason),
+                stacktrace: nil
+              }
+            )
+
+            record_failure(state)
+
+          true ->
+            :telemetry.execute(
+              [:phoenix_gen_api, :worker_pool, :task, :stop],
+              %{duration_us: duration},
+              %{pool_name: state.pool_name}
+            )
+
+            record_success(state)
         end
 
       send(state.pool_name, {:worker_done, self()})
-      {:noreply, %{new_state | current_task: nil, current_task_pid: nil}}
+
+      {:noreply,
+       %{
+         new_state
+         | current_task: nil,
+           current_task_pid: nil,
+           task_start_time: nil,
+           task_exception: false
+       }}
     else
       {:noreply, state}
     end
@@ -175,8 +275,24 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   @impl true
   def handle_info({:task_completed, task_pid}, state) do
     if state.current_task_pid == task_pid do
+      duration = System.monotonic_time(:microsecond) - state.task_start_time
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :task, :stop],
+        %{duration_us: duration},
+        %{pool_name: state.pool_name}
+      )
+
       new_state = record_success(state)
-      {:noreply, %{new_state | current_task: nil, current_task_pid: nil}}
+
+      {:noreply,
+       %{
+         new_state
+         | current_task: nil,
+           current_task_pid: nil,
+           task_start_time: nil,
+           task_exception: false
+       }}
     else
       {:noreply, state}
     end
@@ -209,7 +325,20 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
         "WorkerPool.Worker: circuit breaker opened after #{new_failures} consecutive failures"
       )
 
-      %{state | consecutive_failures: new_failures, circuit_open_at: System.monotonic_time(:millisecond)}
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :circuit_breaker, :open],
+        %{},
+        %{
+          pool_name: state.pool_name,
+          consecutive_failures: new_failures
+        }
+      )
+
+      %{
+        state
+        | consecutive_failures: new_failures,
+          circuit_open_at: System.monotonic_time(:millisecond)
+      }
     else
       %{state | consecutive_failures: new_failures}
     end
@@ -217,8 +346,12 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
   defp record_success(state) do
     if state.consecutive_failures > 0 do
-      Logger.info(
-        "WorkerPool.Worker: circuit breaker reset after successful task execution"
+      Logger.info("WorkerPool.Worker: circuit breaker reset after successful task execution")
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :circuit_breaker, :close],
+        %{},
+        %{pool_name: state.pool_name}
       )
     end
 

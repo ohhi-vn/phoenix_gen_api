@@ -114,6 +114,67 @@ defmodule PhoenixGenApi.WorkerPoolTest do
     end
   end
 
+  describe "telemetry" do
+    test "emits task start and stop events", %{pool_pid: _pool_pid} do
+      test_pid = self()
+
+      :telemetry.attach(
+        "test-wp-handler",
+        [:phoenix_gen_api, :worker_pool, :task, :start],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:wp_start, metadata.pool_name})
+        end,
+        %{}
+      )
+
+      :telemetry.attach(
+        "test-wp-handler-stop",
+        [:phoenix_gen_api, :worker_pool, :task, :stop],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:wp_stop, metadata.pool_name})
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("test-wp-handler")
+        :telemetry.detach("test-wp-handler-stop")
+      end)
+
+      assert :ok =
+               WorkerPool.execute_async(:test_pool, fn ->
+                 :ok
+               end)
+
+      assert_receive {:wp_start, :test_pool}, 1000
+      assert_receive {:wp_stop, :test_pool}, 1000
+    end
+
+    test "emits task exception event on failure", %{pool_pid: _pool_pid} do
+      test_pid = self()
+
+      :telemetry.attach(
+        "test-wp-exception-handler",
+        [:phoenix_gen_api, :worker_pool, :task, :exception],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:wp_exception, metadata.pool_name, metadata.kind})
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("test-wp-exception-handler")
+      end)
+
+      assert :ok =
+               WorkerPool.execute_async(:test_pool, fn ->
+                 raise "intentional failure"
+               end)
+
+      assert_receive {:wp_exception, :test_pool, :error}, 1000
+    end
+  end
+
   describe "status/1" do
     test "reports correct status" do
       status = WorkerPool.status(:test_pool)

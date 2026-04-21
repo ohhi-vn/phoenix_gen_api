@@ -58,8 +58,10 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           check_permission: false | :any_authenticated | {:arg, String.t()} | {:role, list()},
           request_info: boolean(),
           version: String.t(),
-          disabled: boolean(),
-          retry: {:same_node, number()} | {:all_nodes, number()} | number() | nil
+          disabled: boolean,
+          retry: {:same_node, number()} | {:all_nodes, number()} | number() | nil,
+          before_execute: {module(), atom()} | {module(), atom(), args :: list()} | nil,
+          after_execute: {module(), atom()} | {module(), atom(), args :: list()} | nil
         }
 
   defstruct [
@@ -76,7 +78,9 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     check_permission: false,
     version: "0.0.0",
     disabled: false,
-    retry: nil
+    retry: nil,
+    before_execute: nil,
+    after_execute: nil
   ]
 
   @doc """
@@ -154,7 +158,10 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       check_permission: valid_check_permission?(config.check_permission, config.arg_types),
       request_info: is_boolean(config.request_info),
       version: valid_version?(config.version),
-      retry: valid_retry?(config.retry)
+      disabled: is_boolean(config.disabled),
+      retry: valid_retry?(config.retry),
+      before_execute: valid_hook?(config.before_execute),
+      after_execute: valid_after_hook?(config.after_execute)
     ]
 
     invalid_keys =
@@ -273,6 +280,26 @@ defmodule PhoenixGenApi.Structs.FunConfig do
         errors
       end
 
+    errors =
+      unless valid_hook?(config.before_execute) do
+        [
+          "before_execute must be nil, {module, function}, or {module, function, args}"
+          | errors
+        ]
+      else
+        errors
+      end
+
+    errors =
+      unless valid_after_hook?(config.after_execute) do
+        [
+          "after_execute must be nil, {module, function}, or {module, function, args}"
+          | errors
+        ]
+      else
+        errors
+      end
+
     if Enum.empty?(errors) do
       {:ok, config}
     else
@@ -373,6 +400,31 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_retry?({:same_node, n}) when is_number(n) and n > 0, do: true
   defp valid_retry?({:all_nodes, n}) when is_number(n) and n > 0, do: true
   defp valid_retry?(_), do: false
+
+  defp valid_hook?(nil), do: true
+
+  defp valid_hook?({mod, fun}) when is_atom(mod) and is_atom(fun) do
+    function_exported?(mod, fun, 2)
+  end
+
+  defp valid_hook?({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args) do
+    function_exported?(mod, fun, 2 + length(args))
+  end
+
+  defp valid_hook?(_), do: false
+
+  # After hooks take 3 args: (request, fun_config, result) + optional extra args
+  defp valid_after_hook?(nil), do: true
+
+  defp valid_after_hook?({mod, fun}) when is_atom(mod) and is_atom(fun) do
+    function_exported?(mod, fun, 3)
+  end
+
+  defp valid_after_hook?({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args) do
+    function_exported?(mod, fun, 3 + length(args))
+  end
+
+  defp valid_after_hook?(_), do: false
 
   @doc """
   Normalizes the retry configuration into a standard tuple format.

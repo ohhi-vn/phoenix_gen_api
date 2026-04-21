@@ -294,8 +294,11 @@ defmodule PhoenixGenApi.ConfigDbTest do
   end
 
   test "get_all_functions/0 with mixed enabled and disabled versions" do
-    config_v1 = valid_config(%{service: "Test1", request_type: "test_request_1", version: "1.0.0"})
-    config_v2 = valid_config(%{service: "Test1", request_type: "test_request_1", version: "2.0.0"})
+    config_v1 =
+      valid_config(%{service: "Test1", request_type: "test_request_1", version: "1.0.0"})
+
+    config_v2 =
+      valid_config(%{service: "Test1", request_type: "test_request_1", version: "2.0.0"})
 
     assert :ok = ConfigDb.add(config_v1)
     assert :ok = ConfigDb.add(config_v2)
@@ -358,6 +361,82 @@ defmodule PhoenixGenApi.ConfigDbTest do
 
       [] ->
         flunk("Config not found in ETS")
+    end
+  end
+
+    describe("telemetry") do
+    test "emits config add telemetry event" do
+      test_pid = self()
+
+      :telemetry.attach(
+        "test-config-add-handler",
+        [:phoenix_gen_api, :config, :add],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:config_add, metadata.service, metadata.request_type, metadata.version})
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("test-config-add-handler")
+      end)
+
+      config = valid_config(%{service: "TelemetryTest", request_type: "telemetry_req"})
+      assert :ok = ConfigDb.add(config)
+
+      assert_receive {:config_add, "TelemetryTest", "telemetry_req", "0.0.0"}, 1000
+    end
+
+    test "emits config batch_add telemetry event" do
+      test_pid = self()
+
+      :telemetry.attach(
+        "test-config-batch-handler",
+        [:phoenix_gen_api, :config, :batch_add],
+        fn _event, measurements, metadata, _config ->
+          send(test_pid, {:config_batch_add, measurements.count, metadata.service})
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("test-config-batch-handler")
+      end)
+
+      configs = [
+        valid_config(%{service: "BatchTest", request_type: "req1"}),
+        valid_config(%{service: "BatchTest", request_type: "req2"})
+      ]
+
+      assert {:ok, 2} = ConfigDb.batch_add(configs)
+
+      assert_receive {:config_batch_add, 2, "BatchTest"}, 1000
+    end
+
+    test "emits config delete telemetry event" do
+      test_pid = self()
+
+      :telemetry.attach(
+        "test-config-delete-handler",
+        [:phoenix_gen_api, :config, :delete],
+        fn _event, _measurements, metadata, _config ->
+          send(
+            test_pid,
+            {:config_delete, metadata.service, metadata.request_type, metadata.version}
+          )
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("test-config-delete-handler")
+      end)
+
+      config = valid_config(%{version: "1.0.0"})
+      assert :ok = ConfigDb.add(config)
+      assert :ok = ConfigDb.delete("Test", "test_request", "1.0.0")
+
+      assert_receive {:config_delete, "Test", "test_request", "1.0.0"}, 1000
     end
   end
 end

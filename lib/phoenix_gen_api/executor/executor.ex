@@ -55,6 +55,7 @@ defmodule PhoenixGenApi.Executor do
   alias PhoenixGenApi.ArgumentHandler
   alias PhoenixGenApi.Permission
   alias PhoenixGenApi.RateLimiter
+  alias PhoenixGenApi.Hooks
 
   require Logger
 
@@ -225,43 +226,70 @@ defmodule PhoenixGenApi.Executor do
         "response_type: #{fun_config.response_type}"
     )
 
-    # Check rate limits before permission check
-    case RateLimiter.check_rate_limit(request) do
-      :ok ->
-        :ok
+    # Run before_execute hook
+    case Hooks.run_before(fun_config.before_execute, request, fun_config) do
+      {:ok, new_request, new_fun_config} ->
+        do_execute_with_config!(new_request, new_fun_config)
 
-      {:error, :rate_limited, details} ->
+      {:error, reason} ->
         Logger.warning(
-          "PhoenixGenApi.Executor, rate limit exceeded for request: #{request.request_id}, " <>
-            "details: #{inspect(details)}"
+          "PhoenixGenApi.Executor, before_execute hook aborted request: #{request.request_id}, reason: #{inspect(reason)}"
         )
 
-        retry_after_ms = Map.get(details, :retry_after_ms, 0)
+        response =
+          Response.error_response(request.request_id, "hook rejected: #{inspect(reason)}")
 
-        Response.error_response(
-          request.request_id,
-          "Rate limit exceeded. Please retry after #{div(retry_after_ms, 1000)} seconds.",
-          true
-        )
-        |> Map.put(:can_retry, true)
-        |> then(& &1)
-
-      {:error, :rate_limiter_error, error_details} ->
-        # Fail-open: log error but allow request to proceed
-        Logger.error(
-          "PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request"
-        )
-
-        :ok
+        Hooks.run_after(fun_config.after_execute, request, fun_config, response)
     end
+  end
 
-    Permission.check_permission!(request, fun_config)
+  defp do_execute_with_config!(request, fun_config) do
+    # Check rate limits before permission check
+    rate_limit_result =
+      case RateLimiter.check_rate_limit(request) do
+        :ok ->
+          :ok
 
-    case fun_config.response_type do
-      :sync -> sync_call(request, fun_config)
-      :async -> async_call(request, fun_config)
-      :none -> async_call(request, fun_config)
-      :stream -> stream_call(request, fun_config)
+        {:error, :rate_limited, details} ->
+          Logger.warning(
+            "PhoenixGenApi.Executor, rate limit exceeded for request: #{request.request_id}, " <>
+              "details: #{inspect(details)}"
+          )
+
+          retry_after_ms = Map.get(details, :retry_after_ms, 0)
+
+          Response.error_response(
+            request.request_id,
+            "Rate limit exceeded. Please retry after #{div(retry_after_ms, 1000)} seconds.",
+            true
+          )
+          |> Map.put(:can_retry, true)
+
+        {:error, :rate_limiter_error, error_details} ->
+          # Fail-open: log error but allow request to proceed
+          Logger.error(
+            "PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request"
+          )
+
+          :ok
+      end
+
+    case rate_limit_result do
+      %Response{} = error_response ->
+        Hooks.run_after(fun_config.after_execute, request, fun_config, error_response)
+
+      :ok ->
+        Permission.check_permission!(request, fun_config)
+
+        result =
+          case fun_config.response_type do
+            :sync -> sync_call(request, fun_config)
+            :async -> async_call(request, fun_config)
+            :none -> async_call(request, fun_config)
+            :stream -> stream_call(request, fun_config)
+          end
+
+        Hooks.run_after(fun_config.after_execute, request, fun_config, result)
     end
   end
 

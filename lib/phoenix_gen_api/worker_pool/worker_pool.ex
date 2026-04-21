@@ -108,8 +108,6 @@ defmodule PhoenixGenApi.WorkerPool do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-
-
   @doc """
   Executes a task asynchronously using the specified pool.
 
@@ -196,9 +194,7 @@ defmodule PhoenixGenApi.WorkerPool do
   def handle_call({:execute, task}, _from, state) do
     # Check pool-level circuit breaker
     if circuit_open?(state) do
-      Logger.warning(
-        "WorkerPool #{state.pool_name}: circuit breaker open, rejecting task"
-      )
+      Logger.warning("WorkerPool #{state.pool_name}: circuit breaker open, rejecting task")
 
       {:reply, {:error, :circuit_open}, state}
     else
@@ -256,7 +252,15 @@ defmodule PhoenixGenApi.WorkerPool do
         PhoenixGenApi.WorkerPool.Worker.execute(worker_pid, task)
         final_workers = Map.put(new_workers, worker_pid, :busy)
         final_idle = MapSet.delete(new_idle, worker_pid)
-        new_state = record_success(%{state | workers: final_workers, idle_workers: final_idle, queue: new_queue})
+
+        new_state =
+          record_success(%{
+            state
+            | workers: final_workers,
+              idle_workers: final_idle,
+              queue: new_queue
+          })
+
         {:noreply, new_state}
 
       {:empty, _queue} ->
@@ -327,6 +331,15 @@ defmodule PhoenixGenApi.WorkerPool do
         "WorkerPool #{state.pool_name}: circuit breaker opened after #{new_failures} consecutive failures"
       )
 
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :circuit_breaker, :open],
+        %{},
+        %{
+          pool_name: state.pool_name,
+          consecutive_failures: new_failures
+        }
+      )
+
       %{
         state
         | consecutive_failures: new_failures,
@@ -342,6 +355,12 @@ defmodule PhoenixGenApi.WorkerPool do
     if state.consecutive_failures > 0 do
       Logger.info(
         "WorkerPool #{state.pool_name}: circuit breaker reset after successful task execution"
+      )
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :circuit_breaker, :close],
+        %{},
+        %{pool_name: state.pool_name}
       )
     end
 

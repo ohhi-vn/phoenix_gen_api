@@ -13,6 +13,8 @@ defmodule PhoenixGenApi.ArgumentHandler do
   - `{:string, max_bytes}` - String with custom max byte size
   - `:num` - Integer or float
   - `:boolean` - Boolean value (true/false)
+  - `:datetime` - ISO 8601 datetime string, auto-converted to `DateTime`
+  - `:naive_datetime` - ISO 8601 datetime string, auto-converted to `NaiveDateTime`
 
   ### Collection Types
   - `:list` - Generic list with max 1000 items (default)
@@ -171,7 +173,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
       # arg_orders is :map, return a map instead of a list.
       config.arg_orders == :map ->
-        [converted_args]
+        converted_args
 
       # function has only one argument.
       map_size(arg_types) == 1 ->
@@ -429,6 +431,30 @@ defmodule PhoenixGenApi.ArgumentHandler do
                 "invalid argument type for #{inspect(name)}, expected :boolean, got #{inspect(value)}"
         end
 
+      :datetime ->
+        if is_binary(value) do
+          :ok
+        else
+          Logger.error(
+            "gen_api, request, invalid argument type for #{inspect(name)}, expected :datetime (ISO 8601 string), got #{inspect(value)}"
+          )
+
+          raise ArgumentError,
+                "invalid argument type for #{inspect(name)}, expected :datetime (ISO 8601 string), got #{inspect(value)}"
+        end
+
+      :naive_datetime ->
+        if is_binary(value) do
+          :ok
+        else
+          Logger.error(
+            "gen_api, request, invalid argument type for #{inspect(name)}, expected :naive_datetime (ISO 8601 string), got #{inspect(value)}"
+          )
+
+          raise ArgumentError,
+                "invalid argument type for #{inspect(name)}, expected :naive_datetime (ISO 8601 string), got #{inspect(value)}"
+        end
+
       :num ->
         if is_float(value) or is_integer(value) do
           :ok
@@ -553,6 +579,26 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   defp convert_arg!(arg, :boolean) when is_boolean(arg) do
     arg
+  end
+
+  defp convert_arg!(arg, :datetime) when is_binary(arg) do
+    case DateTime.from_iso8601(arg) do
+      {:ok, datetime, _offset} ->
+        datetime
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid datetime format for #{inspect(arg)}: #{reason}"
+    end
+  end
+
+  defp convert_arg!(arg, :naive_datetime) when is_binary(arg) do
+    case NaiveDateTime.from_iso8601(arg) do
+      {:ok, naive_datetime} ->
+        naive_datetime
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid naive_datetime format for #{inspect(arg)}: #{reason}"
+    end
   end
 
   defp convert_arg!(arg, :num) when is_number(arg) do

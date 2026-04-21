@@ -4,6 +4,8 @@ defmodule PhoenixGenApi.ConfigReceiverTest do
   alias PhoenixGenApi.Structs.{PushConfig, FunConfig}
   alias PhoenixGenApi.{ConfigDb, ConfigReceiver}
 
+  require Logger
+
   # ConfigDb and ConfigReceiver are already started by the application supervisor
 
   setup do
@@ -229,6 +231,49 @@ defmodule PhoenixGenApi.ConfigReceiverTest do
       assert stored_v1.version == "1.0.0"
       assert stored_v2.version == "2.0.0"
       assert stored_v2.timeout == 10000
+    end
+  end
+
+  describe "telemetry" do
+    test "emits config push telemetry event" do
+      test_pid = self()
+
+      :telemetry.attach(
+        "test-config-push-handler",
+        [:phoenix_gen_api, :config, :push],
+        fn _event, measurements, metadata, _config ->
+          send(test_pid, {:config_push, measurements.count, metadata.service, metadata.version})
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach("test-config-push-handler")
+      end)
+
+      fun_config = %FunConfig{
+        request_type: "test_request",
+        service: "TelemetryService",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {String, :upcase, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :sync,
+        version: "1.5.0"
+      }
+
+      config =
+        valid_push_config(%{
+          service: "TelemetryService",
+          config_version: "1.5.0",
+          fun_configs: [fun_config]
+        })
+
+      assert {:ok, :accepted} = ConfigReceiver.push(config)
+
+      assert_receive {:config_push, 1, "TelemetryService", "1.5.0"}, 1000
     end
   end
 end
