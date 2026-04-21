@@ -173,7 +173,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
       # arg_orders is :map, return a map instead of a list.
       config.arg_orders == :map ->
-        converted_args
+        [converted_args]
 
       # function has only one argument.
       map_size(arg_types) == 1 ->
