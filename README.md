@@ -9,6 +9,8 @@ In this case, the Phoenix app will take on the role of an API gateway.
 
 The library can use with [EasyRpc](https://hex.pm/packages/easy_rpc) and [ClusterHelper](https://hex.pm/packages/cluster_helper) for fast and easy to develop a dynamic Elixir cluster.
 
+If you use Ash framework, you can use [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) for generating FunConfig & supporter functions with a little of bit effort.
+
 ## Concept
 
 After received an event from client(in handle_in callback of Phoenix Channel), the event will be passed to PhoenixGenApi to find target API & target node to execute then get result for response to client.
@@ -40,7 +42,7 @@ by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
 ```Elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 2.1"}
+    {:phoenix_gen_api, "~> 2.10"}
   ]
 end
 ```
