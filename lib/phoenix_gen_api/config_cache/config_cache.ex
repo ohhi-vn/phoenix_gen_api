@@ -356,6 +356,38 @@ defmodule PhoenixGenApi.ConfigDb do
   end
 
   @doc """
+  Returns a map of all functions from services and their request types in the cache.
+
+  ## Returns
+
+    A map where keys are service names and values are maps of request types to lists of versions.
+  """
+  @spec get_functions_from_services([String.t()] | String.t()) :: %{
+          (String.t() | atom()) => %{String.t() => [String.t()]}
+        }
+  def get_functions_from_services(services) when is_list(services) do
+    :ets.foldl(
+      fn
+        {{service, request_type, version}, _config}, acc ->
+          if service in services do
+            service_map = Map.get(acc, service, %{})
+            version_list = Map.get(service_map, request_type, [])
+            new_service_map = Map.put(service_map, request_type, [version | version_list])
+            Map.put(acc, service, new_service_map)
+          else
+            acc
+          end
+      end,
+      %{},
+      __MODULE__
+    )
+  end
+
+  def get_functions_from_services(service) when is_binary(service) do
+    get_functions_from_services([service])
+  end
+
+  @doc """
   Returns a list of all service names in the cache.
 
   ## Returns

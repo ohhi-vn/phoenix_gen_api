@@ -114,37 +114,37 @@ defmodule PhoenixGenApi.ConfigPusher do
       )
 
     case result do
-      {:ok, :accepted} ->
+      {:ok, :accepted} = result ->
         Logger.info(
           "PhoenixGenApi.ConfigPusher, config for service #{inspect(push_config.service)} " <>
             "accepted by node #{inspect(server_node)}"
         )
 
-        {:ok, :accepted}
+        result
 
-      {:ok, :skipped, reason} ->
+      {:ok, :skipped, reason} = result ->
         Logger.warning(
           "PhoenixGenApi.ConfigPusher, config push for service #{inspect(push_config.service)} " <>
             "skipped by node #{inspect(server_node)}: #{inspect(reason)}"
         )
 
-        {:ok, :skipped, reason}
+        result
 
-      {:error, reason} ->
+      {:error, reason} = error ->
         Logger.error(
           "PhoenixGenApi.ConfigPusher, config push for service #{inspect(push_config.service)} " <>
             "failed on node #{inspect(server_node)}: #{inspect(reason)}"
         )
 
-        {:error, reason}
+        error
 
-      {:badrpc, reason} ->
+      {:badrpc, reason} = rpc_error ->
         Logger.error(
           "PhoenixGenApi.ConfigPusher, RPC call to node #{inspect(server_node)} " <>
             "failed: #{inspect(reason)}"
         )
 
-        {:error, {:badrpc, reason}}
+        {:error, rpc_error}
     end
   end
 
