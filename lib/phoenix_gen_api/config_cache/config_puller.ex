@@ -3,6 +3,13 @@ defmodule PhoenixGenApi.ConfigPuller do
   This module is responsible for periodically pulling function configurations (`%FunConfig{}`)
   from remote nodes and updating the `ConfigDb`.
 
+  ## Security
+
+  MFA safety validation is performed on remote modules before configs are stored.
+  When RPC verification fails (e.g., node unreachable), the config is **rejected** rather
+  than accepted — this is a more secure default than the previous behavior which allowed
+  configs when verification couldn't be completed.
+
   The puller's behavior can be configured in your `config.exs` file:
 
   ```elixir
@@ -732,31 +739,11 @@ defmodule PhoenixGenApi.ConfigPuller do
   end
 
   defp enforce_service_name(config = %FunConfig{}, service_name) do
-    if config.service == service_name do
-      config
-    else
-      Logger.warning(
-        "PhoenixGenApi.ConfigPuller, service_name mismatch in FunConfig #{inspect(config.request_type)}, expected #{inspect(service_name)}, got #{inspect(config.service)}, overwriting"
-      )
-
-      %FunConfig{config | service: service_name}
-    end
+    PhoenixGenApi.Helpers.Shared.enforce_service_name(config, service_name)
   end
 
   defp ensure_version(config = %FunConfig{}) do
-    if Map.has_key?(config, :version) and is_binary(config.version) and
-         byte_size(config.version) > 0 do
-      config
-    else
-      Logger.debug(
-        "PhoenixGenApi.ConfigPuller, adding default version to config for #{inspect(config.request_type)}"
-      )
-
-      config
-      |> Map.from_struct()
-      |> Map.put(:version, "0.0.0")
-      |> then(&struct(FunConfig, &1))
-    end
+    PhoenixGenApi.Helpers.Shared.ensure_version(config)
   end
 
   defp validate_mfa_safety({mod, fun, _args}, node, timeout)
@@ -769,11 +756,16 @@ defmodule PhoenixGenApi.ConfigPuller do
         {:error, "module #{inspect(mod)} not loaded on node #{inspect(node)}"}
 
       {:badrpc, reason} ->
+        # SECURITY: Reject config when we can't verify the module exists.
+        # Previously this returned :ok (allowing unverified configs), which
+        # was a security vulnerability — a disconnected or malicious node
+        # could register arbitrary MFAs that might not actually exist.
         Logger.warning(
-          "PhoenixGenApi.ConfigPuller, failed to verify module #{inspect(mod)} on node #{inspect(node)}: #{inspect(reason)}"
+          "PhoenixGenApi.ConfigPuller, failed to verify module #{inspect(mod)} on node #{inspect(node)}: #{inspect(reason)}, rejecting config for safety"
         )
 
-        :ok
+        {:error,
+         "cannot verify module #{inspect(mod)} on node #{inspect(node)}: #{inspect(reason)}"}
     end
   end
 

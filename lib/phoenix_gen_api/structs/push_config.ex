@@ -236,9 +236,7 @@ defmodule PhoenixGenApi.Structs.PushConfig do
 
   defp valid_nodes?(_), do: false
 
-  defp is_valid_node?(node) when is_atom(node), do: true
-  defp is_valid_node?(node) when is_binary(node), do: true
-  defp is_valid_node?(_), do: false
+  defp is_valid_node?(node), do: PhoenixGenApi.Helpers.Shared.is_valid_node?(node)
 
   defp valid_config_version?(version) when is_binary(version) and byte_size(version) > 0 do
     true
@@ -264,27 +262,8 @@ defmodule PhoenixGenApi.Structs.PushConfig do
 
   defp fun_configs_match_service?(_, _), do: false
 
-  defp same_service?(fun_service, push_service)
-       when is_atom(fun_service) and is_atom(push_service) do
-    fun_service == push_service
-  end
-
-  defp same_service?(fun_service, push_service)
-       when is_binary(fun_service) and is_binary(push_service) do
-    fun_service == push_service
-  end
-
-  defp same_service?(fun_service, push_service)
-       when is_atom(fun_service) and is_binary(push_service) do
-    Atom.to_string(fun_service) == push_service
-  end
-
-  defp same_service?(fun_service, push_service)
-       when is_binary(fun_service) and is_atom(push_service) do
-    fun_service == Atom.to_string(push_service)
-  end
-
-  defp same_service?(_, _), do: false
+  defp same_service?(fun_service, push_service),
+    do: PhoenixGenApi.Helpers.Shared.same_service?(fun_service, push_service)
 
   defp fun_configs_have_valid_versions?(fun_configs) when is_list(fun_configs) do
     Enum.all?(fun_configs, fn

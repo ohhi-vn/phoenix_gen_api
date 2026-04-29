@@ -56,6 +56,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           arg_orders: list(String.t()) | :map,
           response_type: :sync | :async | :stream | :none,
           check_permission: false | :any_authenticated | {:arg, String.t()} | {:role, list()},
+          permission_callback: {module(), atom(), args :: list()} | nil,
           request_info: boolean(),
           version: String.t(),
           disabled: boolean,
@@ -76,6 +77,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     :response_type,
     request_info: false,
     check_permission: false,
+    permission_callback: nil,
     version: "0.0.0",
     disabled: false,
     retry: nil,
@@ -156,6 +158,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       args: valid_args?(config.arg_types, config.arg_orders),
       response_type: config.response_type in [:sync, :async, :stream, :none],
       check_permission: valid_check_permission?(config.check_permission, config.arg_types),
+      permission_callback: valid_permission_callback?(config.permission_callback),
       request_info: is_boolean(config.request_info),
       version: valid_version?(config.version),
       disabled: is_boolean(config.disabled),
@@ -257,6 +260,16 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       end
 
     errors =
+      unless valid_permission_callback?(config.permission_callback) do
+        [
+          "permission_callback must be nil or a valid {module, function, args} tuple"
+          | errors
+        ]
+      else
+        errors
+      end
+
+    errors =
       unless is_boolean(config.request_info) do
         ["request_info must be a boolean" | errors]
       else
@@ -324,9 +337,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   defp valid_nodes?(_), do: false
 
-  defp is_valid_node?(node) when is_atom(node), do: true
-  defp is_valid_node?(node) when is_binary(node), do: true
-  defp is_valid_node?(_), do: false
+  defp is_valid_node?(node), do: PhoenixGenApi.Helpers.Shared.is_valid_node?(node)
 
   defp valid_choose_node_mode?(:random), do: true
   defp valid_choose_node_mode?(:hash), do: true
@@ -363,6 +374,14 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   end
 
   defp valid_check_permission?(_, _), do: false
+
+  defp valid_permission_callback?(nil), do: true
+
+  defp valid_permission_callback?({mod, fun, args})
+       when is_atom(mod) and is_atom(fun) and is_list(args),
+       do: true
+
+  defp valid_permission_callback?(_), do: false
 
   defp valid_args?(nil, nil), do: true
   defp valid_args?(nil, arg_orders) when arg_orders == [] or arg_orders == nil, do: true

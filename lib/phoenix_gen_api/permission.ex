@@ -140,31 +140,34 @@ defmodule PhoenixGenApi.Permission do
     end
   end
 
-  def check_permission(%Request{}, %FunConfig{check_permission: false}) do
+  # Custom permission callback takes precedence over check_permission.
+  # The callback is an MFA tuple {module, function, args} that will be called
+  # as apply(module, function, [request | args]). It must return `true` or `false`.
+  def check_permission(request, %FunConfig{permission_callback: {mod, fun, args}})
+      when is_atom(mod) and is_atom(fun) and is_list(args) do
+    execute_permission_callback(mod, fun, [request | args])
+  end
+
+  # When permission_callback is nil, fall through to check_permission modes
+  def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: false}) do
     true
   end
 
-  def check_permission(%Request{user_id: user_id}, %FunConfig{check_permission: :any_authenticated})
-      when is_binary(user_id) or is_nil(user_id) do
-    true
-  end
-
-  def check_permission(%Request{user_id: nil}, %FunConfig{check_permission: :any_authenticated}) do
-    false
-  end
-
-  def check_permission(%Request{user_id: user_id}, %FunConfig{check_permission: :any_authenticated})
+  def check_permission(%Request{user_id: user_id}, %FunConfig{
+        permission_callback: nil,
+        check_permission: :any_authenticated
+      })
       when is_binary(user_id) and byte_size(user_id) > 0 do
     true
   end
 
-  def check_permission(%Request{}, %FunConfig{check_permission: :any_authenticated}) do
+  def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: :any_authenticated}) do
     false
   end
 
   def check_permission(
         request = %Request{user_id: user_id},
-        %FunConfig{check_permission: {:arg, arg_name}}
+        %FunConfig{permission_callback: nil, check_permission: {:arg, arg_name}}
       )
       when is_binary(user_id) and byte_size(user_id) > 0 do
     case Map.get(request.args, arg_name) do
@@ -183,13 +186,13 @@ defmodule PhoenixGenApi.Permission do
     end
   end
 
-  def check_permission(%Request{}, %FunConfig{check_permission: {:arg, _arg_name}}) do
+  def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: {:arg, _arg_name}}) do
     false
   end
 
   def check_permission(
         %Request{user_roles: user_roles} = request,
-        %FunConfig{check_permission: {:role, allowed_roles}}
+        %FunConfig{permission_callback: nil, check_permission: {:role, allowed_roles}}
       )
       when is_list(user_roles) and is_list(allowed_roles) do
     allowed_roles_set = MapSet.new(allowed_roles)
@@ -208,16 +211,68 @@ defmodule PhoenixGenApi.Permission do
     end
   end
 
-  def check_permission(%Request{}, %FunConfig{check_permission: {:role, _allowed_roles}}) do
+  def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: {:role, _allowed_roles}}) do
     false
   end
 
-  def check_permission(%Request{}, fun_config = %FunConfig{}) do
+  def check_permission(%Request{}, %FunConfig{permission_callback: nil} = fun_config) do
     Logger.error(
       "PhoenixGenApi.Permission, check_permission, invalid permission mode: #{inspect(fun_config.check_permission)}"
     )
 
     false
+  end
+
+  # Catch-all for any FunConfig with an unrecognized permission_callback format
+  def check_permission(%Request{}, %FunConfig{permission_callback: other} = fun_config) do
+    Logger.error(
+      "PhoenixGenApi.Permission, check_permission, invalid permission_callback: #{inspect(other)}, " <>
+        "falling back to check_permission: #{inspect(fun_config.check_permission)}"
+    )
+
+    # Fall back to check_permission mode if callback is invalid
+    check_permission(%Request{}, %FunConfig{fun_config | permission_callback: nil})
+  end
+
+  @spec execute_permission_callback(module(), atom(), list()) :: boolean()
+  defp execute_permission_callback(mod, fun, args) do
+    try do
+      case apply(mod, fun, args) do
+        true ->
+          true
+
+        false ->
+          Logger.warning(
+            "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false"
+          )
+
+          false
+
+        other ->
+          Logger.warning(
+            "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} " <>
+              "returned unexpected value #{inspect(other)}, treating as denied"
+          )
+
+          false
+      end
+    rescue
+      e ->
+        Logger.error(
+          "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} " <>
+            "raised exception: #{Exception.message(e)}, denying for safety"
+        )
+
+        false
+    catch
+      kind, reason ->
+        Logger.error(
+          "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} " <>
+            "caught #{inspect(kind)}: #{inspect(reason)}, denying for safety"
+        )
+
+        false
+    end
   end
 
   @doc """
@@ -260,20 +315,29 @@ defmodule PhoenixGenApi.Permission do
   """
   def check_permission!(request = %Request{}, fun_config = %FunConfig{}) do
     if not check_permission(request, fun_config) do
+      permission_mode = determine_permission_mode(fun_config)
+
       Logger.warning(
         "PhoenixGenApi.Permission, check_permission!, denied, user: #{inspect(request.user_id)}, " <>
           "request_id: #{inspect(request.request_id)}, " <>
           "request_type: #{inspect(request.request_type)}, " <>
-          "permission_mode: #{inspect(fun_config.check_permission)}"
+          "permission_mode: #{inspect(permission_mode)}"
       )
 
       raise PermissionDenied,
         user_id: request.user_id,
         request_id: request.request_id,
         request_type: request.request_type,
-        permission_mode: fun_config.check_permission
+        permission_mode: permission_mode
     end
 
     nil
   end
+
+  defp determine_permission_mode(%FunConfig{permission_callback: {mod, fun, args}})
+       when is_atom(mod) and is_atom(fun) and is_list(args) do
+    {:callback, {mod, fun, args}}
+  end
+
+  defp determine_permission_mode(%FunConfig{check_permission: mode}), do: mode
 end

@@ -363,50 +363,11 @@ defmodule PhoenixGenApi.ConfigReceiver do
   ### Private - FunConfig Helpers
 
   defp enforce_service_name(config = %FunConfig{}, service_name) do
-    if same_service?(config.service, service_name) do
-      config
-    else
-      Logger.warning(
-        "PhoenixGenApi.ConfigReceiver, service_name mismatch in FunConfig #{inspect(config.request_type)}, expected #{inspect(service_name)}, got #{inspect(config.service)}, overwriting"
-      )
-
-      %FunConfig{config | service: service_name}
-    end
+    PhoenixGenApi.Helpers.Shared.enforce_service_name(config, service_name)
   end
-
-  defp same_service?(fun_service, push_service)
-       when is_atom(fun_service) and is_atom(push_service) do
-    fun_service == push_service
-  end
-
-  defp same_service?(fun_service, push_service)
-       when is_binary(fun_service) and is_binary(push_service) do
-    fun_service == push_service
-  end
-
-  defp same_service?(fun_service, push_service)
-       when is_atom(fun_service) and is_binary(push_service) do
-    Atom.to_string(fun_service) == push_service
-  end
-
-  defp same_service?(fun_service, push_service)
-       when is_binary(fun_service) and is_atom(push_service) do
-    fun_service == Atom.to_string(push_service)
-  end
-
-  defp same_service?(_, _), do: false
 
   defp ensure_version(config = %FunConfig{}) do
-    if Map.has_key?(config, :version) and is_binary(config.version) and
-         byte_size(config.version) > 0 do
-      config
-    else
-      Logger.debug(
-        "PhoenixGenApi.ConfigReceiver, adding default version to config for #{inspect(config.request_type)}"
-      )
-
-      %FunConfig{config | version: "0.0.0"}
-    end
+    PhoenixGenApi.Helpers.Shared.ensure_version(config)
   end
 
   ### Private - ConfigPuller Integration

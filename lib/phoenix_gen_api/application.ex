@@ -32,7 +32,10 @@ defmodule PhoenixGenApi.Application do
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: PhoenixGenApi.Supervisor]
+    # Use :rest_for_one so that if ConfigDb crashes and restarts (losing all cached configs),
+    # the dependent processes (ConfigPuller, ConfigReceiver) also restart to re-populate
+    # the cache. This avoids a window of unavailability where the cache is empty.
+    opts = [strategy: :rest_for_one, name: PhoenixGenApi.Supervisor]
     Supervisor.start_link(children, opts)
   end
 end

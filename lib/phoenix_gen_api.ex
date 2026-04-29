@@ -734,24 +734,57 @@ defmodule PhoenixGenApi do
           "PhoenixGenApi, #{__MODULE__}, request: #{inspect(payload)}"
         end)
 
+        # Only override user_id from socket assigns if it's a valid non-empty string.
+        # Previously, nil user_ids from socket.assigns would be set in the payload,
+        # which could bypass :any_authenticated permission checks.
         payload =
           if @phoenix_gen_api_override_user_id do
-            Map.put(payload, "user_id", socket.assigns.user_id)
+            case Map.get(socket.assigns, :user_id) do
+              user_id when is_binary(user_id) and byte_size(user_id) > 0 ->
+                Map.put(payload, "user_id", user_id)
+
+              _ ->
+                payload
+            end
           else
             payload
           end
 
-        request = PhoenixGenApi.Structs.Request.decode!(payload)
+        # Wrap decode and execute in try/rescue to prevent channel crashes
+        # from malformed payloads or unhandled exceptions (e.g., PermissionDenied).
+        {reply_result, push_response} =
+          try do
+            request = PhoenixGenApi.Structs.Request.decode!(payload)
 
-        case PhoenixGenApi.Executor.execute!(request) do
-          %PhoenixGenApi.Structs.Response{} = result ->
-            push(socket, @phoenix_gen_api_event, result)
+            case PhoenixGenApi.Executor.execute!(request) do
+              %PhoenixGenApi.Structs.Response{} = result ->
+                {{:ok, request.request_type}, result}
 
-          {:ok, :no_response} ->
-            :ok
+              {:ok, :no_response} ->
+                {{:ok, request.request_type}, nil}
+            end
+          rescue
+            e ->
+              request_id = Map.get(payload, "request_id", "unknown")
+
+              Logger.error(
+                "PhoenixGenApi, #{__MODULE__}, request processing failed: #{Exception.message(e)}"
+              )
+
+              error_response =
+                PhoenixGenApi.Structs.Response.error_response(
+                  request_id,
+                  "Request processing failed"
+                )
+
+              {{:error, Exception.message(e)}, error_response}
+          end
+
+        if push_response do
+          push(socket, @phoenix_gen_api_event, push_response)
         end
 
-        {:reply, {:ok, "#{request.request_type}"}, socket}
+        {:reply, reply_result, socket}
       end
 
       @doc false

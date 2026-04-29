@@ -139,10 +139,34 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   def attach_telemetry(handler_id, function, config \\ %{})
       when is_binary(handler_id) and is_function(function, 4) do
-    :telemetry.attach(handler_id, [:phoenix_gen_api, :rate_limiter, :check], function, config)
-    :telemetry.attach("#{handler_id}-exceeded", [:phoenix_gen_api, :rate_limiter, :exceeded], function, config)
-    :telemetry.attach("#{handler_id}-reset", [:phoenix_gen_api, :rate_limiter, :reset], function, config)
-    :telemetry.attach("#{handler_id}-cleanup", [:phoenix_gen_api, :rate_limiter, :cleanup], function, config)
+    :telemetry.attach(
+      "#{handler_id}-check",
+      [:phoenix_gen_api, :rate_limiter, :check],
+      function,
+      config
+    )
+
+    :telemetry.attach(
+      "#{handler_id}-exceeded",
+      [:phoenix_gen_api, :rate_limiter, :exceeded],
+      function,
+      config
+    )
+
+    :telemetry.attach(
+      "#{handler_id}-reset",
+      [:phoenix_gen_api, :rate_limiter, :reset],
+      function,
+      config
+    )
+
+    :telemetry.attach(
+      "#{handler_id}-cleanup",
+      [:phoenix_gen_api, :rate_limiter, :cleanup],
+      function,
+      config
+    )
+
     :ok
   end
 
@@ -254,7 +278,10 @@ defmodule PhoenixGenApi.RateLimiter do
   rescue
     e ->
       if fail_open?() do
-        Logger.error("PhoenixGenApi.RateLimiter, check_rate_limit failed, allowing request: #{Exception.message(e)}")
+        Logger.error(
+          "PhoenixGenApi.RateLimiter, check_rate_limit failed, allowing request: #{Exception.message(e)}"
+        )
+
         :ok
       else
         {:error, :rate_limiter_error, %{message: Exception.message(e)}}
@@ -540,6 +567,7 @@ defmodule PhoenixGenApi.RateLimiter do
 
   def handle_call({:add_global_limit, limit}, _from, state) do
     key = Map.get(limit, :key)
+
     new_limits =
       state.global_limits
       |> Enum.reject(fn l -> Map.get(l, :key) == key end)
@@ -656,10 +684,13 @@ defmodule PhoenixGenApi.RateLimiter do
   defp check_direct_limit(key_value, scope, rate_limit_key, state) do
     limits =
       case scope do
-        :global -> state.global_limits
+        :global ->
+          state.global_limits
+
         {service, request_type} ->
           Enum.filter(state.api_limits, fn limit ->
-            limit.service == service and limit.request_type == request_type and limit.key == rate_limit_key
+            limit.service == service and limit.request_type == request_type and
+              limit.key == rate_limit_key
           end)
       end
 
@@ -735,7 +766,10 @@ defmodule PhoenixGenApi.RateLimiter do
       end
 
     :ets.delete(table, ets_key)
-    Logger.info("PhoenixGenApi.RateLimiter, reset rate limit for key: #{inspect(key_value)}, scope: #{inspect(scope)}")
+
+    Logger.info(
+      "PhoenixGenApi.RateLimiter, reset rate limit for key: #{inspect(key_value)}, scope: #{inspect(scope)}"
+    )
   end
 
   defp get_limit_status(key_value, scope, _rate_limit_key, state) do
@@ -749,7 +783,9 @@ defmodule PhoenixGenApi.RateLimiter do
 
     limits =
       case scope do
-        :global -> state.global_limits
+        :global ->
+          state.global_limits
+
         {service, request_type} ->
           Enum.filter(state.api_limits, fn limit ->
             limit.service == service and limit.request_type == request_type
@@ -820,7 +856,10 @@ defmodule PhoenixGenApi.RateLimiter do
     # Clean API table
     api_cleaned = cleanup_table(:rate_limiter_api, now)
 
-    Logger.debug("PhoenixGenApi.RateLimiter, cleanup completed, removed #{global_cleaned + api_cleaned} entries")
+    Logger.debug(
+      "PhoenixGenApi.RateLimiter, cleanup completed, removed #{global_cleaned + api_cleaned} entries"
+    )
+
     global_cleaned + api_cleaned
   end
 
@@ -894,7 +933,8 @@ defmodule PhoenixGenApi.RateLimiter do
   end
 
   defp cleanup_interval() do
-    Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:cleanup_interval] || @default_cleanup_interval
+    Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:cleanup_interval] ||
+      @default_cleanup_interval
   end
 
   defp maybe_update_global_limits(state, %{global_limits: limits}) when is_list(limits) do

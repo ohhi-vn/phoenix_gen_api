@@ -3,43 +3,40 @@
 
 # PhoenixGenApi
 
-The library helps quickly develop APIs for client, the library is based on Phoenix Channel.
-Developers can add or update APIs in runtime from other nodes in the cluster without restarting or reconfiguring the Phoenix app.
-In this case, the Phoenix app will take on the role of an API gateway.
+Build dynamic API gateways on top of Phoenix Channels. Register APIs at runtime from any node in the cluster — no restarts, no redeploys.
 
-The library can use with [EasyRpc](https://hex.pm/packages/easy_rpc) and [ClusterHelper](https://hex.pm/packages/cluster_helper) for fast and easy to develop a dynamic Elixir cluster.
+## How It Works
 
-If you use Ash framework, you can use [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) for generating FunConfig & supporter functions with a little of bit effort.
+```text
+┌──────────┐     WebSocket      ┌──────────────────┐     RPC      ┌──────────────┐
+│  Client  │ ◄──────────────► │  Phoenix Gateway  │ ◄──────────► │ Service Node │
+└──────────┘   (Phoenix Ch.)   │  (uses this lib)  │   (Erlang)   │  (your app)  │
+                               └──────────────────┘              └──────────────┘
+```
 
-## Concept
+1. **Clients** send requests through a Phoenix Channel.
+2. The **Gateway** looks up the matching `FunConfig`, selects a node, validates arguments & permissions, then executes the remote function.
+3. The **Service Node** runs the function and returns the result.
 
-After received an event from client(in handle_in callback of Phoenix Channel), the event will be passed to PhoenixGenApi to find target API & target node to execute then get result for response to client.
-
-For service nodes (target node), the libray support some basic strategy for selecting node (:choose_node_mode) like: :random, :hash, :round_robin.
-
-Supported :sync, :async, :stream for request/response to client.
-
-Supported basic check type & permission.
+Service nodes can register new APIs at any time — the gateway picks them up automatically (pull) or receives them immediately (push).
 
 ## Features
 
-- **Dynamic Configuration**: Add/update APIs at runtime from remote nodes
-- **Multi-Version Support**: Manage multiple API versions with enable/disable controls
-- **Rate Limiting**: Sliding window rate limiter with global and per-API limits
-- **Permission System**: Flexible authentication and authorization modes
-- **Worker Pools**: Dedicated pools for async and stream operations
-- **Node Selection**: Random, hash-based, and round-robin strategies
-- **Retry on failure**: Configurable retry with same-node or all-nodes strategies
-- **Response Types**: Sync, async, stream, and fire-and-forget
+- **Dynamic Configuration** — Add, update, or remove APIs at runtime from any cluster node
+- **Multiple Response Modes** — Sync, async, streaming, and fire-and-forget
+- **Node Selection** — Random, hash-based, round-robin, or custom strategies
+- **Function Versioning** — Run multiple API versions side-by-side; enable/disable per version
+- **Rate Limiting** — Sliding-window rate limiter with global and per-API limits
+- **Permission System** — Authenticated-only, argument-based, or role-based access control
+- **Retry** — Configurable retry on the same node or across all nodes
+- **Hooks** — `before_execute` / `after_execute` callbacks for cross-cutting concerns
+- **Telemetry** — 28 events across 5 categories for observability
 
 ## Installation
 
-Note: Require Elixir ~> 1.18 and OTP ~> 27
+Requires Elixir ~> 1.18 and OTP ~> 27.
 
-The package can be installed
-by adding `phoenix_gen_api` to your list of dependencies in `mix.exs`:
-
-```Elixir
+```elixir
 def deps do
   [
     {:phoenix_gen_api, "~> 2.10"}
@@ -47,48 +44,242 @@ def deps do
 end
 ```
 
-Note: You can use [`:libcluster`](https://hex.pm/packages/libcluster) to build a Elixir cluster.
+Use [`:libcluster`](https://hex.pm/packages/libcluster) to form the Erlang cluster.
 
-## Usage
+## Quick Start
 
-### Remote Node (optional)
+### 1. Define your API on the service node
 
-Add config to your `config.exs` file to mark this is remote node.
+```elixir
+defmodule MyApp.Api do
+  def get_user(user_id) do
+    %{id: user_id, name: "Alice"}
+  end
+end
+```
 
-```Elixir
+### 2. Create a FunConfig
+
+A `FunConfig` tells the gateway *how* to call your function:
+
+```elixir
+alias PhoenixGenApi.Structs.FunConfig
+
+%FunConfig{
+  request_type: "get_user",
+  service: "user_service",
+  nodes: [:"app@host"],
+  choose_node_mode: :random,
+  timeout: 5_000,
+  mfa: {MyApp.Api, :get_user, []},
+  arg_types: %{"user_id" => :string},
+  response_type: :sync,
+  version: "1.0.0"
+}
+```
+
+### 3. Register the config on the gateway
+
+**Option A — Pull mode** (gateway fetches from service node on startup):
+
+On the service node, define a supporter module:
+
+```elixir
+defmodule MyApp.GenApi.Supporter do
+  alias PhoenixGenApi.Structs.FunConfig
+
+  def get_config(_arg) do
+    {:ok, [
+      %FunConfig{
+        request_type: "get_user",
+        service: "user_service",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {MyApp.Api, :get_user, []},
+        arg_types: %{"user_id" => :string},
+        response_type: :sync,
+        version: "1.0.0"
+      }
+    ]}
+  end
+end
+```
+
+Then configure the gateway to pull from it (see [Gateway Configuration](#gateway-configuration) below).
+
+**Option B — Push mode** (service node pushes to gateway on startup):
+
+```elixir
+alias PhoenixGenApi.ConfigPusher
+
+fun_configs = [%FunConfig{ ... }]
+
+push_config = ConfigPusher.from_service_config(
+  :user_service,
+  [Node.self()],
+  fun_configs,
+  config_version: "1.0.0"
+)
+
+ConfigPusher.push_on_startup(:"gateway@host", push_config)
+```
+
+**Option C — Add directly** on the gateway node at runtime:
+
+```elixir
+PhoenixGenApi.ConfigDb.add(%FunConfig{ ... })
+```
+
+### 4. Add PhoenixGenApi to your Channel
+
+```elixir
+defmodule MyAppWeb.ApiChannel do
+  use Phoenix.Channel
+  use PhoenixGenApi, event: "api"
+
+  # handle_in, handle_info for :push, :async_call, :stream_response
+  # are automatically injected by `use PhoenixGenApi`
+end
+```
+
+### 5. Call from the client
+
+Send a JSON message over the channel:
+
+```json
+{
+  "service": "user_service",
+  "request_type": "get_user",
+  "request_id": "req_1",
+  "args": { "user_id": "123" }
+}
+```
+
+Receive the response:
+
+```json
+{
+  "request_id": "req_1",
+  "result": { "id": "123", "name": "Alice" },
+  "success": true,
+  "async": false,
+  "has_more": false
+}
+```
+
+That's it — you have a working API gateway.
+
+---
+
+## Core Concepts
+
+### FunConfig
+
+`FunConfig` is the central data structure. It maps a `{service, request_type}` pair to a function call.
+
+| Field | Type | Description |
+|---|---|---|
+| `request_type` | `String.t()` | API endpoint name (e.g. `"get_user"`) |
+| `service` | `atom \| String.t()` | Service group name (e.g. `"user_service"`) |
+| `nodes` | `[atom] \| {m, f, a} \| :local` | Target nodes or `:local` for same-node execution |
+| `choose_node_mode` | `:random \| :hash \| {:hash, key} \| :round_robin` | Node selection strategy |
+| `timeout` | `integer \| :infinity` | Execution timeout in ms (100–300 000 or `:infinity`) |
+| `mfa` | `{module, function, args}` | The function to call. Args are prepended with converted request args |
+| `arg_types` | `%{name => type}` | Argument type declarations for validation |
+| `arg_orders` | `[String.t()] \| :map` | Argument ordering (or `:map` to pass a map) |
+| `response_type` | `:sync \| :async \| :stream \| :none` | How the result is delivered |
+| `check_permission` | `false \| :any_authenticated \| {:arg, name} \| {:role, roles}` | Permission mode |
+| `permission_callback` | `{m, f, a} \| nil` | Custom permission check |
+| `request_info` | `boolean()` | Pass the full `%Request{}` as first arg to the MFA |
+| `version` | `String.t()` | API version (default `"0.0.0"`) |
+| `disabled` | `boolean()` | Disable this version without removing it |
+| `retry` | `nil \| number \| {:same_node, n} \| {:all_nodes, n}` | Retry configuration |
+| `before_execute` | `{m, f} \| {m, f, a} \| nil` | Hook called before execution |
+| `after_execute` | `{m, f} \| {m, f, a} \| nil` | Hook called after execution |
+
+### Request
+
+The client payload is decoded into a `%Request{}`:
+
+| Field | Type | Description |
+|---|---|---|
+| `user_id` | `String.t() \| nil` | Authenticated user ID (can be set from socket assigns) |
+| `device_id` | `String.t() \| nil` | Device identifier |
+| `request_type` | `String.t()` | Which API to call |
+| `request_id` | `String.t()` | Client-generated ID to match responses |
+| `service` | `String.t()` | Target service |
+| `args` | `map()` | Request arguments |
+| `user_roles` | `[String.t()] \| nil` | User roles for RBAC |
+| `version` | `String.t() \| nil` | Requested API version |
+
+### Response
+
+The gateway replies with a `%Response{}`:
+
+| Field | Type | Description |
+|---|---|---|
+| `request_id` | `String.t()` | Matches the request |
+| `result` | `any()` | Returned data |
+| `success` | `boolean()` | Whether the call succeeded |
+| `error` | `String.t() \| nil` | Error message on failure |
+| `async` | `boolean()` | `true` if more messages will follow |
+| `has_more` | `boolean()` | `true` for intermediate stream chunks |
+| `can_retry` | `boolean()` | `true` if the client may retry |
+
+---
+
+## Configuration
+
+### Gateway Configuration
+
+In the gateway node's `config.exs`:
+
+```elixir
+config :phoenix_gen_api, :gen_api,
+  pull_timeout: 5_000,
+  pull_interval: 30_000,
+  detail_error: false,
+  service_configs: [
+    %{
+      service: "user_service",
+      nodes: [:"app@host"],
+      module: MyApp.GenApi.Supporter,
+      function: :get_config,
+      args: []
+    }
+  ]
+```
+
+### Remote Node (Pull Mode)
+
+Mark the node as a client so it can push configs:
+
+```elixir
 config :phoenix_gen_api, :client_mode, true
 ```
 
-Declare a module for support PhoenixGenApi can pull config.
+Define a supporter module that returns `FunConfig` lists:
 
-Example:
-
-```Elixir
+```elixir
 defmodule MyApp.GenApi.Supporter do
-
   alias PhoenixGenApi.Structs.FunConfig
 
-  @doc """
-  Support for remote pull general api config.
-  """
   def get_config(_arg) do
     {:ok, my_fun_configs()}
   end
 
-  @doc """
-  Return list of %FunConfig{}.
-  """
-  def my_fun_configs() do
+  def my_fun_configs do
     [
       %FunConfig{
-        request_type: "get_data",
-        service: "my_service",
+        request_type: "get_user",
+        service: "user_service",
         nodes: [Node.self()],
         choose_node_mode: :random,
         timeout: 5_000,
-        mfa: {MyApp.Interface.Api, :get_data, []},
-        arg_types: %{"id" => :string},
-        response_type: :async,
+        mfa: {MyApp.Api, :get_user, []},
+        arg_types: %{"user_id" => :string},
+        response_type: :sync,
         version: "1.0.0"
       }
     ]
@@ -96,272 +287,129 @@ defmodule MyApp.GenApi.Supporter do
 end
 ```
 
-Note: You can add directly in runtime in gateway node without using client mode.
+### Active Push (Remote → Gateway)
 
-### Active Push (Remote Node → Gateway)
+Remote nodes can push configs immediately on startup instead of waiting for a pull:
 
-In addition to the pull mechanism, remote nodes can **actively push** their service configuration and function configs to the gateway node. This is useful when you want to register a service immediately on startup rather than waiting for the gateway to pull.
-
-#### How It Works
-
-1. **Remote node** creates a `PushConfig` with service info, function configs, and a config version
-2. **Remote node** calls `ConfigPusher.push_on_startup/3` (or `push/2`) to push to the gateway
-3. **Gateway node** receives the push via `ConfigReceiver`, validates, stores in `ConfigDb`, and optionally registers for auto-pull
-4. If the `PushConfig` includes `module`/`function` for auto-pull, the gateway will also periodically refresh the config
-
-The push is idempotent — if the `config_version` matches what the gateway already has, the push is skipped. Use `force: true` to override.
-
-#### Remote Node Setup
-
-```Elixir
-# In your remote node's application start or GenServer init:
-alias PhoenixGenApi.Structs.FunConfig
+```elixir
 alias PhoenixGenApi.ConfigPusher
+alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
 
-fun_configs = [
-  %FunConfig{
-    request_type: "get_data",
-    service: :my_service,
-    nodes: [Node.self()],
-    choose_node_mode: :random,
-    timeout: 5_000,
-    mfa: {MyApp.Interface.Api, :get_data, []},
-    arg_types: %{"id" => :string},
-    response_type: :sync,
-    version: "1.0.0"
-  }
-]
+fun_configs = [%FunConfig{ ... }]
 
-# Option 1: Build PushConfig manually
-push_config = %PhoenixGenApi.Structs.PushConfig{
-  service: :my_service,
+push_config = %PushConfig{
+  service: :user_service,
   nodes: [Node.self()],
   config_version: "1.0.0",
   fun_configs: fun_configs,
-  # Optional: enable auto-pull after initial push
+  # Optional: enable periodic pull after initial push
   module: MyApp.GenApi.Supporter,
   function: :get_config,
   args: []
 }
 
-# Option 2: Build PushConfig using helper
-push_config = ConfigPusher.from_service_config(
-  :my_service,
-  [Node.self()],
-  fun_configs,
-  config_version: "1.0.0",
-  module: MyApp.GenApi.Supporter,
-  function: :get_config
-)
+ConfigPusher.push_on_startup(:"gateway@host", push_config)
+```
 
-# Push once on startup
-ConfigPusher.push_on_startup(:gateway@host, push_config)
+Push is idempotent — if `config_version` matches, the push is skipped. Use `force: true` to override:
 
-# Or verify first, then push only if needed
-case ConfigPusher.verify(:gateway@host, :my_service, "1.0.0") do
+```elixir
+ConfigPusher.push(:"gateway@host", push_config, force: true)
+```
+
+Verify a service's config version before pushing:
+
+```elixir
+case ConfigPusher.verify(:"gateway@host", :user_service, "1.0.0") do
   {:ok, :matched} -> :already_registered
-  {:ok, :mismatch, _} -> ConfigPusher.push(:gateway@host, push_config)
-  {:error, :not_found} -> ConfigPusher.push(:gateway@host, push_config)
+  {:ok, :mismatch, _} -> ConfigPusher.push(:"gateway@host", push_config)
+  {:error, :not_found} -> ConfigPusher.push(:"gateway@host", push_config)
 end
 ```
 
-#### Force Push
+Gateway-side API:
 
-```Elixir
-# Force push even if version matches (e.g., after hot code upgrade)
-ConfigPusher.push(:gateway@host, push_config, force: true)
-```
-
-#### Gateway Node API
-
-On the gateway node, you can also use the server-side API directly:
-
-```Elixir
-# Receive a push (typically called via RPC from remote node)
+```elixir
+# Receive a push (called via RPC from remote node)
 {:ok, :accepted} = PhoenixGenApi.push_config(push_config)
 {:ok, :skipped, :version_matches} = PhoenixGenApi.push_config(push_config)
 {:ok, :accepted} = PhoenixGenApi.push_config(push_config, force: true)
 
 # Verify a service's config version
-{:ok, :matched} = PhoenixGenApi.verify_config("my_service", "1.0.0")
-{:ok, :mismatch, "0.9.0"} = PhoenixGenApi.verify_config("my_service", "1.0.0")
-{:error, :not_found} = PhoenixGenApi.verify_config("unknown_service", "1.0.0")
+{:ok, :matched} = PhoenixGenApi.verify_config("user_service", "1.0.0")
+{:ok, :mismatch, "0.9.0"} = PhoenixGenApi.verify_config("user_service", "1.0.0")
+{:error, :not_found} = PhoenixGenApi.verify_config("unknown", "1.0.0")
 
-# Check pushed services status (IEx helper)
+# Check pushed services (IEx helper)
 PhoenixGenApi.pushed_services_status()
 ```
 
-### Phoenix Node (Gateway node)
+### Channel Integration
 
-Add config for Phoenix can pull config from remote nodes(above) like:
-
-```Elixir
-# Config for general api.
-config :phoenix_gen_api, :gen_api,
-  service_configs: [
-    # service config for pulling general api config.
-    %{
-      # service type
-      service: "my_service",
-      # nodes of service in cluster, need to connecto to get config
-      # list of nodes or using MFA like: {ClusterHelper, get_nodes, [:my_api]}
-      nodes: [:"remote_service@test.local"], 
-      # module to get config
-      module: MyApp.GenApi.Supporter,
-      # function to get config
-      function: :get_config,
-      # args to get config, using for identity or check security.
-      args: [:gateway_1],
-    }
-  ]
-
-# Config for rate limiter.
-config :phoenix_gen_api, :rate_limiter,
-  enabled: true,
-  global_limits: [
-    %{key: :user_id, max_requests: 2000, window_ms: 60_000},
-    %{key: :device_id, max_requests: 10000, window_ms: 60_000}
-  ],
-  api_limits: [
-    %{
-      service: "data_service",
-      request_type: "export_data",
-      key: :user_id,
-      max_requests: 10,
-      window_ms: 60_000
-    }
-  ]
+```elixir
+defmodule MyAppWeb.ApiChannel do
+  use Phoenix.Channel
+  use PhoenixGenApi, event: "api"
+end
 ```
 
-In Phoenix Channel you can add add this line for apply PhoenixGenApi:
+Options:
 
-```Elixir
-use  PhoenixGenApi, event: "phoenix_gen_api"
-```
+| Option | Default | Description |
+|---|---|---|
+| `:event` | `"phoenix_gen_api"` | Channel event name |
+| `:override_user_id` | `true` | Override `user_id` from `socket.assigns.user_id` |
 
-Follow functions will be expanded and reserved for PhoenixGenApi.
+The `use` macro injects these handlers:
 
-```Elixir
-handle_in("phoenix_gen_api", payload, socket) 
-handle_info({:push, result}, socket)
-handle_info({:async_call, result = %Response{}}, socket)
-handle_info({:stream_response, result}, socket)
-```
+- `handle_in(event, payload, socket)` — decodes the request, executes it, replies
+- `handle_info({:push, result}, socket)` — pushes async results to the client
+- `handle_info({:stream_response, result}, socket)` — pushes stream chunks
+- `handle_info({:async_call, result}, socket)` — pushes async call results
 
-Default PhoenixGenApi will overwrite user_id in `Request`.
-Disable this by add option: `override_user_id: false` to `use PhoenixGenApi`
-
-In this case, if need you can authenticate by using Phoenix framework.
-
-Now you can start your cluster and test!
-
-After start Phoenix app, PhoenixGenApi will auto pull config from remote node to serve client.
-
-For test in Elixir you can use  [`phoenix_client`](https://hex.pm/packages/phoenix_client) to create a connection to Phoenix Channel.
-
-You can push a event with content like:
-
-```json
-{
-  "user_id": "user_1",
-  "device_id": "device_1",
-  "service": "my_service",
-  "request_type": "get_data",
-  "request_id": "test_request_1",
-  "version": "1.0.0",
-  "args": {
-    "id": "test_data_id"
-  }
-}
-```
-
-Result like:
-
-If is async/stream call you will receive a message like this:
-
-```json
-{
-  "async": true,
-  "error": "",
-  "has_more": false,
-  "request_id": "test_request_1",
-  "result": null,
-  "success": true
-}
-```
-
-After that is a another message with result:
-
-```json
-{
-  "async": false,
-  "error": "",
-  "has_more": false,
-  "request_id": "test_request_1",
-  "result": [
-    {
-      "id": "14e99227-512a-47b6-b6b1-2d4bc29ca13e",
-      "name": "Hello World!"
-    }
-  ]
-}
-```
-
-For better security you can overwrite user_id in server, using basic check permission or passing request info (user_id, device_id, request_id).
+---
 
 ## Function Versioning
 
-PhoenixGenApi supports multiple versions of the same API, allowing you to manage API evolution and deprecation gracefully.
-
-### Version Configuration
-
-Each `FunConfig` can have a `version` field (defaults to `"0.0.0"` if not specified):
+Run multiple versions of the same API side-by-side:
 
 ```elixir
+# Version 1.0.0
 %FunConfig{
   request_type: "get_user",
   service: "user_service",
   version: "1.0.0",
-  nodes: :local,
   mfa: {MyApp.Users, :get_user_v1, []},
   arg_types: %{"id" => :string},
   response_type: :sync
 }
 
+# Version 2.0.0 — adds a "fields" argument
 %FunConfig{
   request_type: "get_user",
   service: "user_service",
   version: "2.0.0",
-  nodes: :local,
   mfa: {MyApp.Users, :get_user_v2, []},
   arg_types: %{"id" => :string, "fields" => :list_string},
   response_type: :sync
 }
 ```
 
-### Request Version
-
-Clients can specify which version they want to use by including the `version` field in their request:
+Clients request a specific version:
 
 ```json
 {
-  "user_id": "user_1",
   "service": "user_service",
   "request_type": "get_user",
   "request_id": "req_1",
   "version": "2.0.0",
-  "args": {
-    "id": "123",
-    "fields": ["name", "email"]
-  }
+  "args": { "id": "123", "fields": ["name", "email"] }
 }
 ```
 
-If no version is specified, the system defaults to `"0.0.0"`.
+If no `version` is sent, `"0.0.0"` is used.
 
 ### Managing Versions
-
-You can manage API versions programmatically:
 
 ```elixir
 alias PhoenixGenApi.ConfigDb
@@ -370,76 +418,59 @@ alias PhoenixGenApi.ConfigDb
 {:ok, config} = ConfigDb.get("user_service", "get_user", "1.0.0")
 
 # Get the latest enabled version
-{:ok, latest_config} = ConfigDb.get_latest("user_service", "get_user")
+{:ok, latest} = ConfigDb.get_latest("user_service", "get_user")
 
-# Disable a version (e.g., for deprecation)
+# Disable a version (returns {:error, :disabled} when called)
 :ok = ConfigDb.disable("user_service", "get_user", "1.0.0")
 
-# Re-enable a disabled version
+# Re-enable
 :ok = ConfigDb.enable("user_service", "get_user", "1.0.0")
 
-# Delete a specific version
+# Delete
 :ok = ConfigDb.delete("user_service", "get_user", "1.0.0")
 
 # List all functions with their versions
-%{
-  "user_service" => %{
-    "get_user" => ["1.0.0", "2.0.0"],
-    "create_user" => ["1.0.0"]
-  }
-} = ConfigDb.get_all_functions()
+ConfigDb.get_all_functions()
 ```
 
-### Version Behavior
+**Behavior:**
 
-- **Disabled versions** return `{:error, :disabled}` when accessed
-- **Non-existent versions** return `{:error, :not_found}`
-- **Multiple versions** can coexist independently
-- **Disabling one version** does not affect other versions
-- **`get_latest/2`** returns the highest version number that is enabled
+- Disabled versions return `{:error, :disabled}`
+- Non-existent versions return `{:error, :not_found}`
+- `get_latest/2` returns the highest enabled version number
+- Disabling one version does not affect others
+
+---
 
 ## Rate Limiter
 
-PhoenixGenApi includes a high-performance sliding window rate limiter using ETS for tracking.
+Sliding-window rate limiter backed by ETS.
 
 ### Configuration
-
-Configure rate limits in `config.exs`:
 
 ```elixir
 config :phoenix_gen_api, :rate_limiter,
   enabled: true,
+  fail_open: true,
   global_limits: [
-    # 2000 requests per minute per user
+    # 2 000 requests per minute per user
     %{key: :user_id, max_requests: 2000, window_ms: 60_000},
-    # 10000 requests per minute per device
+    # 10 000 requests per minute per device
     %{key: :device_id, max_requests: 10000, window_ms: 60_000}
   ],
   api_limits: [
-    # Expensive operation: 10 requests per minute
+    # Expensive operation: 10 requests per minute per user
     %{
       service: "data_service",
       request_type: "export_data",
       key: :user_id,
       max_requests: 10,
       window_ms: 60_000
-    },
-    # Public endpoint: 100 requests per minute
-    %{
-      service: "public_service",
-      request_type: "search",
-      key: :ip_address,
-      max_requests: 100,
-      window_ms: 60_000
     }
   ]
 ```
 
-### Usage
-
-Rate limiting is automatically checked when you call `Executor.execute!/1` or `Executor.execute_params!/1`.
-
-You can also check rate limits manually:
+### Runtime API
 
 ```elixir
 alias PhoenixGenApi.RateLimiter
@@ -447,247 +478,122 @@ alias PhoenixGenApi.RateLimiter
 # Check rate limit for a request
 case RateLimiter.check_rate_limit(request) do
   :ok ->
-    # Proceed with execution
+    # Proceed
     Executor.execute!(request)
 
   {:error, :rate_limited, details} ->
-    # Return rate limit error
-    %{
-      error: "Rate limit exceeded",
-      retry_after: details.retry_after_ms,
-      current_requests: details.current_requests,
-      max_requests: details.max_requests
-    }
+    # Reject
+    %{error: "Rate limit exceeded", retry_after: details.retry_after_ms}
 end
 
-# Check global rate limit directly
+# Check global/API-specific limits directly
 RateLimiter.check_rate_limit("user_123", :global, :user_id)
-
-# Check API-specific rate limit
 RateLimiter.check_rate_limit("user_123", {"my_service", "my_api"}, :user_id)
+
+# Dynamic configuration
+RateLimiter.add_global_limit(%{key: :ip_address, max_requests: 5000, window_ms: 60_000})
+RateLimiter.update_config(%{enabled: true, global_limits: [...], api_limits: [...]})
 ```
 
-### Dynamic Configuration
+### Supported Keys
 
-Update rate limits at runtime:
+`:user_id`, `:device_id`, `:ip_address`, or any custom string key.
+
+### IEx Helpers
 
 ```elixir
-# Add a new global limit
-RateLimiter.add_global_limit(%{
-  key: :ip_address,
-  max_requests: 5000,
-  window_ms: 60_000
-})
-
-# Update configuration
-RateLimiter.update_config(%{
-  enabled: true,
-  global_limits: [...],
-  api_limits: [...]
-})
+PhoenixGenApi.rl_status("user_123")   # Rate limit status for a user
+PhoenixGenApi.rl_global()             # Show global limits
+PhoenixGenApi.rl_config()             # Show full rate limiter config
 ```
 
-### Rate Limit Keys
-
-Supported key types:
-- `:user_id` - Rate limit by user
-- `:device_id` - Rate limit by device
-- `:ip_address` - Rate limit by IP address
-- Custom string keys
-
-### Telemetry
-
-The rate limiter emits telemetry events for monitoring (e.g., `[:phoenix_gen_api, :rate_limiter, :exceeded]`).
-
-See the [Telemetry Guide](guides/telemetry.md) for the full event reference and integration examples.
+---
 
 ## Permission System
 
-PhoenixGenApi provides a flexible permission system with multiple modes for authentication and authorization.
+Four permission modes, configured per `FunConfig` via `check_permission`:
 
-### Permission Modes
+### 1. Disabled (`false`)
 
-Configure permissions in `FunConfig.check_permission`:
-
-#### 1. Disabled (`false`)
-No permission check. Useful for public endpoints.
+No check. Use for public endpoints.
 
 ```elixir
-%FunConfig{
-  request_type: "get_public_data",
-  check_permission: false
-}
+%FunConfig{request_type: "search", check_permission: false}
 ```
 
-#### 2. Any Authenticated (`:any_authenticated`)
-Requires a valid `user_id`. Any authenticated user can access.
+### 2. Any Authenticated (`:any_authenticated`)
+
+Requires a non-nil `user_id`.
 
 ```elixir
-%FunConfig{
-  request_type: "get_profile",
-  check_permission: :any_authenticated
-}
-
-# Passes - user is authenticated
-request = %Request{user_id: "user_123"}
-
-# Fails - no user_id
-request = %Request{user_id: nil}
+%FunConfig{request_type: "get_profile", check_permission: :any_authenticated}
 ```
 
-#### 3. Argument-Based (`{:arg, arg_name}`)
-User can only access their own data. The specified argument must match `user_id`.
+### 3. Argument-Based (`{:arg, arg_name}`)
+
+The specified argument must match `user_id` — users can only access their own data.
 
 ```elixir
-%FunConfig{
-  request_type: "get_user_profile",
-  check_permission: {:arg, "user_id"}
-}
-
-# Passes - user accessing their own data
-request = %Request{
-  user_id: "user_123",
-  args: %{"user_id" => "user_123"}
-}
-
-# Fails - user trying to access another user's data
-request = %Request{
-  user_id: "user_123",
-  args: %{"user_id" => "user_999"}
-}
+%FunConfig{request_type: "get_user_profile", check_permission: {:arg, "user_id"}}
+# ✅ user_id: "user_123", args: %{"user_id" => "user_123"}
+# ❌ user_id: "user_123", args: %{"user_id" => "user_999"}
 ```
 
-#### 4. Role-Based (`{:role, allowed_roles}`)
-User must have one of the specified roles.
+### 4. Role-Based (`{:role, allowed_roles}`)
+
+User must have at least one of the specified roles.
 
 ```elixir
-%FunConfig{
-  request_type: "delete_user",
-  check_permission: {:role, ["admin", "moderator"]}
-}
-
-# Passes - user has admin role
-request = %Request{
-  user_id: "user_123",
-  user_roles: ["admin"]
-}
-
-# Passes - user has moderator role
-request = %Request{
-  user_id: "user_456",
-  user_roles: ["moderator", "user"]
-}
-
-# Fails - user doesn't have required role
-request = %Request{
-  user_id: "user_789",
-  user_roles: ["user"]
-}
+%FunConfig{request_type: "delete_user", check_permission: {:role, ["admin", "moderator"]}}
+# ✅ user_roles: ["admin"]
+# ❌ user_roles: ["user"]
 ```
 
-### Request Structure for Permissions
+**Notes:**
 
-```elixir
-%Request{
-  user_id: "user_123",           # Required for permission checks
-  user_roles: ["admin", "user"], # Required for role-based checks
-  request_type: "get_profile",
-  service: "user_service",
-  request_id: "req_1",
-  args: %{"user_id" => "user_123"}
-}
-```
+- Permission checks run *before* argument validation and function execution
+- All permission failures are logged for auditing
+- Missing arguments result in denial
 
-### Security Best Practices
-
-- Always use specific permission modes rather than `false` when possible
-- Use `{:arg, "user_id"}` to ensure users can only access their own data
-- Use `{:role, [...]}` for admin-only endpoints
-- Missing arguments result in permission denial
-- All permission failures are logged for audit purposes
-- Permission checks happen before argument validation and function execution
+---
 
 ## Retry
 
-PhoenixGenApi supports configurable retry behavior when request execution fails. The `retry` field in `FunConfig` controls how failed requests are retried.
-
-### Retry Configuration
-
-The `retry` field accepts the following values:
+Configure retry behavior when execution fails:
 
 | Value | Meaning |
-|-------|---------|
-| `nil` | No retry (default, backward compatible) |
-| `3` (number) | Equivalent to `{:all_nodes, 3}` — retry across all available nodes |
-| `{:same_node, 2}` | Retry on the same node(s) originally selected by `choose_node_mode` |
-| `{:all_nodes, 3}` | Retry across all available nodes in the cluster |
-
-### How It Works
-
-When a request execution fails (returns `{:error, _}` or `{:error, _, _}`), the executor retries according to the retry configuration:
-
-- **`{:same_node, n}`**: Retries the request on the same node(s) that were originally selected by the `choose_node_mode` strategy. This is useful when the failure might be transient (e.g., temporary network glitch).
-
-- **`{:all_nodes, n}`**: On each retry, fetches the full list of available nodes and tries all of them. This is useful when a node might be down and you want to try other nodes.
-
-- **Local execution**: For `nodes: :local`, both `:same_node` and `:all_nodes` retry on the same local machine since there's only one node.
-
-### Validation
-
-The `retry` field is validated as follows:
-
-- `nil` is valid (no retry)
-- A positive number is valid
-- `{:same_node, positive_number}` is valid
-- `{:all_nodes, positive_number}` is valid
-- Zero, negative numbers, strings, and other formats are invalid
-
-### Normalization
-
-`FunConfig.normalize_retry/1` converts the raw config to a standard format:
-
-| Input | Normalized |
-|-------|-----------|
-| `nil` | `nil` |
-| `3` | `{:all_nodes, 3}` |
-| `{:same_node, 2}` | `{:same_node, 2}` |
-| `{:all_nodes, 5}` | `{:all_nodes, 5}` |
-| `2.7` (float) | `{:all_nodes, 2}` (truncated) |
-
-### Telemetry
-
-Retry attempts emit telemetry events at `[:phoenix_gen_api, :executor, :retry]` with measurements `%{attempt: n}` and metadata `%{mode: :same_node | :all_nodes, type: :local | :remote}`.
-
-See the [Telemetry Guide](guides/telemetry.md) for the full event reference and integration examples.
-
-### Example FunConfig with Retry
+|---|---|
+| `nil` | No retry (default) |
+| `3` | Equivalent to `{:all_nodes, 3}` |
+| `{:same_node, 2}` | Retry on the originally selected node(s) |
+| `{:all_nodes, 3}` | Retry across all available nodes |
 
 ```elixir
 %FunConfig{
   request_type: "get_data",
   service: "my_service",
   nodes: [:"node1@host", :"node2@host", :"node3@host"],
-  choose_node_mode: :random,
-  timeout: 5_000,
-  mfa: {MyApp.Interface.Api, :get_data, []},
-  arg_types: %{"id" => :string},
-  response_type: :sync,
-  retry: {:all_nodes, 3}  # Retry up to 3 times across all available nodes
+  mfa: {MyApp.Api, :get_data, []},
+  retry: {:all_nodes, 3}  # Retry up to 3 times across all nodes
 }
 ```
 
+For `nodes: :local`, both `:same_node` and `:all_nodes` retry locally.
+
+Retry attempts emit telemetry at `[:phoenix_gen_api, :executor, :retry]`.
+
+---
+
 ## Telemetry
 
-PhoenixGenApi emits **28 telemetry events** across 5 categories using the [`:telemetry`](https://hexdocs.pm/telemetry/) library. The `PhoenixGenApi.Telemetry` module provides a centralized API for discovering and attaching to these events.
-
-### Event Categories
+28 events across 5 categories:
 
 | Category | Events | Description |
-|----------|--------|-------------|
-| Executor | 4 | Request lifecycle (`start`/`stop`/`exception`) and retry events |
-| Rate Limiter | 4 | Check, exceeded, reset, and cleanup events |
-| Hooks | 6 | Before/after hook `start`/`stop`/`exception` events |
-| Worker Pool | 5 | Task `start`/`stop`/`exception` and circuit breaker `open`/`close` |
+|---|---|---|
+| Executor | 4 | Request lifecycle (`start`/`stop`/`exception`) and retry |
+| Rate Limiter | 4 | Check, exceeded, reset, cleanup |
+| Hooks | 6 | Before/after hook `start`/`stop`/`exception` |
+| Worker Pool | 5 | Task `start`/`stop`/`exception`, circuit breaker `open`/`close` |
 | Config Cache | 9 | Pull/push, add, batch_add, delete, clear, disable, enable |
 
 ### Quick Start
@@ -698,13 +604,11 @@ PhoenixGenApi.Telemetry.attach_all("my-app", fn event, measurements, metadata, _
   Logger.info("[Telemetry] #{inspect(event)} #{inspect(measurements)}")
 end)
 
-# Attach to a specific category
-PhoenixGenApi.Telemetry.attach_executor("my-app-executor", fn event, measurements, metadata, _config ->
+# Attach to executor events only
+PhoenixGenApi.Telemetry.attach_executor("my-app-exec", fn event, measurements, metadata, _config ->
   case event do
     [:phoenix_gen_api, :executor, :request, :stop] ->
       Logger.info("Request #{metadata.request_id} completed in #{measurements.duration_us}µs")
-    [:phoenix_gen_api, :executor, :request, :exception] ->
-      Logger.error("Request #{metadata.request_id} failed: #{metadata.reason}")
     _ ->
       :ok
   end
@@ -713,7 +617,7 @@ end)
 # Built-in debug logger
 PhoenixGenApi.Telemetry.attach_default_logger()
 
-# Discover all available events
+# List all available events
 PhoenixGenApi.Telemetry.list_events()
 ```
 
@@ -738,45 +642,56 @@ defmodule MyApp.Metrics do
         "phoenix_gen_api.rate_limiter.exceeded.count",
         event_name: [:phoenix_gen_api, :rate_limiter, :exceeded],
         tags: [:key, :scope]
-      ),
-      Telemetry.Metrics.counter(
-        "phoenix_gen_api.worker_pool.task.exceptions.count",
-        event_name: [:phoenix_gen_api, :worker_pool, :task, :exception],
-        tags: [:pool_name, :kind]
       )
     ]
   end
 end
 ```
 
-📖 **For the complete event reference, integration patterns, and best practices, see the [Telemetry Integration Guide](guides/telemetry.md).**
+📖 For the complete event reference, integration patterns, and best practices, see the [Telemetry Guide](guides/telemetry.md).
 
-## Full Example
+---
 
-We will add a full example in the future.
+## IEx Helpers
+
+```elixir
+PhoenixGenApi.rl_status("user_123")     # Rate limit status
+PhoenixGenApi.rl_global()               # Global rate limits
+PhoenixGenApi.rl_global(limits)         # Set global rate limits
+PhoenixGenApi.rl_config()               # Rate limiter config
+PhoenixGenApi.cache_status()            # Config cache status
+PhoenixGenApi.pool_status()             # Worker pool status
+PhoenixGenApi.pushed_services_status()  # Pushed services status
+```
+
+---
+
+## Related Packages
+
+- [EasyRpc](https://hex.pm/packages/easy_rpc) — Simplified RPC calls in an Elixir cluster
+- [ClusterHelper](https://hex.pm/packages/cluster_helper) — Cluster node discovery and management
+- [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) — Auto-generate FunConfig from Ash resources
 
 ## Planned Features
 
-- [DONE] Add pool processes for save/limit resource.
-- [DONE] Function versioning with enable/disable support.
-- [DONE] Rate limiter with sliding window algorithm.
-- [DONE] Active push FunConfig from remote node to gateway.
-- Sticky node.
+- ~~Worker pools for resource limiting~~ ✅
+- ~~Function versioning with enable/disable~~ ✅
+- ~~Sliding-window rate limiter~~ ✅
+- ~~Active push from remote node to gateway~~ ✅
+- Sticky node affinity
 
-## Support AI agents & MCP for dev & improvement
+## AI Agent Support
 
-Run this command for update guide & rules from deps to repo for supporting ai agents.
+Update usage rules from dependencies:
 
 ```bash
-mix usage_rules.sync AGENTS.md --all \
-  --link-to-folder deps \
-  --inline usage_rules:all
+mix usage_rules.sync AGENTS.md --all --link-to-folder deps --inline usage_rules:all
 ```
 
-Run this command for enable MCP server
+Start the Tidewave MCP server:
 
 ```bash
 mix tidewave
 ```
 
-Config MCP for agent `http://localhost:4114/tidewave/mcp`, changes port in `mix.exs` file if needed. Go to [Tidewave](https://hexdocs.pm/tidewave/) for more informations.
+Connect at `http://localhost:4114/tidewave/mcp`. See [Tidewave](https://hexdocs.pm/tidewave/) for details.
