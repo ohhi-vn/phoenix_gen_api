@@ -19,9 +19,9 @@ defmodule PhoenixGenApi.WorkerPool do
   Configure pool sizes in your `config.exs`:
 
       config :phoenix_gen_api, :worker_pool,
-        async_pool_size: 100,
-        stream_pool_size: 50,
-        max_queue_size: 1000,
+        async_pool_size: 1000,
+        stream_pool_size: 500,
+        max_queue_size: 10_000,
         task_timeout: 30_000
 
   ## Usage
@@ -70,7 +70,7 @@ defmodule PhoenixGenApi.WorkerPool do
   @type task :: (-> any())
 
   @default_pool_size 10
-  @default_max_queue_size 1000
+  @default_max_queue_size 10_000
   @default_task_timeout 30_000
   @circuit_breaker_threshold 10
   @circuit_breaker_cooldown 60_000
@@ -100,8 +100,8 @@ defmodule PhoenixGenApi.WorkerPool do
 
     - `opts` - Keyword list with:
       - `:name` - The pool name (required)
-      - `:pool_size` - Number of workers (default: 10)
-      - `:max_queue_size` - Maximum queued tasks (default: 1000)
+      - `:pool_size` - Number of workers (default: depends on pool type)
+      - `:max_queue_size` - Maximum queued tasks (default: 10_000)
   """
   def start_link(opts) do
     name = Keyword.fetch!(opts, :name)

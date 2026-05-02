@@ -8,11 +8,11 @@ config :phoenix_gen_api,
 # Configure worker pools for async and stream execution
 config :phoenix_gen_api, :worker_pool,
   # Number of workers for async calls
-  async_pool_size: 100,
+  async_pool_size: 1000,
   # Number of workers for stream calls
-  stream_pool_size: 50,
+  stream_pool_size: 500,
   # Maximum number of tasks to queue when all workers are busy
-  max_queue_size: 1000
+  max_queue_size: 10_000
 
 # Configure config puller
 # config :phoenix_gen_api, :gen_api,
