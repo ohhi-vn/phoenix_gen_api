@@ -917,13 +917,13 @@ will block the process that emitted the event (e.g., the executor process).
 ```elixir
 # Bad — blocking HTTP call in handler
 def handle(_event, _measurements, metadata, _config) do
-  MyApp.HttpClient.post("https://metrics.example.com", Jason.encode!(metadata))
+  MyApp.HttpClient.post("https://metrics.example.com", JSON.encode!(metadata))
 end
 
 # Good — async dispatch
 def handle(_event, _measurements, metadata, _config) do
   Task.Supervisor.start_child(MyApp.TaskSupervisor, fn ->
-    MyApp.HttpClient.post("https://metrics.example.com", Jason.encode!(metadata))
+    MyApp.HttpClient.post("https://metrics.example.com", JSON.encode!(metadata))
   end)
 end
 
