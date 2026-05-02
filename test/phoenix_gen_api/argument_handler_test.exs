@@ -134,4 +134,32 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       end
     end
   end
+
+  describe "uuid type" do
+    test "accepts valid UUID" do
+      uuid = "550e8400-e29b-41d4-a716-446655440000"
+      config = %FunConfig{arg_types: %{"user_id" => :uuid}}
+      request = %Request{args: %{"user_id" => uuid}}
+
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "rejects invalid UUID" do
+      config = %FunConfig{arg_types: %{"user_id" => :uuid}}
+      request = %Request{args: %{"user_id" => "incorrect uuid"}}
+
+      assert_raise ArgumentError, ~r/invalid argument value for "user_id", require a UUID format string/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "rejects non-string" do
+      config = %FunConfig{arg_types: %{"user_id" => :uuid}}
+      request = %Request{args: %{"user_id" => 123}}
+
+      assert_raise ArgumentError, ~r/invalid argument value for "user_id", require a UUID format string/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+  end
 end

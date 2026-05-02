@@ -672,14 +672,6 @@ PhoenixGenApi.pushed_services_status()  # Pushed services status
 - [ClusterHelper](https://hex.pm/packages/cluster_helper) — Cluster node discovery and management
 - [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) — Auto-generate FunConfig from Ash resources
 
-## Planned Features
-
-- ~~Worker pools for resource limiting~~ ✅
-- ~~Function versioning with enable/disable~~ ✅
-- ~~Sliding-window rate limiter~~ ✅
-- ~~Active push from remote node to gateway~~ ✅
-- Sticky node affinity
-
 ## AI Agent Support
 
 Update usage rules from dependencies:

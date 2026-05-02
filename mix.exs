@@ -35,6 +35,7 @@ defmodule PhoenixGenApi.MixProject do
     [
       {:nestru, "~> 1.0"},
       {:telemetry, "~> 1.0"},
+      {:uniq, "~> 0.6"},
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:benchee, "~> 1.5", only: :dev},
       {:tidewave, "~> 0.5", only: [:dev]},

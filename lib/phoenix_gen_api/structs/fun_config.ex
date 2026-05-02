@@ -49,7 +49,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           request_type: String.t(),
           service: atom() | String.t(),
           nodes: list(atom()) | {module(), function(), args :: list()} | :local,
-          choose_node_mode: :random | :hash | {:hash, String.t()} | :round_robin,
+          choose_node_mode:
+            :random | :hash | {:hash, String.t()} | :round_robin | {:sticky, String.t()},
           timeout: integer() | :infinity,
           mfa: {module(), function(), args :: list()},
           arg_types: map() | nil,

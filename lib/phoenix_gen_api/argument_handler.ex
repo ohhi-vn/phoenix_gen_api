@@ -15,6 +15,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   - `:boolean` - Boolean value (true/false)
   - `:datetime` - ISO 8601 datetime string, auto-converted to `DateTime`
   - `:naive_datetime` - ISO 8601 datetime string, auto-converted to `NaiveDateTime`
+  - `:uuid` - UUID string
 
   ### Collection Types
   - `:list` - Generic list with max 1000 items (default)
@@ -525,6 +526,17 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
           raise ArgumentError,
                 "invalid argument size for #{inspect(name)}, max #{max_bytes} bytes"
+        end
+
+      :uuid ->
+        if not Uniq.UUID.valid?(value) do
+          Logger.error(
+            "gen_api, request, invalid argument size for #{inspect(name)}, value #{inspect value}"
+          )
+
+          raise ArgumentError,
+                "invalid argument value for #{inspect(name)}, require a UUID format string"
+
         end
 
       :list ->

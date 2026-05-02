@@ -824,11 +824,22 @@ defmodule PhoenixGenApi.RateLimiter do
 
   defp get_key_value(request, key) do
     case key do
-      :user_id -> request.user_id
-      :device_id -> request.device_id
-      :ip_address -> Map.get(request, :ip_address)
-      custom_key when is_binary(custom_key) -> Map.get(request.args, custom_key)
-      _ -> nil
+      :user_id ->
+        val = request.user_id
+        if is_binary(val), do: val, else: nil
+
+      :device_id ->
+        val = request.device_id
+        if is_binary(val), do: val, else: nil
+
+      :ip_address ->
+        Map.get(request, :ip_address)
+
+      custom_key when is_binary(custom_key) ->
+        Map.get(request.args, custom_key)
+
+      _ ->
+        nil
     end
   end
 

@@ -105,6 +105,13 @@ defmodule PhoenixGenApi.NodeSelector do
   # Atomic counter reference for round-robin. Initialized lazily.
   @round_robin_counter_name :phoenix_gen_api_round_robin_counter
 
+  # ETS table for sticky node affinity.
+  # Stores {sticky_key, node, timestamp} tuples.
+  # sticky_key is derived from the hash_key value (e.g., user_id).
+  @sticky_table_name :phoenix_gen_api_sticky_nodes
+  # 1 hour TTL for sticky mappings
+  @sticky_ttl_ms 3_600_000
+
   @doc """
   Selects a single target node based on the configuration and request.
 
@@ -394,6 +401,9 @@ defmodule PhoenixGenApi.NodeSelector do
       :round_robin ->
         {:ok, round_robin_node(nodes)}
 
+      {:sticky, hash_key} ->
+        sticky_node(request, nodes, hash_key)
+
       _ ->
         Logger.error("PhoenixGenApi.NodeSelector, invalid choose_node_mode: #{inspect(mode)}")
 
@@ -427,6 +437,16 @@ defmodule PhoenixGenApi.NodeSelector do
         {before, after_nodes} = Enum.split(nodes, primary_idx)
         {:ok, after_nodes ++ before}
 
+      {:sticky, hash_key} ->
+        case sticky_node(request, nodes, hash_key) do
+          {:ok, primary} ->
+            fallbacks = List.delete(nodes, primary)
+            {:ok, [primary | fallbacks]}
+
+          error ->
+            error
+        end
+
       _ ->
         Logger.error("PhoenixGenApi.NodeSelector, invalid choose_node_mode: #{inspect(mode)}")
 
@@ -453,11 +473,11 @@ defmodule PhoenixGenApi.NodeSelector do
           "PhoenixGenApi.NodeSelector, hash key #{inspect(hash_key)} not found in request, falling back to random"
         )
 
-        Enum.random(nodes)
+        {:ok, Enum.random(nodes)}
 
       val ->
         hash_order = :erlang.phash2(val, length(nodes))
-        Enum.at(nodes, hash_order)
+        {:ok, Enum.at(nodes, hash_order)}
     end
   end
 
@@ -525,5 +545,115 @@ defmodule PhoenixGenApi.NodeSelector do
       _ ->
         :ok
     end
+  end
+
+  # --- Sticky Node Affinity ---
+
+  # Gets or creates a sticky node assignment for the given hash_key value.
+  # Returns {:ok, node} or {:error, reason}.
+  defp sticky_node(request, nodes, hash_key) do
+    value = get_sticky_value(request, hash_key)
+
+    if is_nil(value) do
+      Logger.warning(
+        "PhoenixGenApi.NodeSelector, sticky hash key #{inspect(hash_key)} not found in request, falling back to random"
+      )
+
+      {:ok, Enum.random(nodes)}
+    else
+      sticky_key = build_sticky_key(request.service, request.request_type, value)
+      ensure_sticky_table()
+
+      case :ets.lookup(@sticky_table_name, sticky_key) do
+        [{^sticky_key, node, _ts}] ->
+          if Enum.member?(nodes, node) do
+            # Node still available, check TTL
+            if sticky_valid?(sticky_key) do
+              {:ok, node}
+            else
+              # TTL expired, re-select
+              select_and_store_sticky(nodes, sticky_key)
+            end
+          else
+            # Node no longer in list, select new one
+            select_and_store_sticky(nodes, sticky_key)
+          end
+
+        _ ->
+          # No sticky assignment or node no longer in list, select new one
+          select_and_store_sticky(nodes, sticky_key)
+      end
+    end
+  end
+
+  defp get_sticky_value(request, hash_key) do
+    Map.get(request.args, hash_key) ||
+      case request do
+        %{^hash_key => v} when not is_nil(v) -> v
+        _ -> nil
+      end
+  end
+
+  defp build_sticky_key(service, request_type, value) do
+    "#{service}:#{request_type}:#{value}"
+  end
+
+  defp ensure_sticky_table do
+    case :ets.whereis(@sticky_table_name) do
+      :undefined ->
+        try do
+          :ets.new(@sticky_table_name, [
+            :named_table,
+            :public,
+            :set,
+            write_concurrency: true
+          ])
+        rescue
+          ArgumentError ->
+            # Table was created by another process concurrently
+            :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp sticky_valid?(sticky_key) do
+    case :ets.lookup(@sticky_table_name, sticky_key) do
+      [{^sticky_key, _node, ts}] ->
+        now_ms = System.system_time(:millisecond)
+        now_ms - ts < @sticky_ttl_ms
+
+      _ ->
+        false
+    end
+  end
+
+  defp select_and_store_sticky(nodes, sticky_key) do
+    node = Enum.random(nodes)
+    ts = System.system_time(:millisecond)
+    :ets.insert(@sticky_table_name, {sticky_key, node, ts})
+    {:ok, node}
+  end
+
+  @doc """
+  Cleans up expired sticky mappings.
+
+  Called periodically by the cleanup mechanism.
+  """
+  defp cleanup_sticky_table do
+    now_ms = System.system_time(:millisecond)
+    :ets.foldl(@sticky_table_name, [], fn {key, node, ts}, acc ->
+      if ts < now_ms - @sticky_ttl_ms do
+        [{key, node, ts} | acc]
+      else
+        acc
+      end
+    end)
+    |> Enum.each(fn {key, node, ts} ->
+      :ets.delete_object(@sticky_table_name, {key, node, ts})
+    end)
+    :ok
   end
 end

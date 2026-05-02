@@ -340,12 +340,21 @@ defmodule PhoenixGenApi.Executor do
   end
 
   defp execute_local(mod, fun, args, timeout) do
-    task = Task.async(fn -> apply(mod, fun, args) end)
+    # Validate MFA before calling to prevent arbitrary code execution
+    if function_exported?(mod, fun, length(args)) do
+      task = Task.async(fn -> apply(mod, fun, args) end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task) do
-      {:ok, result} -> result
-      nil -> {:error, "local execution timed out after #{timeout}ms"}
-      {:exit, reason} -> {:error, "local execution failed: #{inspect(reason)}"}
+      case Task.yield(task, timeout) || Task.shutdown(task) do
+        {:ok, result} -> result
+        nil -> {:error, "local execution timed out after #{timeout}ms"}
+        {:exit, reason} -> {:error, "local execution failed: #{inspect(reason)}"}
+      end
+    else
+      Logger.error(
+        "PhoenixGenApi.Executor, MFA not exported: #{inspect(mod)}.#{inspect(fun)}/#{length(args)}"
+      )
+
+      {:error, :function_not_found}
     end
   end
 
@@ -585,6 +594,22 @@ defmodule PhoenixGenApi.Executor do
           {:error, :timeout}
         )
 
+      # Handle {:EXIT, _} to avoid leaking internal node details to the client
+      {:badrpc, {:EXIT, _reason}} ->
+        Logger.warning(
+          "PhoenixGenApi.Executor, RPC exited on node #{inspect(node)}, trying fallback"
+        )
+
+        execute_remote_with_fallback(
+          remaining_nodes,
+          mod,
+          fun,
+          args,
+          timeout,
+          request_id,
+          {:error, :rpc_exit}
+        )
+
       {:badrpc, reason} ->
         Logger.warning(
           "PhoenixGenApi.Executor, RPC failed on node #{inspect(node)}: #{inspect(reason)}, trying fallback"
@@ -634,21 +659,29 @@ defmodule PhoenixGenApi.Executor do
       []
   end
 
-  defp handle_call_result({:error, reason}, request_id) do
-    Response.error_response(request_id, get_error_message(reason))
-  end
-
-  defp handle_call_result({:error, reason, _metadata}, request_id) do
-    Response.error_response(request_id, get_error_message(reason))
+  defp handle_call_result({:error, _reason} = error, request_id) do
+    Response.error_response(request_id, get_error_message(error))
   end
 
   defp handle_call_result({:ok, result}, request_id) do
     Response.sync_response(request_id, result)
   end
 
-  # action as successful request.
-  defp handle_call_result(result, request_id) do
+  # Only treat plain values (non-tuples or non-error tuples) as success.
+  defp handle_call_result(result, request_id) when not is_tuple(result) do
+    Logger.warning(
+      "PhoenixGenApi.Executor, handle_call_result got non-tuple result: #{inspect(result)}"
+    )
+
     Response.sync_response(request_id, result)
+  end
+
+  defp handle_call_result(result, request_id) do
+    Logger.error(
+      "PhoenixGenApi.Executor, handle_call_result got unexpected result: #{inspect(result)}"
+    )
+
+    Response.error_response(request_id, "Unexpected execution result")
   end
 
   defp async_call(request, fun_config) do
