@@ -39,7 +39,16 @@ defmodule PhoenixGenApi.MixProject do
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:benchee, "~> 1.5", only: :dev},
       {:tidewave, "~> 0.5", only: [:dev]},
-      {:usage_rules, "~> 1.2", only: [:dev]}
+      {:usage_rules, "~> 1.2", only: [:dev]},
+
+      # Test dependencies
+      {:excoveralls, "~> 0.18", only: :test},
+
+      # Code quality
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.4", only: [:dev, :test], runtime: false},
+
     ]
   end
 
@@ -108,7 +117,11 @@ defmodule PhoenixGenApi.MixProject do
           --link-to-folder deps
         """
         |> String.trim()
-      ]
+      ],
+      # Testing & Coverage
+      coveralls: ["test --cover", "coveralls.html"],
+      # Code Quality
+      quality: ["format --check-formatted", "credo --strict", "dialyzer"]
     ]
   end
 

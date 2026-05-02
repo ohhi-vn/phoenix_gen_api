@@ -716,43 +716,43 @@ defmodule PhoenixGenApi.RateLimiter do
     now = System.monotonic_time(:millisecond)
     window_start = now - limit.window_ms
 
-    # Get existing timestamps
-    existing_timestamps =
-      case :ets.lookup(table, key) do
-        [{^key, timestamps}] -> timestamps
-        [] -> []
-      end
+    case :ets.lookup(table, key) do
+      [{^key, timestamps}] ->
+        # Filter out expired timestamps
+        valid_timestamps = Enum.reject(timestamps, fn ts -> ts <= window_start end)
+        current_count = length(valid_timestamps)
 
-    # Partition timestamps into valid and expired in a single pass
-    {valid_timestamps, _expired} =
-      Enum.split_with(existing_timestamps, fn ts -> ts > window_start end)
+        if current_count >= limit.max_requests do
+          # Rate limit exceeded
+          oldest_valid = List.last(valid_timestamps)
+          retry_after_ms = oldest_valid + limit.window_ms - now
 
-    current_count = length(valid_timestamps)
+          details = %{
+            key: key,
+            max_requests: limit.max_requests,
+            current_requests: current_count,
+            window_ms: limit.window_ms,
+            retry_after_ms: max(retry_after_ms, 0),
+            scope: get_scope_from_table(table, key)
+          }
 
-    if current_count >= limit.max_requests do
-      # Calculate retry-after using the oldest valid timestamp
-      oldest_valid = Enum.min(valid_timestamps)
-      retry_after_ms = oldest_valid + limit.window_ms - now
+          Logger.warning(
+            "PhoenixGenApi.RateLimiter, rate limit exceeded for key: #{inspect(key)}, " <>
+              "current: #{current_count}/#{limit.max_requests}, retry_after: #{retry_after_ms}ms"
+          )
 
-      details = %{
-        key: key,
-        max_requests: limit.max_requests,
-        current_requests: current_count,
-        window_ms: limit.window_ms,
-        retry_after_ms: max(retry_after_ms, 0),
-        scope: get_scope_from_table(table, key)
-      }
+          {:error, :rate_limited, details}
+        else
+          # Within limit, add new timestamp and keep list bounded
+          new_timestamps = Enum.take([now | valid_timestamps], limit.max_requests)
+          :ets.insert(table, {key, new_timestamps})
+          :ok
+        end
 
-      Logger.warning(
-        "PhoenixGenApi.RateLimiter, rate limit exceeded for key: #{inspect(key)}, " <>
-          "current: #{current_count}/#{limit.max_requests}, retry_after: #{retry_after_ms}ms"
-      )
-
-      {:error, :rate_limited, details}
-    else
-      # Add current timestamp and update ETS in a single operation
-      :ets.insert(table, {key, [now | valid_timestamps]})
-      :ok
+      [] ->
+        # No existing entry, create new one
+        :ets.insert(table, {key, [now]})
+        :ok
     end
   end
 

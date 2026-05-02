@@ -245,52 +245,46 @@ defmodule PhoenixGenApi.Executor do
   end
 
   defp do_execute_with_config!(request, fun_config) do
-    # Check rate limits before permission check
-    rate_limit_result =
+    # Use 'with' for chaining operations that return {:ok, _} or {:error, _}
+    with :ok <- RateLimiter.check_rate_limit(request),
+         :ok <- Permission.check_permission(request, fun_config) do
+      case fun_config.response_type do
+        :sync ->
+          do_call(request, fun_config)
+
+        :async ->
+          async_call(request, fun_config)
+
+        :none ->
+          async_call(request, fun_config)
+
+        :stream ->
+          stream_call(request, fun_config)
+
+        other ->
+          Logger.error("PhoenixGenApi.Executor, unsupported response type: #{inspect(other)}")
+          Response.error_response(request.request_id, "unsupported response type: #{inspect(other)}")
+      end
+    else
+      # Handle rate limit or permission errors
       case RateLimiter.check_rate_limit(request) do
-        :ok ->
-          :ok
-
         {:error, :rate_limited, details} ->
-          Logger.warning(
-            "PhoenixGenApi.Executor, rate limit exceeded for request: #{request.request_id}, " <>
-              "details: #{inspect(details)}"
-          )
-
           retry_after_ms = Map.get(details, :retry_after_ms, 0)
-
-          Response.error_response(
+          error_resp = Response.error_response(
             request.request_id,
             "Rate limit exceeded. Please retry after #{div(retry_after_ms, 1000)} seconds.",
             true
-          )
-          |> Map.put(:can_retry, true)
+          ) |> Map.put(:can_retry, true)
+          Hooks.run_after(fun_config.after_execute, request, fun_config, error_resp)
 
         {:error, :rate_limiter_error, error_details} ->
-          # Fail-open: log error but allow request to proceed
-          Logger.error(
-            "PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request"
-          )
+          Logger.error("PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request")
+          do_call(request, fun_config)
 
-          :ok
+        error ->
+          Logger.error("PhoenixGenApi.Executor, unexpected error: #{inspect(error)}")
+          do_call(request, fun_config)
       end
-
-    case rate_limit_result do
-      %Response{} = error_response ->
-        Hooks.run_after(fun_config.after_execute, request, fun_config, error_response)
-
-      :ok ->
-        Permission.check_permission!(request, fun_config)
-
-        result =
-          case fun_config.response_type do
-            :sync -> sync_call(request, fun_config)
-            :async -> async_call(request, fun_config)
-            :none -> async_call(request, fun_config)
-            :stream -> stream_call(request, fun_config)
-          end
-
-        Hooks.run_after(fun_config.after_execute, request, fun_config, result)
     end
   end
 

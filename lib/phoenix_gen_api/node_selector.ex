@@ -640,9 +640,14 @@ defmodule PhoenixGenApi.NodeSelector do
   @doc """
   Cleans up expired sticky mappings.
 
-  Called periodically by the cleanup mechanism.
+  This function should be called periodically (e.g., every hour) to remove
+  stale sticky node assignments that have exceeded their TTL.
+
+  ## Returns
+
+  - `:ok` - Cleanup completed
   """
-  defp cleanup_sticky_table do
+  def cleanup_sticky_table do
     now_ms = System.system_time(:millisecond)
     :ets.foldl(@sticky_table_name, [], fn {key, node, ts}, acc ->
       if ts < now_ms - @sticky_ttl_ms do

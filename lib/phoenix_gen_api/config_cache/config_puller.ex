@@ -208,6 +208,8 @@ defmodule PhoenixGenApi.ConfigPuller do
     Logger.debug("PhoenixGenApi.ConfigPuller, loading initial data")
     new_state = load_services_from_config(state)
     Process.send_after(self(), :pull, 1_000)
+    # Schedule sticky table cleanup every hour
+    Process.send_after(self(), :cleanup_sticky, 3_600_000)
     {:noreply, new_state}
   end
 
@@ -355,6 +357,14 @@ defmodule PhoenixGenApi.ConfigPuller do
 
     schedule_pull(new_state)
     {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info(:cleanup_sticky, _state) do
+    Logger.debug("PhoenixGenApi.ConfigPuller, cleaning up sticky table")
+    PhoenixGenApi.NodeSelector.cleanup_sticky_table()
+    Process.send_after(self(), :cleanup_sticky, 3_600_000)
+    {:noreply, _state}
   end
 
   @impl true

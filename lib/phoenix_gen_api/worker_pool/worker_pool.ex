@@ -81,6 +81,7 @@ defmodule PhoenixGenApi.WorkerPool do
       :pool_name,
       :workers,
       :idle_workers,
+      :idle_workers_list,  # Cache list for O(1) access
       :queue,
       :max_queue_size,
       :task_timeout,
@@ -161,9 +162,9 @@ defmodule PhoenixGenApi.WorkerPool do
     task_timeout = Keyword.get(opts, :task_timeout, @default_task_timeout)
 
     # Start worker processes and track idle workers in a set for O(1) lookup
-    {workers, idle_workers} =
-      for _i <- 1..pool_size, reduce: {%{}, MapSet.new()} do
-        {workers_acc, idle_acc} ->
+    {workers, idle_workers, idle_list} =
+      for _i <- 1..pool_size, reduce: {%{}, MapSet.new(), []} do
+        {workers_acc, idle_acc, list_acc} ->
           {:ok, pid} =
             PhoenixGenApi.WorkerPool.Worker.start_link(
               pool_name: pool_name,
@@ -171,13 +172,14 @@ defmodule PhoenixGenApi.WorkerPool do
             )
 
           Process.monitor(pid)
-          {Map.put(workers_acc, pid, :idle), MapSet.put(idle_acc, pid)}
+          {Map.put(workers_acc, pid, :idle), MapSet.put(idle_acc, pid), [pid | list_acc]}
       end
 
     state = %State{
       pool_name: pool_name,
       workers: workers,
       idle_workers: idle_workers,
+      idle_workers_list: idle_list,
       queue: :queue.new(),
       max_queue_size: max_queue_size,
       task_timeout: task_timeout
@@ -198,13 +200,14 @@ defmodule PhoenixGenApi.WorkerPool do
 
       {:reply, {:error, :circuit_open}, state}
     else
-      case find_idle_worker(state.idle_workers) do
+      case find_idle_worker(state.idle_workers, state.idle_workers_list) do
         {:ok, worker_pid} ->
           # Execute immediately on idle worker
           PhoenixGenApi.WorkerPool.Worker.execute(worker_pid, task)
           new_workers = Map.put(state.workers, worker_pid, :busy)
           new_idle = MapSet.delete(state.idle_workers, worker_pid)
-          {:reply, :ok, %{state | workers: new_workers, idle_workers: new_idle}}
+          new_idle_list = List.delete(state.idle_workers_list, worker_pid)
+          {:reply, :ok, %{state | workers: new_workers, idle_workers: new_idle, idle_workers_list: new_idle_list}}
 
         :no_idle_worker ->
           # Queue the task if under limit
@@ -244,6 +247,7 @@ defmodule PhoenixGenApi.WorkerPool do
     # Mark worker as idle
     new_workers = Map.put(state.workers, worker_pid, :idle)
     new_idle = MapSet.put(state.idle_workers, worker_pid)
+    new_idle_list = [worker_pid | state.idle_workers_list]
 
     # Try to execute queued task
     case :queue.out(state.queue) do
@@ -252,12 +256,14 @@ defmodule PhoenixGenApi.WorkerPool do
         PhoenixGenApi.WorkerPool.Worker.execute(worker_pid, task)
         final_workers = Map.put(new_workers, worker_pid, :busy)
         final_idle = MapSet.delete(new_idle, worker_pid)
+        final_idle_list = List.delete(new_idle_list, worker_pid)
 
         new_state =
           record_success(%{
             state
             | workers: final_workers,
               idle_workers: final_idle,
+              idle_workers_list: final_idle_list,
               queue: new_queue
           })
 
@@ -265,7 +271,7 @@ defmodule PhoenixGenApi.WorkerPool do
 
       {:empty, _queue} ->
         # No queued tasks, keep worker idle
-        new_state = record_success(%{state | workers: new_workers, idle_workers: new_idle})
+        new_state = record_success(%{state | workers: new_workers, idle_workers: new_idle, idle_workers_list: new_idle_list})
         {:noreply, new_state}
     end
   end
@@ -279,6 +285,7 @@ defmodule PhoenixGenApi.WorkerPool do
     # Remove dead worker and start a new one
     new_workers = Map.delete(state.workers, worker_pid)
     new_idle = MapSet.delete(state.idle_workers, worker_pid)
+    new_idle_list = List.delete(state.idle_workers_list, worker_pid)
 
     {:ok, new_pid} =
       PhoenixGenApi.WorkerPool.Worker.start_link(
@@ -289,9 +296,10 @@ defmodule PhoenixGenApi.WorkerPool do
     Process.monitor(new_pid)
     final_workers = Map.put(new_workers, new_pid, :idle)
     final_idle = MapSet.put(new_idle, new_pid)
+    final_idle_list = [new_pid | new_idle_list]
 
     # Record failure for circuit breaker
-    new_state = record_failure(%{state | workers: final_workers, idle_workers: final_idle})
+    new_state = record_failure(%{state | workers: final_workers, idle_workers: final_idle, idle_workers_list: final_idle_list})
 
     {:noreply, new_state}
   end
@@ -304,8 +312,8 @@ defmodule PhoenixGenApi.WorkerPool do
 
   ## Private Functions
 
-  defp find_idle_worker(idle_workers) do
-    case MapSet.to_list(idle_workers) do
+  defp find_idle_worker(_idle_workers, idle_list) do
+    case idle_list do
       [pid | _] -> {:ok, pid}
       [] -> :no_idle_worker
     end

@@ -72,8 +72,8 @@ defmodule PhoenixGenApi.Structs.Response do
   @doc """
   Checks if the response represents an error.
   """
-  def is_error?(%__MODULE__{success: false}), do: true
-  def is_error?(%__MODULE__{}), do: false
+  def error?(%__MODULE__{success: false}), do: true
+  def error?(%__MODULE__{}), do: false
 
   @doc """
   Create Request from params for convert data map from websocket api.

@@ -265,8 +265,36 @@ defmodule PhoenixGenApi.ConfigDb do
   @spec get(String.t() | atom(), String.t(), String.t()) ::
           {:ok, FunConfig.t()} | {:error, :not_found} | {:error, :disabled}
   def get(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
-    case :ets.lookup(__MODULE__, {service, request_type, version}) do
-      [{_key, config}] ->
+    try do
+      case :ets.lookup_element(__MODULE__, {service, request_type, version}, 2) do
+        config when is_map(config) ->
+          if Map.get(config, :disabled, false) do
+            {:error, :disabled}
+          else
+            {:ok, config}
+          end
+
+        _ ->
+          {:error, :not_found}
+      end
+    rescue
+      ArgumentError ->
+        # Key not found in ETS
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Fast path lookup for the common case: get latest enabled config.
+
+  Uses :ets.lookup_element for better performance when we only need
+  the config and don't need version comparison.
+  """
+  @spec get_fast(String.t() | atom(), String.t()) ::
+          {:ok, FunConfig.t()} | {:error, :not_found}
+  def get_fast(service, request_type) when is_binary(request_type) do
+    case :ets.match_object(__MODULE__, {{service, request_type, :"$1"}, :"$2"}) do
+      [[{_key, config} | _]] ->
         if Map.get(config, :disabled, false) do
           {:error, :disabled}
         else
@@ -276,12 +304,23 @@ defmodule PhoenixGenApi.ConfigDb do
       [] ->
         {:error, :not_found}
 
-      _ ->
-        Logger.error(
-          "PhoenixGenApi.ConfigDb, get, unexpected ETS result for #{inspect({service, request_type, version})}"
-        )
+      results when is_list(results) ->
+        # Multiple versions found, return the latest enabled one
+        enabled_configs =
+          Enum.filter(results, fn {_key, config} ->
+            not Map.get(config, :disabled, false)
+          end)
 
-        {:error, :not_found}
+        case enabled_configs do
+          [] -> {:error, :not_found}
+          configs ->
+            {_key, latest} =
+              Enum.max_by(configs, fn {{_s, _r, version}, _config} ->
+                Version.parse!(version)
+              end)
+
+            {:ok, latest}
+        end
     end
   end
 
