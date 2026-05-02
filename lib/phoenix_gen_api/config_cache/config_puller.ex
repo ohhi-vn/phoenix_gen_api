@@ -360,11 +360,11 @@ defmodule PhoenixGenApi.ConfigPuller do
   end
 
   @impl true
-  def handle_info(:cleanup_sticky, _state) do
+  def handle_info(:cleanup_sticky, state) do
     Logger.debug("PhoenixGenApi.ConfigPuller, cleaning up sticky table")
     PhoenixGenApi.NodeSelector.cleanup_sticky_table()
     Process.send_after(self(), :cleanup_sticky, 3_600_000)
-    {:noreply, _state}
+    {:noreply, state}
   end
 
   @impl true

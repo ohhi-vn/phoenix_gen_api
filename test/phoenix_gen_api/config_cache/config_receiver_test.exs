@@ -213,7 +213,7 @@ defmodule PhoenixGenApi.ConfigReceiverTest do
         service: "test_service",
         nodes: [Node.self()],
         choose_node_mode: :random,
-        timeout: 10000,
+        timeout: 10_000,
         mfa: {String, :downcase, []},
         arg_types: %{},
         arg_orders: [],
@@ -230,7 +230,7 @@ defmodule PhoenixGenApi.ConfigReceiverTest do
 
       assert stored_v1.version == "1.0.0"
       assert stored_v2.version == "2.0.0"
-      assert stored_v2.timeout == 10000
+      assert stored_v2.timeout == 10_000
     end
   end
 

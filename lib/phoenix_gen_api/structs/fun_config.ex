@@ -111,7 +111,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   @doc """
   Checks if the service is configured to run locally.
   """
-  def is_local_service?(config = %__MODULE__{}) do
+  def local_service?(config = %__MODULE__{}) do
     config.nodes == :local
   end
 
@@ -329,7 +329,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_nodes?(:local), do: true
 
   defp valid_nodes?(nodes) when is_list(nodes) do
-    nodes != [] and Enum.all?(nodes, &is_valid_node?/1)
+    nodes != [] and Enum.all?(nodes, &valid_node?/1)
   end
 
   defp valid_nodes?({mod, fun, args})
@@ -338,7 +338,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   defp valid_nodes?(_), do: false
 
-  defp is_valid_node?(node), do: PhoenixGenApi.Helpers.Shared.is_valid_node?(node)
+  defp valid_node?(node), do: PhoenixGenApi.Helpers.Shared.valid_node?(node)
 
   defp valid_choose_node_mode?(:random), do: true
   defp valid_choose_node_mode?(:hash), do: true

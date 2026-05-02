@@ -115,19 +115,19 @@ defmodule PhoenixGenApi.Helpers.Shared do
 
   ## Examples
 
-      iex> is_valid_node?(:node1@host)
+      iex> valid_node?(:node1@host)
       true
 
-      iex> is_valid_node?("node1@host")
+      iex> valid_node?("node1@host")
       true
 
-      iex> is_valid_node?(123)
+      iex> valid_node?(123)
       false
   """
-  @spec is_valid_node?(any()) :: boolean()
-  def is_valid_node?(node) when is_atom(node), do: true
-  def is_valid_node?(node) when is_binary(node), do: true
-  def is_valid_node?(_), do: false
+  @spec valid_node?(any()) :: boolean()
+  def valid_node?(node) when is_atom(node), do: true
+  def valid_node?(node) when is_binary(node), do: true
+  def valid_node?(_), do: false
 
   @doc """
   Validates a list of nodes, filtering out invalid entries.
@@ -142,7 +142,7 @@ defmodule PhoenixGenApi.Helpers.Shared do
   """
   @spec validate_nodes(list()) :: list()
   def validate_nodes(nodes) when is_list(nodes) do
-    Enum.filter(nodes, &is_valid_node?/1)
+    Enum.filter(nodes, &valid_node?/1)
   end
 
   def validate_nodes(_), do: []

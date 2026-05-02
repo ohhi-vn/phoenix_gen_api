@@ -70,15 +70,15 @@ defmodule PhoenixGenApi.Structs.ResponseTest do
     end
   end
 
-  describe "is_error?/1" do
+  describe "error?/1" do
     test "returns true for error response" do
       response = Response.error_response("req_1", "error")
-      assert Response.is_error?(response) == true
+      assert Response.error?(response) == true
     end
 
     test "returns false for successful response" do
       response = Response.sync_response("req_2", "data")
-      assert Response.is_error?(response) == false
+      assert Response.error?(response) == false
     end
   end
 

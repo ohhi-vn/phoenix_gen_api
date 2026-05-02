@@ -60,7 +60,7 @@ defmodule PhoenixGenApi.StreamCall do
   def handle_continue(:start_stream, state) do
     result = Executor.sync_call(state.request, state.fun_config)
 
-    if Response.is_error?(result) do
+    if Response.error?(result) do
       send(state.receiver, {:stream_response, result})
       {:stop, :normal, state}
     else

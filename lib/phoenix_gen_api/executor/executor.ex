@@ -246,9 +246,17 @@ defmodule PhoenixGenApi.Executor do
 
   defp do_execute_with_config!(request, fun_config) do
     # Use 'with' for chaining operations that return {:ok, _} or {:error, _}
-    with :ok <- RateLimiter.check_rate_limit(request),
-         :ok <- Permission.check_permission(request, fun_config) do
-      case fun_config.response_type do
+    with :ok <- RateLimiter.check_rate_limit(request) do
+      try do
+        Permission.check_permission!(request, fun_config)
+      rescue
+        e in PhoenixGenApi.Permission.PermissionDenied ->
+          Hooks.run_after(fun_config.after_execute, request, fun_config,
+            Response.error_response(request.request_id, "Permission denied"))
+          reraise e, __STACKTRACE__
+      end
+
+      result = case fun_config.response_type do
         :sync ->
           do_call(request, fun_config)
 
@@ -265,9 +273,11 @@ defmodule PhoenixGenApi.Executor do
           Logger.error("PhoenixGenApi.Executor, unsupported response type: #{inspect(other)}")
           Response.error_response(request.request_id, "unsupported response type: #{inspect(other)}")
       end
+
+      # Run after_execute hook with the result
+      Hooks.run_after(fun_config.after_execute, request, fun_config, result)
     else
-      # Handle rate limit or permission errors
-      case RateLimiter.check_rate_limit(request) do
+
         {:error, :rate_limited, details} ->
           retry_after_ms = Map.get(details, :retry_after_ms, 0)
           error_resp = Response.error_response(
@@ -281,10 +291,15 @@ defmodule PhoenixGenApi.Executor do
           Logger.error("PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request")
           do_call(request, fun_config)
 
+        {:error, :permission_denied} ->
+          Logger.warning("PhoenixGenApi.Executor, permission denied for request: #{request.request_id}")
+          Hooks.run_after(fun_config.after_execute, request, fun_config,
+            Response.error_response(request.request_id, "Permission denied"))
+
         error ->
           Logger.error("PhoenixGenApi.Executor, unexpected error: #{inspect(error)}")
           do_call(request, fun_config)
-      end
+
     end
   end
 
@@ -324,7 +339,7 @@ defmodule PhoenixGenApi.Executor do
     retry_config = FunConfig.normalize_retry(fun_config.retry)
 
     result =
-      if FunConfig.is_local_service?(fun_config) do
+      if FunConfig.local_service?(fun_config) do
         execute_local_with_retry(mod, fun, final_args, fun_config.timeout, retry_config)
       else
         execute_remote_with_retry(mod, fun, final_args, fun_config, request, retry_config)
@@ -360,7 +375,7 @@ defmodule PhoenixGenApi.Executor do
   end
 
   defp apply_local_retry(result, mod, fun, args, timeout, retry_config) do
-    if is_retryable_error?(result) and has_retry_remaining?(retry_config) do
+    if retryable_error?(result) and has_retry_remaining?(retry_config) do
       {mode, n} = retry_config
 
       backoff_ms = NodeSelector.calculate_backoff(n)
@@ -432,7 +447,7 @@ defmodule PhoenixGenApi.Executor do
          {:same_node, n}
        )
        when n > 0 do
-    if is_retryable_error?(result) do
+    if retryable_error?(result) do
       backoff_ms = NodeSelector.calculate_backoff(n)
 
       Logger.info(
@@ -487,7 +502,7 @@ defmodule PhoenixGenApi.Executor do
          {:all_nodes, n}
        )
        when n > 0 do
-    if is_retryable_error?(result) do
+    if retryable_error?(result) do
       # Retry on ALL available nodes
       all_nodes =
         case NodeSelector.resolve_nodes_list(fun_config) do
@@ -550,9 +565,9 @@ defmodule PhoenixGenApi.Executor do
     result
   end
 
-  defp is_retryable_error?({:error, _}), do: true
-  defp is_retryable_error?({:error, _, _}), do: true
-  defp is_retryable_error?(_), do: false
+  defp retryable_error?({:error, _}), do: true
+  defp retryable_error?({:error, _, _}), do: true
+  defp retryable_error?(_), do: false
 
   defp has_retry_remaining?({:same_node, n}) when n > 0, do: true
   defp has_retry_remaining?({:all_nodes, n}) when n > 0, do: true

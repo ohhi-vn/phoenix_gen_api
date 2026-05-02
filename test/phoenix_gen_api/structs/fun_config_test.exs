@@ -36,15 +36,15 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
     end
   end
 
-  describe "is_local_service?/1" do
+  describe "local_service?/1" do
     test "returns true when nodes is :local" do
       config = %FunConfig{nodes: :local}
-      assert FunConfig.is_local_service?(config) == true
+      assert FunConfig.local_service?(config) == true
     end
 
     test "returns false when nodes is a list" do
       config = %FunConfig{nodes: ["node1@localhost"]}
-      assert FunConfig.is_local_service?(config) == false
+      assert FunConfig.local_service?(config) == false
     end
   end
 

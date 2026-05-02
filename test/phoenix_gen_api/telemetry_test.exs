@@ -23,7 +23,7 @@ defmodule PhoenixGenApi.TelemetryTest do
       events = Telemetry.list_events()
 
       assert is_list(events)
-      assert length(events) > 0
+      assert events != []
 
       # Every event must be a list of atoms
       Enum.each(events, fn event ->
@@ -673,6 +673,7 @@ defmodule PhoenixGenApi.TelemetryTest do
       assert is_integer(duration_us)
       assert metadata.request_id == "rl_check_req"
       assert metadata.user_id == "rl_check_user"
+      assert metadata.instance != nil
       assert metadata.result == :ok
     end
 

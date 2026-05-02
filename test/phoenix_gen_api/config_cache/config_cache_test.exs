@@ -174,9 +174,9 @@ defmodule PhoenixGenApi.ConfigDbTest do
   end
 
   test "multiple versions coexist independently" do
-    config_v1 = valid_config(%{version: "1.0.0", timeout: 5000})
-    config_v2 = valid_config(%{version: "2.0.0", timeout: 10000})
-    config_v3 = valid_config(%{version: "3.0.0", timeout: 15000})
+    config_v1 = valid_config(%{version: "1.0.0", timeout: 5_000})
+    config_v2 = valid_config(%{version: "2.0.0", timeout: 10_000})
+    config_v3 = valid_config(%{version: "3.0.0", timeout: 15_000})
 
     assert :ok = ConfigDb.add(config_v1)
     assert :ok = ConfigDb.add(config_v2)
@@ -187,10 +187,10 @@ defmodule PhoenixGenApi.ConfigDbTest do
     assert retrieved_v1.timeout == 5000
 
     assert {:ok, retrieved_v2} = ConfigDb.get("Test", "test_request", "2.0.0")
-    assert retrieved_v2.timeout == 10000
+    assert retrieved_v2.timeout == 10_000
 
     assert {:ok, retrieved_v3} = ConfigDb.get("Test", "test_request", "3.0.0")
-    assert retrieved_v3.timeout == 15000
+    assert retrieved_v3.timeout == 15_000
   end
 
   test "disable/3 only affects specified version" do

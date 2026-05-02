@@ -231,12 +231,12 @@ defmodule PhoenixGenApi.Structs.PushConfig do
   # Private validation helpers
 
   defp valid_nodes?(nodes) when is_list(nodes) do
-    nodes != [] and Enum.all?(nodes, &is_valid_node?/1)
+    nodes != [] and Enum.all?(nodes, &valid_node?/1)
   end
 
   defp valid_nodes?(_), do: false
 
-  defp is_valid_node?(node), do: PhoenixGenApi.Helpers.Shared.is_valid_node?(node)
+  defp valid_node?(node), do: PhoenixGenApi.Helpers.Shared.valid_node?(node)
 
   defp valid_config_version?(version) when is_binary(version) and byte_size(version) > 0 do
     true
@@ -245,13 +245,13 @@ defmodule PhoenixGenApi.Structs.PushConfig do
   defp valid_config_version?(_), do: false
 
   defp valid_fun_configs?(fun_configs) when is_list(fun_configs) do
-    fun_configs != [] and Enum.all?(fun_configs, &is_fun_config_struct?/1)
+    fun_configs != [] and Enum.all?(fun_configs, &fun_config_struct?/1)
   end
 
   defp valid_fun_configs?(_), do: false
 
-  defp is_fun_config_struct?(%FunConfig{}), do: true
-  defp is_fun_config_struct?(_), do: false
+  defp fun_config_struct?(%FunConfig{}), do: true
+  defp fun_config_struct?(_), do: false
 
   defp fun_configs_match_service?(fun_configs, service) when is_list(fun_configs) do
     Enum.all?(fun_configs, fn

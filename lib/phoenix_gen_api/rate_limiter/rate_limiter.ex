@@ -28,6 +28,13 @@ defmodule PhoenixGenApi.RateLimiter do
 
       config :phoenix_gen_api, :rate_limiter,
         enabled: true,
+        # Multi-instance configuration for better concurrency
+        # Number of RateLimiter instances (default: number of online schedulers)
+        instance_count: :auto,  # :auto or positive integer
+        # Routing strategy for distributing requests across instances
+        # - :hash - Consistent routing based on request_id (default, ensures same request goes to same instance)
+        # - :random - Random distribution across instances
+        routing_strategy: :hash,
         global_limits: [
           # Default: 2000 requests per minute per user
           %{key: :user_id, max_requests: 2000, window_ms: 60_000},
@@ -109,6 +116,10 @@ defmodule PhoenixGenApi.RateLimiter do
   use GenServer, restart: :permanent
 
   require Logger
+
+  # Registry for tracking rate limiter instances
+  @registry :rate_limiter_registry
+  @instance_prefix :rate_limiter_instance_
 
   @default_cleanup_interval 60_000
 
@@ -194,13 +205,137 @@ defmodule PhoenixGenApi.RateLimiter do
           scope: :global | api_identifier()
         }
 
-  ### Public API
+  require Logger
+
+  # Registry for tracking rate limiter instances
+  @registry :rate_limiter_registry
+  @supervisor :rate_limiter_supervisor
+  @instance_prefix :rate_limiter_instance_
+
+  @default_cleanup_interval 60_000
 
   @doc """
-  Starts the RateLimiter GenServer.
+  Starts the RateLimiter and its instances under a supervisor.
   """
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    instance_count = get_instance_count()
+    routing_strategy = get_routing_strategy()
+
+    # Start the supervisor that will manage all instances
+    children =
+      for i <- 0..(instance_count - 1) do
+        name = instance_name(i)
+        %{
+          id: name,
+          start: {GenServer, :start_link, [__MODULE__, opts, [name: name]]},
+          restart: :permanent
+        }
+      end
+
+    supervisor_opts = [
+      strategy: :one_for_one,
+      name: @supervisor
+    ]
+
+    case Supervisor.start_link(children, supervisor_opts) do
+      {:ok, sup_pid} ->
+        # Register the first instance as the main one for backward compatibility
+        Registry.start_link(keys: :unique, name: @registry)
+
+        for i <- 0..(instance_count - 1) do
+          name = instance_name(i)
+          Registry.register(@registry, name, %{index: i})
+        end
+
+        Logger.info(
+          "PhoenixGenApi.RateLimiter started with #{instance_count} instances " <>
+            "(routing: #{routing_strategy})"
+        )
+
+        {:ok, sup_pid}
+
+      error ->
+        error
+    end
+  end
+
+  @doc """
+  Returns the number of active rate limiter instances.
+  """
+  def instance_count() do
+    case Registry.lookup(@registry, instance_name(0)) do
+      [] -> 0
+      _ -> get_instance_count()
+    end
+  end
+
+  @doc """
+  Returns the routing strategy being used.
+  """
+  def routing_strategy() do
+    get_routing_strategy()
+  end
+
+  # Instance name helper
+  defp instance_name(index) when is_integer(index) do
+    String.to_atom("#{@instance_prefix}#{index}")
+  end
+
+  # Get instance count from config or default to online schedulers
+  defp get_instance_count() do
+    case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:instance_count] do
+      :auto -> :erlang.system_info(:schedulers_online)
+      count when is_integer(count) and count > 0 -> count
+      _ -> :erlang.system_info(:schedulers_online)
+    end
+  end
+
+  # Get routing strategy from config
+  defp get_routing_strategy() do
+    case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:routing_strategy] do
+      :random -> :random
+      :hash -> :hash
+      _ -> :hash
+    end
+  end
+
+  # Select instance based on routing strategy
+  defp select_instance(request) do
+    instance_count = get_instance_count()
+    strategy = get_routing_strategy()
+
+    # Use user_id as the primary routing key (most common rate limit key)
+    # Fall back to request_id if user_id is not present
+    routing_value = Map.get(request, :user_id) || Map.get(request, :request_id) || ""
+
+    index =
+      case strategy do
+        :random ->
+          :rand.uniform(instance_count) - 1
+
+        :hash ->
+          :erlang.phash2(routing_value, instance_count)
+      end
+
+    instance_name(index)
+  end
+
+  defp select_instance_for_direct(key_value, scope) do
+    instance_count = get_instance_count()
+    strategy = get_routing_strategy()
+
+    index =
+      case strategy do
+        :random ->
+          :rand.uniform(instance_count) - 1
+
+        :hash ->
+          # Hash based on key_value and scope for consistent routing
+          hash_input = "#{inspect(scope)}:#{key_value}"
+          :erlang.phash2(hash_input, instance_count)
+      end
+
+    instance_name(index)
   end
 
   @doc """
@@ -239,7 +374,8 @@ defmodule PhoenixGenApi.RateLimiter do
   def check_rate_limit(request) do
     if enabled?() do
       start_time = System.monotonic_time(:microsecond)
-      result = GenServer.call(__MODULE__, {:check_rate_limit, request})
+      instance = select_instance(request)
+      result = GenServer.call(instance, {:check_rate_limit, request})
       duration = System.monotonic_time(:microsecond) - start_time
 
       :telemetry.execute(
@@ -248,6 +384,7 @@ defmodule PhoenixGenApi.RateLimiter do
         %{
           request_id: request.request_id,
           user_id: request.user_id,
+          instance: instance,
           service: request.service,
           request_type: request.request_type,
           result: result
@@ -312,9 +449,10 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec check_rate_limit(String.t(), :global | api_identifier(), rate_limit_key()) ::
           :ok | {:error, :rate_limited, rate_limit_details()}
-  def check_rate_limit(key_value, scope, rate_limit_key) when is_binary(key_value) do
+  def check_rate_limit(key_value, scope, rate_limit_key) do
     if enabled?() do
-      GenServer.call(__MODULE__, {:check_rate_limit_direct, key_value, scope, rate_limit_key})
+      instance = select_instance_for_direct(key_value, scope)
+      GenServer.call(instance, {:check_rate_limit_direct, key_value, scope, rate_limit_key})
     else
       :ok
     end
@@ -339,8 +477,9 @@ defmodule PhoenixGenApi.RateLimiter do
       RateLimiter.reset_rate_limit("user_123", :global, :user_id)
   """
   @spec reset_rate_limit(String.t(), :global | api_identifier(), rate_limit_key()) :: :ok
-  def reset_rate_limit(key_value, scope, rate_limit_key) when is_binary(key_value) do
-    result = GenServer.call(__MODULE__, {:reset_rate_limit, key_value, scope, rate_limit_key})
+  def reset_rate_limit(key_value, scope, rate_limit_key) do
+    instance = select_instance_for_direct(key_value, scope)
+    result = GenServer.call(instance, {:reset_rate_limit, key_value, scope, rate_limit_key})
 
     :telemetry.execute(
       [:phoenix_gen_api, :rate_limiter, :reset],
@@ -363,8 +502,9 @@ defmodule PhoenixGenApi.RateLimiter do
     A map with current usage information for all applicable rate limits.
   """
   @spec get_rate_limit_status(String.t(), :global | api_identifier(), rate_limit_key()) :: map()
-  def get_rate_limit_status(key_value, scope, rate_limit_key) when is_binary(key_value) do
-    GenServer.call(__MODULE__, {:get_rate_limit_status, key_value, scope, rate_limit_key})
+  def get_rate_limit_status(key_value, scope, rate_limit_key) do
+    instance = select_instance_for_direct(key_value, scope)
+    GenServer.call(instance, {:get_rate_limit_status, key_value, scope, rate_limit_key})
   end
 
   @doc """
@@ -372,7 +512,9 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec get_configured_limits() :: %{global: list(), api: list()}
   def get_configured_limits() do
-    GenServer.call(__MODULE__, :get_configured_limits)
+    # This is a global config, can query any instance
+    instance = instance_name(0)
+    GenServer.call(instance, :get_configured_limits)
   end
 
   @doc """
@@ -389,7 +531,9 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec get_global_limits() :: [map()]
   def get_global_limits() do
-    GenServer.call(__MODULE__, :get_global_limits)
+    # This is a global config, can query any instance
+    instance = instance_name(0)
+    GenServer.call(instance, :get_global_limits)
   end
 
   @doc """
@@ -415,7 +559,18 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec set_global_limits([map()]) :: :ok
   def set_global_limits(limits) when is_list(limits) do
-    GenServer.call(__MODULE__, {:set_global_limits, limits})
+    broadcast_to_all_instances({:set_global_limits, limits})
+  end
+
+  defp broadcast_to_all_instances(message) do
+    instance_count = get_instance_count()
+
+    for i <- 0..(instance_count - 1) do
+      instance = instance_name(i)
+      GenServer.call(instance, message)
+    end
+
+    :ok
   end
 
   @doc """
@@ -441,7 +596,7 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec add_global_limit(map()) :: :ok
   def add_global_limit(limit) when is_map(limit) do
-    GenServer.call(__MODULE__, {:add_global_limit, limit})
+    broadcast_to_all_instances({:add_global_limit, limit})
   end
 
   @doc """
@@ -461,7 +616,7 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec remove_global_limit(atom() | String.t()) :: :ok
   def remove_global_limit(key) do
-    GenServer.call(__MODULE__, {:remove_global_limit, key})
+    broadcast_to_all_instances({:remove_global_limit, key})
   end
 
   @doc """
@@ -485,7 +640,7 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec update_config(map()) :: :ok
   def update_config(config) when is_map(config) do
-    GenServer.call(__MODULE__, {:update_config, config})
+    broadcast_to_all_instances({:update_config, config})
   end
 
   @doc """
@@ -495,27 +650,42 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   @spec clear() :: :ok
   def clear() do
-    GenServer.call(__MODULE__, :clear)
+    broadcast_to_all_instances(:clear)
   end
 
   ### Callbacks
 
   @impl true
   def init(_opts) do
-    # Create ETS tables for rate limiting
-    :ets.new(:rate_limiter_global, [
-      :set,
-      :named_table,
-      read_concurrency: true,
-      write_concurrency: true
-    ])
+    # Create ETS tables for rate limiting (only if they don't exist)
+    # Multiple instances will share these tables
+    case :ets.whereis(:rate_limiter_global) do
+      :undefined ->
+        :ets.new(:rate_limiter_global, [
+          :set,
+          :named_table,
+          :public,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
 
-    :ets.new(:rate_limiter_api, [
-      :set,
-      :named_table,
-      read_concurrency: true,
-      write_concurrency: true
-    ])
+      _ ->
+        :ok
+    end
+
+    case :ets.whereis(:rate_limiter_api) do
+      :undefined ->
+        :ets.new(:rate_limiter_api, [
+          :set,
+          :named_table,
+          :public,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
+
+      _ ->
+        :ok
+    end
 
     state = %{
       global_limits: load_global_limits(),
@@ -524,7 +694,7 @@ defmodule PhoenixGenApi.RateLimiter do
     }
 
     Logger.info(
-      "PhoenixGenApi.RateLimiter, initialized with #{length(state.global_limits)} global limits and #{length(state.api_limits)} API limits"
+      "PhoenixGenApi.RateLimiter instance initialized with #{length(state.global_limits)} global limits and #{length(state.api_limits)} API limits"
     )
 
     schedule_cleanup()
@@ -625,13 +795,8 @@ defmodule PhoenixGenApi.RateLimiter do
 
   @impl true
   def terminate(_reason, _state) do
-    try do
-      :ets.delete(:rate_limiter_global)
-      :ets.delete(:rate_limiter_api)
-    catch
-      :error, :badarg -> :ok
-    end
-
+    # Don't delete ETS tables - other instances might still be using them
+    # Tables will be cleaned up when the VM terminates
     :ok
   end
 

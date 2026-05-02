@@ -2,6 +2,9 @@
 # Benchmark script for PhoenixGenApi
 # Usage: mix run scripts/benchmark.exs -- --mode local --concurrency 50 --requests 1000
 
+# Load the benchmark helpers
+Code.require_file("benchmark_helpers.ex", __DIR__)
+
 defmodule PhoenixGenApi.Benchmark do
   require Logger
 
@@ -55,23 +58,10 @@ defmodule PhoenixGenApi.Benchmark do
   end
 
   defp setup_test_config() do
-    # Define a simple echo function for testing
-    defmodule BenchmarkHelpers do
-      def echo(args) do
-        {:ok, args}
-      end
-
-      def slow_echo(args) do
-        Process.sleep(10)
-        {:ok, args}
-      end
-
-      def fast_echo(args) do
-        {:ok, args}
-      end
-    end
-
+    # Use the existing BenchmarkHelpers module from the main application
     # Push local configs with required fields
+    # The helper functions expect 1 argument (the args map)
+    # We'll pass an empty map as args in the request
     configs = [
       %PhoenixGenApi.Structs.FunConfig{
         service: "benchmark_service",
@@ -81,7 +71,7 @@ defmodule PhoenixGenApi.Benchmark do
         mfa: {BenchmarkHelpers, :echo, []},
         response_type: :sync,
         timeout: 5000,
-        arg_types: %{},
+        arg_types: nil,
         arg_orders: []
       },
       %PhoenixGenApi.Structs.FunConfig{
@@ -92,7 +82,7 @@ defmodule PhoenixGenApi.Benchmark do
         mfa: {BenchmarkHelpers, :fast_echo, []},
         response_type: :sync,
         timeout: 5000,
-        arg_types: %{},
+        arg_types: nil,
         arg_orders: []
       },
       %PhoenixGenApi.Structs.FunConfig{
@@ -103,7 +93,7 @@ defmodule PhoenixGenApi.Benchmark do
         mfa: {BenchmarkHelpers, :slow_echo, []},
         response_type: :sync,
         timeout: 5000,
-        arg_types: %{},
+        arg_types: nil,
         arg_orders: []
       },
       %PhoenixGenApi.Structs.FunConfig{
@@ -114,7 +104,7 @@ defmodule PhoenixGenApi.Benchmark do
         mfa: {BenchmarkHelpers, :echo, []},
         response_type: :async,
         timeout: 5000,
-        arg_types: %{},
+        arg_types: nil,
         arg_orders: []
       }
     ]
@@ -126,7 +116,7 @@ defmodule PhoenixGenApi.Benchmark do
       end
     end)
 
-    Logger.info("Benchmark test configs added")
+    Logger.info("Benchmark test configs added using BenchmarkHelpers")
   end
 
   defp run_local_benchmarks(concurrency, requests_per_worker) do
@@ -194,18 +184,26 @@ defmodule PhoenixGenApi.Benchmark do
     throughput = total_requests / (time_us / 1_000_000)
     avg_latency_ms = time_ms / total_requests
 
-    # Count successes
-    successes = Enum.flat_map(results, fn r -> r end)
-      |> Enum.count(fn
-        %PhoenixGenApi.Structs.Response{success: true} -> true
-        _ -> false
-      end)
+    # Count successes and failures
+    all_responses = Enum.flat_map(results, fn r -> r end)
+
+    successes = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: true} -> true
+      _ -> false
+    end)
+
+    failures = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: false} -> true
+      _ -> false
+    end)
 
     IO.puts("  Total requests: #{total_requests}")
     IO.puts("  Successful: #{successes}")
+    IO.puts("  Failed: #{failures}")
     IO.puts("  Time: #{Float.round(time_ms, 2)}ms")
     IO.puts("  Throughput: #{Float.round(throughput, 2)} req/sec")
     IO.puts("  Avg latency: #{Float.round(avg_latency_ms * 1000, 2)}μs")
+    IO.puts("  Success rate: #{Float.round(successes / total_requests * 100, 2)}%")
     IO.puts("")
   end
 
@@ -213,7 +211,7 @@ defmodule PhoenixGenApi.Benchmark do
     IO.puts("📊 Benchmark: #{description}")
     IO.puts(String.duplicate("-", 40))
 
-    {time_us, _results} = :timer.tc(fn ->
+    {time_us, results} = :timer.tc(fn ->
       tasks = for i <- 1..concurrency do
         Task.async(fn ->
           for j <- 1..requests_per_worker do
@@ -235,9 +233,25 @@ defmodule PhoenixGenApi.Benchmark do
     time_ms = time_us / 1000
     throughput = total_requests / (time_us / 1_000_000)
 
+    # Count successes and failures for async calls
+    all_responses = Enum.flat_map(results, fn r -> r end)
+
+    successes = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: true} -> true
+      _ -> false
+    end)
+
+    failures = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: false} -> true
+      _ -> false
+    end)
+
     IO.puts("  Total requests: #{total_requests}")
+    IO.puts("  Successful: #{successes}")
+    IO.puts("  Failed: #{failures}")
     IO.puts("  Time: #{Float.round(time_ms, 2)}ms")
     IO.puts("  Throughput: #{Float.round(throughput, 2)} req/sec")
+    IO.puts("  Success rate: #{if total_requests > 0, do: Float.round(successes / total_requests * 100, 2), else: 0.0}%")
     IO.puts("")
   end
 
@@ -245,7 +259,7 @@ defmodule PhoenixGenApi.Benchmark do
     IO.puts("📊 Benchmark: Sync calls (remote)")
     IO.puts(String.duplicate("-", 40))
 
-    {time_us, _results} = :timer.tc(fn ->
+    {time_us, results} = :timer.tc(fn ->
       tasks = for i <- 1..concurrency do
         Task.async(fn ->
           for j <- 1..requests_per_worker do
@@ -267,9 +281,25 @@ defmodule PhoenixGenApi.Benchmark do
     time_ms = time_us / 1000
     throughput = total_requests / (time_us / 1_000_000)
 
+    # Count results
+    all_responses = Enum.flat_map(results, fn r -> r end)
+
+    successes = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: true} -> true
+      _ -> false
+    end)
+
+    failures = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: false} -> true
+      _ -> false
+    end)
+
     IO.puts("  Total requests: #{total_requests}")
+    IO.puts("  Successful: #{successes}")
+    IO.puts("  Failed: #{failures}")
     IO.puts("  Time: #{Float.round(time_ms, 2)}ms")
     IO.puts("  Throughput: #{Float.round(throughput, 2)} req/sec")
+    IO.puts("  Success rate: #{if total_requests > 0, do: Float.round(successes / total_requests * 100, 2), else: 0.0}%")
     IO.puts("")
   end
 
@@ -277,7 +307,7 @@ defmodule PhoenixGenApi.Benchmark do
     IO.puts("📊 Benchmark: Async calls (remote)")
     IO.puts(String.duplicate("-", 40))
 
-    {time_us, _results} = :timer.tc(fn ->
+    {time_us, results} = :timer.tc(fn ->
       tasks = for i <- 1..concurrency do
         Task.async(fn ->
           for j <- 1..requests_per_worker do
@@ -299,9 +329,25 @@ defmodule PhoenixGenApi.Benchmark do
     time_ms = time_us / 1000
     throughput = total_requests / (time_us / 1_000_000)
 
+    # Count results
+    all_responses = Enum.flat_map(results, fn r -> r end)
+
+    successes = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: true} -> true
+      _ -> false
+    end)
+
+    failures = Enum.count(all_responses, fn
+      %PhoenixGenApi.Structs.Response{success: false} -> true
+      _ -> false
+    end)
+
     IO.puts("  Total requests: #{total_requests}")
+    IO.puts("  Successful: #{successes}")
+    IO.puts("  Failed: #{failures}")
     IO.puts("  Time: #{Float.round(time_ms, 2)}ms")
     IO.puts("  Throughput: #{Float.round(throughput, 2)} req/sec")
+    IO.puts("  Success rate: #{if total_requests > 0, do: Float.round(successes / total_requests * 100, 2), else: 0.0}%")
     IO.puts("")
   end
 end
