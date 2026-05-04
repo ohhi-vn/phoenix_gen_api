@@ -20,7 +20,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         response_type: :sync
       }
@@ -41,7 +41,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         version: "1.0.0",
         response_type: :sync
@@ -71,7 +71,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         response_type: :sync
       }
@@ -94,7 +94,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         response_type: :sync
       }
@@ -120,7 +120,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         response_type: :sync
       }
@@ -146,7 +146,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string", "to_user" => "string"},
+        arg_types: %{"content" => :string, "to_user" => :string},
         arg_orders: ["content", "to_user"],
         response_type: :sync
       }
@@ -175,7 +175,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         response_type: :sync
       }
@@ -207,7 +207,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         response_type: :sync
       }
@@ -244,7 +244,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         version: "1.0.0",
         response_type: :sync
@@ -267,7 +267,7 @@ defmodule PhoenixGenApi.JsonConfigTest do
         choose_node_mode: :random,
         timeout: 5000,
         mfa: {MyModule, :send_message, []},
-        arg_types: %{"content" => "string"},
+        arg_types: %{"content" => :string},
         arg_orders: ["content"],
         response_type: :sync
       }

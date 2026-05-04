@@ -6,26 +6,54 @@ defmodule PhoenixGenApi.ArgumentHandler do
   It ensures that all request arguments match their expected types and sizes before function
   execution, preventing type errors and potential security issues.
 
-  ## Supported Argument Types
+  ## Argument Type Definitions
 
-  ### Basic Types
-  - `:string` - String with max byte size of 3000 (default)
-  - `{:string, max_bytes}` - String with custom max byte size
-  - `:num` - Integer or float
-  - `:boolean` - Boolean value (true/false)
-  - `:datetime` - ISO 8601 datetime string, auto-converted to `DateTime`
-  - `:naive_datetime` - ISO 8601 datetime string, auto-converted to `NaiveDateTime`
-  - `:uuid` - UUID string
+  ### Simple Format (Backward Compatible)
 
-  ### Collection Types
-  - `:list` - Generic list with max 1000 items (default)
-  - `{:list, max_items}` - List with custom max items
-  - `:list_string` - List of strings, max 1000 items, each string max 3000 bytes
-  - `{:list_string, max_items, max_item_bytes}` - List of strings with custom limits
-  - `:list_num` - List of numbers, max 1000 items
-  - `{:list_num, max_items}` - List of numbers with custom max items
-  - `:map` - Generic map with max 1000 items (default)
-  - `{:map, max_items}` - Map with custom max items
+  The simple format uses just the type atom:
+
+      arg_types: %{
+        "user_id" => :string,
+        "age" => :num,
+        "active" => :boolean
+      }
+
+  ### Extended Format (New)
+
+  The extended format uses a keyword list with `:type` and optional parameters:
+
+      arg_types: %{
+        "user_id" => [type: :string, max_bytes: 255, allow_nil?: true],
+        "age" => [type: :num, default_value: 18],
+        "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100],
+        "scores" => [type: :list_num, max_items: 50],
+        "metadata" => [type: :map, max_items: 200]
+      }
+
+  #### Extended Format Options
+
+  - `type:` - Required. The argument type (`:string`, `:num`, `:boolean`, etc.)
+  - `allow_nil?:` - Optional. When `true`, allows nil values (default: `false`)
+  - `default_value:` - Optional. Default value if argument is missing from request
+  - `max_bytes:` - For `:string` type, max byte size
+  - `max_items:` - For list/map types, max number of items
+  - `max_item_bytes:` - For `:list_string`, max bytes per item
+
+  #### Behavior
+
+  - If argument is **missing** from request and `default_value` is set -> uses default_value
+  - If argument is **missing** from request and no `default_value` -> error (unless `allow_nil?`)
+  - If argument is **explicitly nil** and `allow_nil?` is true -> uses nil
+  - If argument is **explicitly nil** and `allow_nil?` is false -> error
+  - If argument is **present** -> validates and converts the value
+
+  ### Type-Specific Parameters
+
+  - **`:string`**: `max_bytes:` (default 3000)
+  - **`:list`**: `max_items:` (default 1000)
+  - **`:list_string`**: `max_items:` (default 1000), `max_item_bytes:` (default 3000)
+  - **`:list_num`**: `max_items:` (default 1000)
+  - **`:map`**: `max_items:` (default 1000)
 
   ## Size Limits (Defaults)
 
@@ -53,18 +81,33 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   ## Examples
 
-      # Configure argument types
+      # Configure argument types (simple format)
       config = %FunConfig{
         arg_types: %{
           "username" => :string,
           "age" => :num,
-          "email" => {:string, 255},
+          "email" => :string,
           "tags" => :list_string,
-          "scores" => {:list_num, 100}
+          "scores" => :list_num
         },
         arg_orders: ["username", "age", "email", "tags", "scores"]
       }
 
+      # Configure argument types (extended format with nil and default support)
+      config = %FunConfig{
+        arg_types: %{
+          "username" => [type: :string, allow_nil?: false],
+          "age" => [type: :num, default_value: 18],
+          "email" => [type: :string, allow_nil?: true, max_bytes: 255],
+          "tags" => [type: :list_string, default_value: [], max_items: 10, max_item_bytes: 100],
+          "scores" => [type: :list_num, allow_nil?: true, max_items: 100]
+        },
+        arg_orders: ["username", "age", "email", "tags", "scores"]
+      }
+
+      # When allow_nil? is true, nil values are accepted
+      # When default_value is set and argument is missing, default is used
+      # If argument is missing and no default_value, and allow_nil? is false -> error
       # Valid request
       request = %Request{
         args: %{
@@ -105,7 +148,48 @@ defmodule PhoenixGenApi.ArgumentHandler do
   - Single-argument functions return a list with one element
   - Validation happens before type conversion
   - Nested structures (maps in maps, lists in lists) are not supported
+  - `arg_types` can be in simple format (`%{"user_id" => :string}`) or extended format
+    (`%{"user_id" => [type: :string, allow_nil?: true, default_value: "hello"]}`).
   """
+
+  ## Helper Functions for Extended arg_types Format
+
+  # Extract type parameters for complex types
+  defp get_type_with_params(type) when not is_list(type), do: {type, []}
+
+  defp get_type_with_params(arg_config) when is_list(arg_config) do
+    type = Keyword.get(arg_config, :type)
+    params = Keyword.drop(arg_config, [:type, :allow_nil?, :default_value])
+    {type, params}
+  end
+
+  # Build the type with params for convert_arg!
+  defp build_type_with_params(type, []), do: type
+  defp build_type_with_params(:string, [{:max_bytes, max_bytes}]), do: {:string, max_bytes}
+  defp build_type_with_params(:list, [{:max_items, max_items}]), do: {:list, max_items}
+
+  defp build_type_with_params(:list_string, params) do
+    max_items = Keyword.get(params, :max_items, list_max_items())
+    max_item_bytes = Keyword.get(params, :max_item_bytes, string_max_bytes())
+    {:list_string, max_items, max_item_bytes}
+  end
+
+  defp build_type_with_params(:list_num, [{:max_items, max_items}]), do: {:list_num, max_items}
+  defp build_type_with_params(:map, [{:max_items, max_items}]), do: {:map, max_items}
+  defp build_type_with_params(type, _params), do: type
+
+  # Helper functions for extracting allow_nil? and default_value
+  defp get_allow_nil_from_arg_config(arg_config) when is_list(arg_config) do
+    Keyword.get(arg_config, :allow_nil?, false)
+  end
+
+  defp get_allow_nil_from_arg_config(_), do: false
+
+  defp get_default_value_from_arg_config(arg_config) when is_list(arg_config) do
+    Keyword.get(arg_config, :default_value, nil)
+  end
+
+  defp get_default_value_from_arg_config(_), do: nil
 
   alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.Errors.InvalidType
@@ -183,6 +267,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   ## Examples
 
+      # Simple format
       config = %FunConfig{
         arg_types: %{"name" => :string, "age" => :num},
         arg_orders: ["name", "age"]
@@ -194,6 +279,24 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
       ArgumentHandler.convert_args!(config, request)
       # => ["Alice", 30]
+
+      # Extended format with default values
+      config = %FunConfig{
+        arg_types: %{
+          "name" => [type: :string],
+          "age" => [type: :num, default_value: 25],
+          "email" => [type: :string, allow_nil?: true]
+        },
+        arg_orders: ["name", "age", "email"]
+      }
+
+      # Missing "age" and "email" - will use default for age, nil for email
+      request = %Request{
+        args: %{"name" => "Bob"}
+      }
+
+      ArgumentHandler.convert_args!(config, request)
+      # => ["Bob", 25, nil]
   """
   def convert_args!(config = %FunConfig{}, request = %Request{}) do
     validate_args!(config, request)
@@ -201,10 +304,48 @@ defmodule PhoenixGenApi.ArgumentHandler do
     args = request.args || %{}
     arg_types = config.arg_types || %{}
 
+    # Build the final arguments map with default values and type conversion
     converted_args =
-      Enum.reduce(args, %{}, fn {name, value}, acc ->
-        type = arg_types[name]
-        Map.put(acc, name, convert_arg!(value, type))
+      Enum.reduce(arg_types, %{}, fn {name, arg_config}, acc ->
+        {type, params} = get_type_with_params(arg_config)
+        allow_nil = get_allow_nil_from_arg_config(arg_config)
+        default_value = get_default_value_from_arg_config(arg_config)
+
+        # Check if argument is present in request (even if nil)
+        arg_present = Map.has_key?(args, name)
+
+        value =
+          if arg_present do
+            # Argument is present in request (could be nil)
+            Map.get(args, name)
+          else
+            # Argument is missing from request
+            if default_value != nil do
+              default_value
+            else
+              nil
+            end
+          end
+
+        # Handle nil value
+        final_value =
+          if value == nil and not allow_nil do
+            nil
+          else
+            value
+          end
+
+        # Convert the argument with proper type handling
+        converted_value =
+          if final_value == nil and allow_nil do
+            nil
+          else
+            # Build the type with params for convert_arg!
+            type_with_params = build_type_with_params(type, params)
+            convert_arg!(final_value, type_with_params)
+          end
+
+        Map.put(acc, name, converted_value)
       end)
 
     cond do
@@ -226,12 +367,21 @@ defmodule PhoenixGenApi.ArgumentHandler do
           Enum.reduce(config.arg_orders, [], fn name, acc ->
             case Map.get(converted_args, name) do
               nil ->
-                Logger.error(
-                  "gen_api, request, missing argument #{inspect(name)} in #{inspect(request.request_type)}"
-                )
+                # Check if this is allowed (allow_nil? or default_value)
+                arg_config = Map.get(arg_types, name)
+                allow_nil = get_allow_nil_from_arg_config(arg_config)
+                default_value = get_default_value_from_arg_config(arg_config)
 
-                raise ArgumentError,
-                      "missing argument #{inspect(name)} in #{inspect(request.request_type)}"
+                if allow_nil or default_value != nil do
+                  [nil | acc]
+                else
+                  Logger.error(
+                    "gen_api, request, missing argument #{inspect(name)} in #{inspect(request.request_type)}"
+                  )
+
+                  raise ArgumentError,
+                        "missing argument #{inspect(name)} in #{inspect(request.request_type)}"
+                end
 
               arg ->
                 [arg | acc]
@@ -253,111 +403,138 @@ defmodule PhoenixGenApi.ArgumentHandler do
   end
 
   def validate_args!(config = %FunConfig{}, request = %Request{}) do
-    args = request.args
-    arg_types = config.arg_types
+    args = request.args || %{}
+    arg_types = config.arg_types || %{}
 
-    if map_size(args) != map_size(arg_types) do
+    # Check for extra arguments in request that are not in arg_types
+    request_args_set = MapSet.new(Map.keys(args))
+    config_args_set = MapSet.new(Map.keys(arg_types))
+
+    extra_args = MapSet.difference(request_args_set, config_args_set)
+
+    unless Enum.empty?(extra_args) do
       Logger.error(
-        "gen_api, request, invalid number of arguments for #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+        "gen_api, request, extra arguments for #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}, extra: #{inspect(extra_args)}"
       )
 
       raise ArgumentError,
-            "invalid number of arguments for #{inspect(request.request_type)}, expected #{map_size(arg_types)}, got #{map_size(args)}"
+            "extra arguments for #{inspect(request.request_type)}, extra: #{inspect(MapSet.to_list(extra_args))}"
     end
 
-    config_args = MapSet.new(Map.keys(arg_types))
-    request_args = MapSet.new(Map.keys(args))
+    # Verify argument types & values
+    Enum.each(arg_types, fn {name, arg_config} ->
+      {type, params} = get_type_with_params(arg_config)
+      allow_nil = get_allow_nil_from_arg_config(arg_config)
+      default_value = get_default_value_from_arg_config(arg_config)
 
-    if !MapSet.equal?(config_args, request_args) do
-      extra_args = MapSet.difference(request_args, config_args)
-      missing_args = MapSet.difference(config_args, request_args)
+      # Check if argument is present in request (even if nil)
+      arg_present = Map.has_key?(args, name)
 
-      Logger.error(
-        "gen_api, request, invalid arguments for #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}, extra: #{inspect(extra_args)}, missing: #{inspect(missing_args)}"
-      )
-
-      raise ArgumentError,
-            "invalid arguments for #{inspect(request.request_type)}, extra: #{inspect(MapSet.to_list(extra_args))}, missing: #{inspect(MapSet.to_list(missing_args))}"
-    end
-
-    # Verify argument types & values.
-    Enum.each(args, fn {name, value} ->
-      case arg_types[name] do
-        :list ->
-          if length(value) > list_max_items() do
-            Logger.error(
-              "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-            )
-
-            raise ArgumentError,
-                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{list_max_items()} items"
+      value =
+        if arg_present do
+          # Argument is present in request (could be nil)
+          Map.get(args, name)
+        else
+          # Argument is missing from request
+          if default_value != nil do
+            default_value
+          else
+            nil
           end
+        end
 
-          arg_list_validation!(value)
+      # Handle nil value
+      if value == nil do
+        unless allow_nil do
+          Logger.error(
+            "gen_api, request, missing or nil argument #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+          )
 
-        {:list, max_items} ->
-          if length(value) > max_items do
-            Logger.error(
-              "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-            )
+          raise ArgumentError,
+                "missing or nil argument #{inspect(name)} in #{inspect(request.request_type)}"
+        end
+      else
+        # Build type with params for validation
+        type_with_params = build_type_with_params(type, params)
 
-            raise ArgumentError,
-                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
-          end
+        # Validate non-nil value
+        case type_with_params do
+          :list ->
+            if length(value) > list_max_items() do
+              Logger.error(
+                "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+              )
 
-          arg_list_validation!(value)
+              raise ArgumentError,
+                    "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{list_max_items()} items"
+            end
 
-        {:list_string, max_items, max_item_bytes} ->
-          if length(value) > max_items do
-            Logger.error(
-              "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-            )
+            arg_list_validation!(value)
 
-            raise ArgumentError,
-                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
-          end
+          {:list, max_items} ->
+            if length(value) > max_items do
+              Logger.error(
+                "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+              )
 
-          if Enum.any?(value, fn item ->
-               not is_binary(item) or byte_size(item) > max_item_bytes
-             end) do
-            Logger.error(
-              "gen_api, request, invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-            )
+              raise ArgumentError,
+                    "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
+            end
 
-            raise ArgumentError,
-                  "invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}"
-          end
+            arg_list_validation!(value)
 
-          arg_list_validation!(value)
+          {:list_string, max_items, max_item_bytes} ->
+            if length(value) > max_items do
+              Logger.error(
+                "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+              )
 
-        # TO-DO: Implement more for map type validation.
-        :map ->
-          if map_size(value) > map_max_items() do
-            Logger.error(
-              "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-            )
+              raise ArgumentError,
+                    "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
+            end
 
-            raise ArgumentError,
-                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{map_max_items()} items"
-          end
+            if Enum.any?(value, fn item ->
+                 not is_binary(item) or byte_size(item) > max_item_bytes
+               end) do
+              Logger.error(
+                "gen_api, request, invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+              )
 
-          arg_map_validation!(value)
+              raise ArgumentError,
+                    "invalid argument item type/length for #{inspect(name)} in #{inspect(request.request_type)}"
+            end
 
-        # TO-DO: Implement more for map type validation.
-        {:map, max_items} ->
-          if map_size(value) > max_items do
-            Logger.error(
-              "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-            )
+            arg_list_validation!(value)
 
-            raise ArgumentError,
-                  "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
-          end
+          # TO-DO: Implement more for map type validation.
+          :map ->
+            if map_size(value) > map_max_items() do
+              Logger.error(
+                "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+              )
 
-          arg_map_validation!(value)
+              raise ArgumentError,
+                    "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{map_max_items()} items"
+            end
 
-        other ->
-          arg_validation!(other, value, name, request)
+            arg_map_validation!(value)
+
+          # TO-DO: Implement more for map type validation.
+          {:map, max_items} ->
+            if map_size(value) > max_items do
+              Logger.error(
+                "gen_api, request, invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+              )
+
+              raise ArgumentError,
+                    "invalid argument size for #{inspect(name)} in #{inspect(request.request_type)}, max #{max_items} items"
+            end
+
+            arg_map_validation!(value)
+
+          other ->
+            arg_validation!(other, value, name, request)
+        end
       end
     end)
   end
@@ -449,6 +626,9 @@ defmodule PhoenixGenApi.ArgumentHandler do
   end
 
   defp arg_validation!(_type, nil, name, _request) do
+    # This function is called when value is nil
+    # The allow_nil? check should have been done in validate_args! and convert_args!
+    # If we reach here with nil, it means allow_nil? is false
     Logger.error("gen_api, request, nil value not accepted for argument #{inspect(name)}")
 
     raise ArgumentError, "nil value not accepted for argument #{inspect(name)}"
@@ -531,12 +711,11 @@ defmodule PhoenixGenApi.ArgumentHandler do
       :uuid ->
         if not Uniq.UUID.valid?(value) do
           Logger.error(
-            "gen_api, request, invalid argument size for #{inspect(name)}, value #{inspect value}"
+            "gen_api, request, invalid argument size for #{inspect(name)}, value #{inspect(value)}"
           )
 
           raise ArgumentError,
                 "invalid argument value for #{inspect(name)}, require a UUID format string"
-
         end
 
       :list ->

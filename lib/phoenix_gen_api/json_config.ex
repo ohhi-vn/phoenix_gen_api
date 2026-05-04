@@ -210,7 +210,8 @@ defmodule PhoenixGenApi.JsonConfig do
 
     Same as `generate/2` for a single service.
   """
-  @spec export_service(String.t() | atom(), keyword()) :: [FunConfig.t()] | map() | String.t() | any()
+  @spec export_service(String.t() | atom(), keyword()) ::
+          [FunConfig.t()] | map() | String.t() | any()
   def export_service(service, opts \\ []) when is_binary(service) or is_atom(service) do
     generate(service, opts)
   end
@@ -232,6 +233,7 @@ defmodule PhoenixGenApi.JsonConfig do
       Enum.flat_map(request_types, fn {request_type, versions} ->
         # Get the latest version for each request type
         latest_version = versions |> Enum.sort() |> List.last()
+
         case ConfigDb.get(service, request_type, latest_version) do
           {:ok, config = %FunConfig{}} -> [config]
           _ -> []
@@ -306,18 +308,32 @@ defmodule PhoenixGenApi.JsonConfig do
     case arg_orders do
       :map ->
         arg_types
-        |> Enum.map(fn {name, _type} -> {name, ""} end)
+        |> Enum.map(fn {name, arg_config} ->
+          default_value = get_default_value_from_arg_config(arg_config)
+          {name, default_value || ""}
+        end)
         |> Map.new()
 
       orders when is_list(orders) ->
         orders
-        |> Enum.map(fn name -> {name, ""} end)
+        |> Enum.map(fn name ->
+          arg_config = Map.get(arg_types, name)
+          default_value = get_default_value_from_arg_config(arg_config)
+          {name, default_value || ""}
+        end)
         |> Map.new()
 
       _ ->
         %{}
     end
   end
+
+  # Helper function to extract default_value from arg_config
+  defp get_default_value_from_arg_config(arg_config) when is_list(arg_config) do
+    Keyword.get(arg_config, :default_value, nil)
+  end
+
+  defp get_default_value_from_arg_config(_), do: nil
 
   defp maybe_add_descriptions(config_map, _opts) do
     # Descriptions are already included in the key

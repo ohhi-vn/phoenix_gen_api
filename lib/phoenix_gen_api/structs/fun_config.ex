@@ -5,6 +5,40 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   This struct holds all the necessary information to route, validate, and execute
   a function call based on an incoming request.
 
+  ## Argument Types (arg_types)
+
+  The `arg_types` field supports two formats:
+
+  ### Simple Format (Backward Compatible)
+
+  Uses just the type atom:
+
+      arg_types: %{"user_id" => :string, "age" => :num}
+
+  ### Extended Format (New)
+
+  Uses a keyword list with `:type` and optional parameters:
+
+      arg_types: %{
+        "user_id" => [type: :string, max_bytes: 255, allow_nil?: true],
+        "age" => [type: :num, default_value: 18],
+        "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100]
+      }
+
+  #### Extended Format Options
+
+  - `type:` - Required. The argument type (`:string`, `:num`, `:boolean`, etc.)
+  - `allow_nil?:` - Optional. When `true`, allows nil values (default: `false`)
+  - `default_value:` - Optional. Default value if argument is missing from request
+  - `max_bytes:` - For `:string` type, max byte size
+  - `max_items:` - For list/map types, max number of items
+  - `max_item_bytes:` - For `:list_string`, max bytes per item
+
+  #### Validation
+
+  - Default values are validated to match their declared type during config validation
+  - Invalid default values will cause `FunConfig.validate_with_details/1` to return an error
+
   ## Retry
 
   The `retry` field configures retry behavior when request execution fails
@@ -392,11 +426,23 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     arg_orders == [] or arg_orders == nil
   end
 
-  defp valid_args?(arg_types, :map) when is_map(arg_types) and map_size(arg_types) > 0, do: true
+  defp valid_args?(arg_types, :map) when is_map(arg_types) and map_size(arg_types) > 0 do
+    # Validate each arg config in the map
+    Enum.all?(arg_types, fn {_name, arg_config} ->
+      valid_arg_config?(arg_config)
+    end)
+  end
 
   defp valid_args?(arg_types, arg_orders) when is_map(arg_types) and map_size(arg_types) == 1 do
-    arg_orders == [] or arg_orders == nil or
-      MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders)
+    # Validate each arg config in the map
+    valid_configs =
+      Enum.all?(arg_types, fn {_name, arg_config} ->
+        valid_arg_config?(arg_config)
+      end)
+
+    valid_configs and
+      (arg_orders == [] or arg_orders == nil or
+         MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders))
   end
 
   defp valid_args?(_arg_types, nil), do: false
@@ -407,10 +453,120 @@ defmodule PhoenixGenApi.Structs.FunConfig do
        do: false
 
   defp valid_args?(arg_types, arg_orders) when is_map(arg_types) and is_list(arg_orders) do
-    MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders)
+    # Validate each arg config in the map
+    valid_configs =
+      Enum.all?(arg_types, fn {_name, arg_config} ->
+        valid_arg_config?(arg_config)
+      end)
+
+    valid_configs and MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders)
   end
 
   defp valid_args?(_, _), do: false
+
+  # Validate arg_config - can be a simple type or extended format
+  defp valid_arg_config?(arg_config) when is_list(arg_config) do
+    # Extended format: [type: :string, allow_nil?: true, default_value: "hello"]
+    Keyword.has_key?(arg_config, :type) and
+      valid_type_with_params?(Keyword.get(arg_config, :type), arg_config) and
+      valid_default_value?(arg_config)
+  end
+
+  defp valid_arg_config?(type) when not is_list(type) do
+    # Simple format: just a type
+    valid_type_with_params?(type, [])
+  end
+
+  defp valid_arg_config?(_), do: false
+
+  # Validate that default_value matches the type
+  defp valid_default_value?(arg_config) do
+    type = Keyword.get(arg_config, :type)
+    default_value = Keyword.get(arg_config, :default_value, nil)
+
+    if default_value == nil do
+      # No default value is fine
+      true
+    else
+      # Validate that the default value matches the type
+      case type do
+        :boolean -> is_boolean_type(default_value)
+        :num -> is_number(default_value)
+        :string -> is_binary(default_value)
+        :datetime -> is_binary(default_value)
+        :naive_datetime -> is_binary(default_value)
+        :uuid -> is_binary(default_value) && Uniq.UUID.valid?(default_value)
+        :list -> is_list(default_value)
+        :list_string -> is_list(default_value) && Enum.all?(default_value, &is_binary/1)
+        :list_num -> is_list(default_value) && Enum.all?(default_value, &is_number/1)
+        :map -> is_map(default_value)
+        _ -> false
+      end
+    end
+  end
+
+  defp is_boolean_type(true), do: true
+  defp is_boolean_type(false), do: true
+  defp is_boolean_type(_), do: false
+
+  # Valid types with parameters
+  defp valid_type_with_params?(:boolean, _params), do: true
+  defp valid_type_with_params?(:datetime, _params), do: true
+  defp valid_type_with_params?(:naive_datetime, _params), do: true
+  defp valid_type_with_params?(:num, _params), do: true
+
+  defp valid_type_with_params?(:string, params) do
+    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
+      [] -> true
+      [max_bytes: max_bytes] when is_integer(max_bytes) and max_bytes > 0 -> true
+      _ -> false
+    end
+  end
+
+  defp valid_type_with_params?(:uuid, _params), do: true
+
+  defp valid_type_with_params?(:list, params) do
+    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
+      [] -> true
+      [max_items: max_items] when is_integer(max_items) and max_items > 0 -> true
+      _ -> false
+    end
+  end
+
+  defp valid_type_with_params?(:list_string, params) do
+    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
+      [] ->
+        true
+
+      params when is_list(params) ->
+        max_items = Keyword.get(params, :max_items, nil)
+        max_item_bytes = Keyword.get(params, :max_item_bytes, nil)
+
+        (max_items == nil or (is_integer(max_items) and max_items > 0)) and
+          (max_item_bytes == nil or (is_integer(max_item_bytes) and max_item_bytes > 0))
+
+      _ ->
+        false
+    end
+  end
+
+  defp valid_type_with_params?(:list_num, params) do
+    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
+      [] -> true
+      [max_items: max_items] when is_integer(max_items) and max_items > 0 -> true
+      _ -> false
+    end
+  end
+
+  defp valid_type_with_params?(:map, params) do
+    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
+      [] -> true
+      [max_items: max_items] when is_integer(max_items) and max_items > 0 -> true
+      _ -> false
+    end
+  end
+
+  defp valid_type_with_params?(_, _), do: false
 
   defp valid_version?(version) when is_binary(version) and byte_size(version) > 0, do: true
   defp valid_version?(_), do: false
@@ -475,8 +631,13 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   def normalize_retry({:all_nodes, n}) when is_number(n), do: {:all_nodes, trunc(n)}
 
   defp validate_args_details(nil, nil), do: :ok
-  defp validate_args_details(nil, arg_orders) when arg_orders == [] or arg_orders == nil, do: :ok
-  defp validate_args_details(nil, _), do: {:error, "arg_types is nil but arg_orders is not empty"}
+
+  defp validate_args_details(nil, arg_orders)
+       when arg_orders == [] or arg_orders == nil,
+       do: :ok
+
+  defp validate_args_details(nil, _),
+    do: {:error, "arg_types is nil but arg_orders is not empty"}
 
   defp validate_args_details(arg_types, arg_orders)
        when is_map(arg_types) and map_size(arg_types) == 0 do
@@ -497,7 +658,18 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       orders_set = MapSet.new(arg_orders)
 
       if MapSet.equal?(args_set, orders_set) do
-        :ok
+        # Validate each arg config
+        invalid_args =
+          Enum.filter(arg_types, fn {_name, arg_config} ->
+            not valid_arg_config?(arg_config)
+          end)
+
+        if Enum.empty?(invalid_args) do
+          :ok
+        else
+          {:error,
+           "invalid arg_types configuration for: #{inspect(Enum.map(invalid_args, fn {name, _} -> name end))}"}
+        end
       else
         missing = MapSet.difference(args_set, orders_set) |> MapSet.to_list()
         extra = MapSet.difference(orders_set, args_set) |> MapSet.to_list()
@@ -506,8 +678,21 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     end
   end
 
-  defp validate_args_details(arg_types, :map) when is_map(arg_types) and map_size(arg_types) > 0,
-    do: :ok
+  defp validate_args_details(arg_types, :map)
+       when is_map(arg_types) and map_size(arg_types) > 0 do
+    # Validate each arg config
+    invalid_args =
+      Enum.filter(arg_types, fn {_name, arg_config} ->
+        not valid_arg_config?(arg_config)
+      end)
+
+    if Enum.empty?(invalid_args) do
+      :ok
+    else
+      {:error,
+       "invalid arg_types configuration for: #{inspect(Enum.map(invalid_args, fn {name, _} -> name end))}"}
+    end
+  end
 
   defp validate_args_details(_, _), do: {:error, "invalid arg_types or arg_orders format"}
 end
