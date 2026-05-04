@@ -67,21 +67,21 @@ defmodule PhoenixGenApi.Structs.Request do
 
   @derive Nestru.Decoder
   defstruct [
-    # string | nil, user's id in system.
+    # user's id in system.
     :user_id,
-    # string | nil, device id of current connection.
+    # device id of current connection.
     :device_id,
-    # string, request type.
+    # request type.
     :request_type,
-    # string, unique id for request. Make by client.
+    # unique id for request. Make by client.
     :request_id,
-    # string, service name.
+    # service name.
     :service,
-    # map, field -> value, arguments for request.
+    # field -> value, arguments for request.
     args: %{},
-    # list of strings | nil, user roles for permission checking.
+    # user roles for permission checking.
     user_roles: nil,
-    # string | nil, version of the API request.
+    # version of the API request.
     version: nil
   ]
 
@@ -91,32 +91,17 @@ defmodule PhoenixGenApi.Structs.Request do
   def decode!(params = %{}) do
     request = Nestru.decode!(params, Request)
 
-    # set args to empty map if args is nil (function with no args in request)
-    request =
-      if request.args == nil do
-        %{request | args: %{}}
-      else
-        request
-      end
-
-    # validate user_roles is a list of strings if present
-    request =
-      case request.user_roles do
-        nil ->
-          request
-
-        roles when is_list(roles) ->
-          validated_roles =
-            Enum.filter(roles, fn role ->
-              is_binary(role) and byte_size(role) > 0
-            end)
-
-          %{request | user_roles: validated_roles}
-
-        _ ->
-          %{request | user_roles: nil}
-      end
+    request = %{request | args: request.args || %{}}
+    request = %{request | user_roles: validate_user_roles(request.user_roles)}
 
     request
   end
+
+  defp validate_user_roles(nil), do: nil
+
+  defp validate_user_roles(roles) when is_list(roles) do
+    Enum.filter(roles, &is_binary/1) |> Enum.reject(&(byte_size(&1) == 0))
+  end
+
+  defp validate_user_roles(_), do: nil
 end

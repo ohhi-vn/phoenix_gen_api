@@ -427,7 +427,7 @@ defmodule PhoenixGenApi.NodeSelector do
 
       {:hash, hash_key} ->
         # hash_node_with_fallback always returns {:ok, node} (falling back to random on miss)
-        primary = hash_node_with_fallback(request, nodes, hash_key)
+        {:ok, primary} = hash_node_with_fallback(request, nodes, hash_key)
         fallbacks = List.delete(nodes, primary)
         {:ok, [primary | fallbacks]}
 
@@ -597,10 +597,6 @@ defmodule PhoenixGenApi.NodeSelector do
         %{^hash_key => v} when not is_nil(v) -> v
         _ -> nil
       end
-  end
-
-  defp build_sticky_key(service, request_type, value) do
-    "#{service}:#{request_type}:#{value}"
   end
 
   defp ensure_sticky_table do

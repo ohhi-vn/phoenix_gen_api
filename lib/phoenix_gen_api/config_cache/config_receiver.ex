@@ -292,8 +292,8 @@ defmodule PhoenixGenApi.ConfigReceiver do
         %FunConfig{} = config ->
           config =
             config
-            |> enforce_service_name(service)
-            |> ensure_version()
+            |> PhoenixGenApi.Helpers.Shared.enforce_service_name(service)
+            |> PhoenixGenApi.Helpers.Shared.ensure_version()
 
           if FunConfig.valid?(config) do
             [config]
@@ -358,16 +358,6 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
         {:error, :batch_add_failed, state}
     end
-  end
-
-  ### Private - FunConfig Helpers
-
-  defp enforce_service_name(config = %FunConfig{}, service_name) do
-    PhoenixGenApi.Helpers.Shared.enforce_service_name(config, service_name)
-  end
-
-  defp ensure_version(config = %FunConfig{}) do
-    PhoenixGenApi.Helpers.Shared.ensure_version(config)
   end
 
   ### Private - ConfigPuller Integration

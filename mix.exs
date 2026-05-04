@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "2.13.0",
+      version: "2.14.0",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -47,8 +47,7 @@ defmodule PhoenixGenApi.MixProject do
       # Code quality
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:ex_dna, "~> 1.4", only: [:dev, :test], runtime: false},
-
+      {:ex_dna, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 

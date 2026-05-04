@@ -31,10 +31,6 @@ defmodule PhoenixGenApi.WorkerPool.CircuitBreaker do
   def circuit_open?(nil, _cooldown_ms), do: false
 
   def circuit_open?(opened_at, cooldown_ms) when is_integer(opened_at) do
-    if System.monotonic_time(:millisecond) - opened_at < cooldown_ms do
-      true
-    else
-      false
-    end
+    System.monotonic_time(:millisecond) - opened_at < cooldown_ms
   end
 end

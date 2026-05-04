@@ -183,38 +183,16 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   - `request_info` must be a boolean
   """
   def valid?(config = %__MODULE__{}) do
-    validation_results = [
-      request_type: valid_request_type?(config.request_type),
-      service: config.service != nil,
-      nodes: valid_nodes?(config.nodes),
-      choose_node_mode: valid_choose_node_mode?(config.choose_node_mode),
-      timeout: valid_timeout?(config.timeout),
-      mfa: valid_mfa?(config.mfa),
-      args: valid_args?(config.arg_types, config.arg_orders),
-      response_type: config.response_type in [:sync, :async, :stream, :none],
-      check_permission: valid_check_permission?(config.check_permission, config.arg_types),
-      permission_callback: valid_permission_callback?(config.permission_callback),
-      request_info: is_boolean(config.request_info),
-      version: valid_version?(config.version),
-      disabled: is_boolean(config.disabled),
-      retry: valid_retry?(config.retry),
-      before_execute: valid_hook?(config.before_execute),
-      after_execute: valid_after_hook?(config.after_execute)
-    ]
+    case validate_with_details(config) do
+      {:ok, _} ->
+        true
 
-    invalid_keys =
-      validation_results
-      |> Enum.filter(fn {_, valid} -> valid == false end)
-      |> Enum.map(fn {key, _} -> key end)
+      {:error, errors} ->
+        Logger.error(
+          "PhoenixGenApi.FunConfig, invalid configurations: #{inspect(errors)} for #{inspect(config)}"
+        )
 
-    if Enum.empty?(invalid_keys) do
-      true
-    else
-      Logger.error(
-        "PhoenixGenApi.FunConfig, invalid configurations: #{inspect(invalid_keys)} for #{inspect(config)}"
-      )
-
-      false
+        false
     end
   end
 
@@ -233,7 +211,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       {valid_timeout?(config.timeout),
        "timeout must be a positive integer between #{@min_timeout} and #{@max_timeout}, or :infinity"},
       {valid_mfa?(config.mfa), "mfa must be a valid {module, function, args} tuple"},
-      {validate_args_details(config.arg_types, config.arg_orders), "argument validation failed"},
+      {validate_args_details(config.arg_types, config.arg_orders) == :ok,
+       "argument validation failed"},
       {config.response_type in [:sync, :async, :stream, :none],
        "response_type must be :sync, :async, :stream, or :none"},
       {valid_check_permission?(config.check_permission, config.arg_types),
@@ -243,7 +222,11 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       {is_boolean(config.request_info), "request_info must be a boolean"},
       {valid_version?(config.version), "version must be a valid version string (e.g., '1.0.0')"},
       {valid_retry?(config.retry),
-       "retry must be nil, a positive number, {:same_node, number}, or {:all_nodes, number}"}
+       "retry must be nil, a positive number, {:same_node, number}, or {:all_nodes, number}"},
+      {valid_hook?(config.before_execute),
+       "before_execute must be nil or a valid {module, function} or {module, function, args} tuple"},
+      {valid_hook?(config.after_execute),
+       "after_execute must be nil or a valid {module, function} or {module, function, args} tuple"}
     ]
 
     errors =
@@ -421,14 +404,6 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_mfa?(_), do: false
 
   @doc false
-  defp valid_args?(arg_types, arg_orders) do
-    case validate_args_details(arg_types, arg_orders) do
-      :ok -> true
-      {:error, _} -> false
-    end
-  end
-
-  @doc false
   defp valid_check_permission?(false, _arg_types), do: true
   defp valid_check_permission?(:any_authenticated, _arg_types), do: true
   defp valid_check_permission?({:arg, arg_name}, _arg_types) when is_binary(arg_name), do: true
@@ -458,22 +433,6 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_retry?(_), do: false
 
   @doc false
-  defp valid_hook?(nil), do: true
-  defp valid_hook?({module, function}) when is_atom(module) and is_atom(function), do: true
-
-  defp valid_hook?({module, function, args})
-       when is_atom(module) and is_atom(function) and is_list(args), do: true
-
-  defp valid_hook?(_), do: false
-
-  @doc false
-  defp valid_after_hook?(nil), do: true
-  defp valid_after_hook?({module, function}) when is_atom(module) and is_atom(function), do: true
-
-  defp valid_after_hook?({module, function, args})
-       when is_atom(module) and is_atom(function) and is_list(args), do: true
-
-  @doc false
   defp valid_arg_config?(arg_config) when is_atom(arg_config) do
     # Simple format - just a type atom
     arg_config in [:string, :num, :boolean, :list_string, :list_num, :map, :any]
@@ -488,4 +447,13 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   end
 
   defp valid_arg_config?(_), do: false
+
+  @doc false
+  defp valid_hook?(nil), do: true
+  defp valid_hook?({module, function}) when is_atom(module) and is_atom(function), do: true
+
+  defp valid_hook?({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args), do: true
+
+  defp valid_hook?(_), do: false
 end

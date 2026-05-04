@@ -6,17 +6,16 @@ defmodule PhoenixGenApi.Errors.InvalidType do
   defexception [:message]
 
   @doc """
-  Create a new InvalidType error.
+  Creates an InvalidType error for the given argument name.
   """
+  @spec exception(String.t() | atom()) :: %__MODULE__{}
   def exception(arg_name) do
     %__MODULE__{
-      message: "Invalid type for argument '#{inspect arg_name}'"
+      message: "Invalid type for argument '#{inspect(arg_name)}'"
     }
   end
 end
 
 defimpl String.Chars, for: PhoenixGenApi.Errors.InvalidType do
-  def to_string(%PhoenixGenApi.Errors.InvalidType{message: message}) do
-    message
-  end
+  def to_string(%PhoenixGenApi.Errors.InvalidType{message: message}), do: message
 end

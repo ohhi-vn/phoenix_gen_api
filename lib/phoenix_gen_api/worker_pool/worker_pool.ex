@@ -384,7 +384,7 @@ defmodule PhoenixGenApi.WorkerPool do
   end
 
   defp record_success(state) do
-    if state.consecutive_failures > 0 do
+    if state.circuit_open_at != nil do
       Logger.info(
         "WorkerPool #{state.pool_name}: circuit breaker reset after successful task execution"
       )

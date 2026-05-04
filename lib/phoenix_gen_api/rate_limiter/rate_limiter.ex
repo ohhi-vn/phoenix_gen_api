@@ -117,8 +117,7 @@ defmodule PhoenixGenApi.RateLimiter do
 
   require Logger
 
-  # Registry for tracking rate limiter instances
-  @registry :rate_limiter_registry
+  @supervisor :rate_limiter_supervisor
   @instance_prefix :rate_limiter_instance_
 
   @default_cleanup_interval 60_000
@@ -205,15 +204,6 @@ defmodule PhoenixGenApi.RateLimiter do
           scope: :global | api_identifier()
         }
 
-  require Logger
-
-  # Registry for tracking rate limiter instances
-  @registry :rate_limiter_registry
-  @supervisor :rate_limiter_supervisor
-  @instance_prefix :rate_limiter_instance_
-
-  @default_cleanup_interval 60_000
-
   @doc """
   Starts the RateLimiter and its instances under a supervisor.
   """
@@ -225,6 +215,7 @@ defmodule PhoenixGenApi.RateLimiter do
     children =
       for i <- 0..(instance_count - 1) do
         name = instance_name(i)
+
         %{
           id: name,
           start: {GenServer, :start_link, [__MODULE__, opts, [name: name]]},
@@ -239,14 +230,6 @@ defmodule PhoenixGenApi.RateLimiter do
 
     case Supervisor.start_link(children, supervisor_opts) do
       {:ok, sup_pid} ->
-        # Register the first instance as the main one for backward compatibility
-        Registry.start_link(keys: :unique, name: @registry)
-
-        for i <- 0..(instance_count - 1) do
-          name = instance_name(i)
-          Registry.register(@registry, name, %{index: i})
-        end
-
         Logger.info(
           "PhoenixGenApi.RateLimiter started with #{instance_count} instances " <>
             "(routing: #{routing_strategy})"
@@ -263,9 +246,10 @@ defmodule PhoenixGenApi.RateLimiter do
   Returns the number of active rate limiter instances.
   """
   def instance_count() do
-    case Registry.lookup(@registry, instance_name(0)) do
-      [] -> 0
-      _ -> get_instance_count()
+    if Process.whereis(instance_name(0)) do
+      get_instance_count()
+    else
+      0
     end
   end
 
@@ -982,7 +966,11 @@ defmodule PhoenixGenApi.RateLimiter do
     end)
   end
 
-  # Optimized timestamp counting - stops early if we only need the count
+  # Counts timestamps within the sliding window.
+  # Although this scans all timestamps, the list is bounded by `max_requests`
+  # (we cap it via `Enum.take` in `check_and_record`), so the iteration is
+  # always O(max_requests) — typically a small constant. An early-exit variant
+  # would only save work when the limit is exceeded, which is the uncommon path.
   defp count_valid_timestamps(timestamps, window_start) do
     Enum.count(timestamps, fn ts -> ts > window_start end)
   end

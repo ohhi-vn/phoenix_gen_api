@@ -110,28 +110,16 @@ defmodule PhoenixGenApi.Structs.PushConfig do
   """
   @spec valid?(t()) :: boolean()
   def valid?(config = %__MODULE__{}) do
-    validation_results = [
-      service: config.service != nil,
-      nodes: valid_nodes?(config.nodes),
-      config_version: valid_config_version?(config.config_version),
-      fun_configs: valid_fun_configs?(config.fun_configs),
-      fun_configs_service: fun_configs_match_service?(config.fun_configs, config.service),
-      fun_configs_versions: fun_configs_have_valid_versions?(config.fun_configs)
-    ]
+    case validate_with_details(config) do
+      {:ok, _} ->
+        true
 
-    invalid_keys =
-      validation_results
-      |> Enum.filter(fn {_, valid} -> valid == false end)
-      |> Enum.map(fn {key, _} -> key end)
+      {:error, errors} ->
+        Logger.error(
+          "PhoenixGenApi.PushConfig, invalid configurations: #{inspect(errors)} for #{inspect(config)}"
+        )
 
-    if Enum.empty?(invalid_keys) do
-      true
-    else
-      Logger.error(
-        "PhoenixGenApi.PushConfig, invalid configurations: #{inspect(invalid_keys)} for #{inspect(config)}"
-      )
-
-      false
+        false
     end
   end
 
@@ -142,54 +130,27 @@ defmodule PhoenixGenApi.Structs.PushConfig do
   """
   @spec validate_with_details(t()) :: {:ok, t()} | {:error, [String.t()]}
   def validate_with_details(config = %__MODULE__{}) do
-    errors = []
+    validations = [
+      {config.service != nil, "service must not be nil"},
+      {valid_nodes?(config.nodes), "nodes must be a non-empty list of atoms or strings"},
+      {valid_config_version?(config.config_version), "config_version must be a non-empty string"},
+      {valid_fun_configs?(config.fun_configs),
+       "fun_configs must be a non-empty list of FunConfig structs"},
+      {fun_configs_match_service?(config.fun_configs, config.service),
+       "all fun_configs must have the same service name as the push config"},
+      {fun_configs_have_valid_versions?(config.fun_configs),
+       "all fun_configs must have valid versions"}
+    ]
 
     errors =
-      if config.service != nil do
-        errors
-      else
-        ["service must not be nil" | errors]
-      end
-
-    errors =
-      if valid_nodes?(config.nodes) do
-        errors
-      else
-        ["nodes must be a non-empty list of atoms or strings" | errors]
-      end
-
-    errors =
-      if valid_config_version?(config.config_version) do
-        errors
-      else
-        ["config_version must be a non-empty string" | errors]
-      end
-
-    errors =
-      if valid_fun_configs?(config.fun_configs) do
-        errors
-      else
-        ["fun_configs must be a non-empty list of FunConfig structs" | errors]
-      end
-
-    errors =
-      if fun_configs_match_service?(config.fun_configs, config.service) do
-        errors
-      else
-        ["all fun_configs must have the same service name as the push config" | errors]
-      end
-
-    errors =
-      if fun_configs_have_valid_versions?(config.fun_configs) do
-        errors
-      else
-        ["all fun_configs must have valid versions" | errors]
-      end
+      validations
+      |> Enum.filter(fn {valid?, _} -> not valid? end)
+      |> Enum.map(fn {_, msg} -> msg end)
 
     if Enum.empty?(errors) do
       {:ok, config}
     else
-      {:error, Enum.reverse(errors)}
+      {:error, errors}
     end
   end
 

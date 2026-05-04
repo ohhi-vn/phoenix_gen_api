@@ -8,16 +8,16 @@ defmodule PhoenixGenApi.Structs.StreamHelper do
   @typedoc "Stream helper struct."
 
   @type t :: %__MODULE__{
-    stream_pid: pid(),
-    request_id: String.t(),
-  }
+          stream_pid: pid(),
+          request_id: String.t()
+        }
 
   @derive Nestru.Decoder
   defstruct [
-    # string, user's id in system.
+    # pid, the PID of the stream process.
     :stream_pid,
-    # string, device id of user. can be
-    :request_id,
+    # string, unique identifier for the request.
+    :request_id
   ]
 
   @doc """

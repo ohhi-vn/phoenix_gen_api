@@ -129,24 +129,15 @@ defmodule PhoenixGenApi.JsonConfig do
           fun_configs
 
         :map ->
-          fun_configs
-          |> build_json_config_map(opts)
-          |> maybe_add_descriptions(opts)
-          |> maybe_add_arg_values(opts)
+          build_json_config_map(fun_configs, opts)
 
         :json ->
           fun_configs
           |> build_json_config_map(opts)
-          |> maybe_add_descriptions(opts)
-          |> maybe_add_arg_values(opts)
           |> JSON.encode!()
 
         {module, function, args} when is_atom(module) and is_atom(function) and is_list(args) ->
-          config_map =
-            fun_configs
-            |> build_json_config_map(opts)
-            |> maybe_add_descriptions(opts)
-            |> maybe_add_arg_values(opts)
+          config_map = build_json_config_map(fun_configs, opts)
 
           apply(module, function, [config_map | args])
 
@@ -334,14 +325,4 @@ defmodule PhoenixGenApi.JsonConfig do
   end
 
   defp get_default_value_from_arg_config(_), do: nil
-
-  defp maybe_add_descriptions(config_map, _opts) do
-    # Descriptions are already included in the key
-    config_map
-  end
-
-  defp maybe_add_arg_values(config_map, _opts) do
-    # Arg values are already included in the config value
-    config_map
-  end
 end

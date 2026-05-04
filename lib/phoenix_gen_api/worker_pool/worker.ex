@@ -38,7 +38,6 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
   defmodule State do
     @moduledoc false
-    @default_task_timeout 30_000
     defstruct [
       :pool_name,
       :current_task,
@@ -47,7 +46,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
       task_exception: false,
       consecutive_failures: 0,
       circuit_open_at: nil,
-      task_timeout: @default_task_timeout
+      task_timeout: 30_000
     ]
   end
 
@@ -100,6 +99,12 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
     if circuit_open?(state) do
       Logger.warning(
         "WorkerPool.Worker: circuit breaker open, rejecting task for pool #{inspect(state.pool_name)}"
+      )
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :worker_pool, :task, :rejected],
+        %{system_time: System.system_time()},
+        %{pool_name: state.pool_name, reason: :circuit_open}
       )
 
       # Notify pool immediately that worker is done (task rejected)

@@ -76,7 +76,7 @@ defmodule PhoenixGenApi.Structs.Response do
   def error?(%__MODULE__{}), do: false
 
   @doc """
-  Create Request from params for convert data map from websocket api.
+  Encodes a Response struct to a map using Nestru.
   """
   def encode!(res = %__MODULE__{}) do
     res
@@ -84,13 +84,15 @@ defmodule PhoenixGenApi.Structs.Response do
   end
 
   @doc """
-  Create Request from params for convert data map from websocket api.
-  Opts is not supported yet.
+  Encodes a Response struct to a map. Opts is not supported yet.
   """
   def encode!(res = %__MODULE__{}, _opts) do
     encode!(res)
   end
 
+  @doc """
+  Encodes a Response struct to a map, returning `{:ok, map}` or `{:error, reason}`.
+  """
   def encode(res = %__MODULE__{}, _opts) do
     try do
       encode!(res)

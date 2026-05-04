@@ -82,7 +82,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"list" => {:list, 2}}}
       request = %Request{args: %{"list" => [1, 2, 3, 4]}}
 
-      assert_raise ArgumentError, ~r/invalid argument size for "list", max/, fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "list".*max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -97,7 +97,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"map" => {:map, 1}}}
       request = %Request{args: %{"map" => %{"a" => 1, "b" => 2}}}
 
-      assert_raise ArgumentError, ~r/invalid argument size for "map", max/, fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "map".*max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -113,7 +113,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"name" => {:list_num, 2}}}
       request = %Request{args: %{"name" => [1, 2, 3, 4]}}
 
-      assert_raise ArgumentError, ~r/invalid argument size for "name", max/, fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "name".*max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
