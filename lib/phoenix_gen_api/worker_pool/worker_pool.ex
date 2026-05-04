@@ -81,7 +81,8 @@ defmodule PhoenixGenApi.WorkerPool do
       :pool_name,
       :workers,
       :idle_workers,
-      :idle_workers_list,  # Cache list for O(1) access
+      # Cache list for O(1) access
+      :idle_workers_list,
       :queue,
       :max_queue_size,
       :task_timeout,
@@ -193,38 +194,6 @@ defmodule PhoenixGenApi.WorkerPool do
   end
 
   @impl true
-  def handle_call({:execute, task}, _from, state) do
-    # Check pool-level circuit breaker
-    if circuit_open?(state) do
-      Logger.warning("WorkerPool #{state.pool_name}: circuit breaker open, rejecting task")
-
-      {:reply, {:error, :circuit_open}, state}
-    else
-      case find_idle_worker(state.idle_workers, state.idle_workers_list) do
-        {:ok, worker_pid} ->
-          # Execute immediately on idle worker
-          PhoenixGenApi.WorkerPool.Worker.execute(worker_pid, task)
-          new_workers = Map.put(state.workers, worker_pid, :busy)
-          new_idle = MapSet.delete(state.idle_workers, worker_pid)
-          new_idle_list = List.delete(state.idle_workers_list, worker_pid)
-          {:reply, :ok, %{state | workers: new_workers, idle_workers: new_idle, idle_workers_list: new_idle_list}}
-
-        :no_idle_worker ->
-          # Queue the task if under limit
-          queue_size = :queue.len(state.queue)
-
-          if queue_size >= state.max_queue_size do
-            Logger.warning("WorkerPool #{state.pool_name}: queue full, rejecting task")
-            {:reply, {:error, :queue_full}, state}
-          else
-            new_queue = :queue.in(task, state.queue)
-            {:reply, :ok, %{state | queue: new_queue}}
-          end
-      end
-    end
-  end
-
-  @impl true
   def handle_call(:status, _from, state) do
     idle_count = MapSet.size(state.idle_workers)
     busy_count = map_size(state.workers) - idle_count
@@ -240,6 +209,50 @@ defmodule PhoenixGenApi.WorkerPool do
     }
 
     {:reply, status, state}
+  end
+
+  @impl true
+  def handle_call({:execute, task}, _from, state) do
+    # Check pool-level circuit breaker
+    if circuit_open?(state) do
+      Logger.warning("WorkerPool #{state.pool_name}: circuit breaker open, rejecting task")
+      {:reply, {:error, :circuit_open}, state}
+    else
+      case find_idle_worker(state.idle_workers, state.idle_workers_list) do
+        {:ok, worker_pid} ->
+          execute_on_worker(worker_pid, task, state)
+
+        :no_idle_worker ->
+          queue_task(task, state)
+      end
+    end
+  end
+
+  defp execute_on_worker(worker_pid, task, state) do
+    PhoenixGenApi.WorkerPool.Worker.execute(worker_pid, task)
+    new_workers = Map.put(state.workers, worker_pid, :busy)
+    new_idle = MapSet.delete(state.idle_workers, worker_pid)
+    new_idle_list = List.delete(state.idle_workers_list, worker_pid)
+
+    {:reply, :ok,
+     %{
+       state
+       | workers: new_workers,
+         idle_workers: new_idle,
+         idle_workers_list: new_idle_list
+     }}
+  end
+
+  defp queue_task(task, state) do
+    queue_size = :queue.len(state.queue)
+
+    if queue_size >= state.max_queue_size do
+      Logger.warning("WorkerPool #{state.pool_name}: queue full, rejecting task")
+      {:reply, {:error, :queue_full}, state}
+    else
+      new_queue = :queue.in(task, state.queue)
+      {:reply, :ok, %{state | queue: new_queue}}
+    end
   end
 
   @impl true
@@ -271,7 +284,14 @@ defmodule PhoenixGenApi.WorkerPool do
 
       {:empty, _queue} ->
         # No queued tasks, keep worker idle
-        new_state = record_success(%{state | workers: new_workers, idle_workers: new_idle, idle_workers_list: new_idle_list})
+        new_state =
+          record_success(%{
+            state
+            | workers: new_workers,
+              idle_workers: new_idle,
+              idle_workers_list: new_idle_list
+          })
+
         {:noreply, new_state}
     end
   end
@@ -299,7 +319,13 @@ defmodule PhoenixGenApi.WorkerPool do
     final_idle_list = [new_pid | new_idle_list]
 
     # Record failure for circuit breaker
-    new_state = record_failure(%{state | workers: final_workers, idle_workers: final_idle, idle_workers_list: final_idle_list})
+    new_state =
+      record_failure(%{
+        state
+        | workers: final_workers,
+          idle_workers: final_idle,
+          idle_workers_list: final_idle_list
+      })
 
     {:noreply, new_state}
   end
@@ -319,15 +345,13 @@ defmodule PhoenixGenApi.WorkerPool do
     end
   end
 
-  defp circuit_open?(%State{circuit_open_at: nil}), do: false
+  ## Circuit Breaker Functions
 
-  defp circuit_open?(%State{circuit_open_at: opened_at}) do
-    if System.monotonic_time(:millisecond) - opened_at < @circuit_breaker_cooldown do
-      true
-    else
-      # Cooldown period has passed, reset circuit breaker
-      false
-    end
+  defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
+    PhoenixGenApi.WorkerPool.CircuitBreaker.circuit_open?(
+      circuit_open_at,
+      @circuit_breaker_cooldown
+    )
   end
 
   defp record_failure(state) do

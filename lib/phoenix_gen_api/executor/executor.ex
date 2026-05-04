@@ -60,6 +60,37 @@ defmodule PhoenixGenApi.Executor do
 
   require Logger
 
+  # Retry state struct to group parameters and reduce function arity
+  defmodule RetryState do
+    @moduledoc """
+    Retry state for executor retry operations.
+
+    This struct groups parameters that were previously passed individually
+    to reduce function arity and improve code maintainability.
+    """
+    @type t :: %__MODULE__{
+            result: term(),
+            mod: module(),
+            fun: atom(),
+            args: list(),
+            fun_config: FunConfig.t(),
+            request: Request.t(),
+            rpc_timeout: pos_integer(),
+            nodes: [node() | String.t()],
+            retry_config: term()
+          }
+
+    defstruct result: nil,
+              mod: nil,
+              fun: nil,
+              args: [],
+              fun_config: nil,
+              request: nil,
+              rpc_timeout: 5000,
+              nodes: [],
+              retry_config: nil
+  end
+
   @default_rpc_timeout 5000
 
   @doc """
@@ -245,62 +276,83 @@ defmodule PhoenixGenApi.Executor do
   end
 
   defp do_execute_with_config!(request, fun_config) do
-    # Use 'with' for chaining operations that return {:ok, _} or {:error, _}
-    with :ok <- RateLimiter.check_rate_limit(request) do
-      try do
-        Permission.check_permission!(request, fun_config)
-      rescue
-        e in PhoenixGenApi.Permission.PermissionDenied ->
-          Hooks.run_after(fun_config.after_execute, request, fun_config,
-            Response.error_response(request.request_id, "Permission denied"))
-          reraise e, __STACKTRACE__
-      end
+    case RateLimiter.check_rate_limit(request) do
+      :ok ->
+        try do
+          Permission.check_permission!(request, fun_config)
+        rescue
+          e in PhoenixGenApi.Permission.PermissionDenied ->
+            Hooks.run_after(
+              fun_config.after_execute,
+              request,
+              fun_config,
+              Response.error_response(request.request_id, "Permission denied")
+            )
 
-      result = case fun_config.response_type do
-        :sync ->
-          do_call(request, fun_config)
+            reraise e, __STACKTRACE__
+        end
 
-        :async ->
-          async_call(request, fun_config)
+        result =
+          case fun_config.response_type do
+            :sync ->
+              do_call(request, fun_config)
 
-        :none ->
-          async_call(request, fun_config)
+            :async ->
+              async_call(request, fun_config)
 
-        :stream ->
-          stream_call(request, fun_config)
+            :none ->
+              async_call(request, fun_config)
 
-        other ->
-          Logger.error("PhoenixGenApi.Executor, unsupported response type: #{inspect(other)}")
-          Response.error_response(request.request_id, "unsupported response type: #{inspect(other)}")
-      end
+            :stream ->
+              stream_call(request, fun_config)
 
-      # Run after_execute hook with the result
-      Hooks.run_after(fun_config.after_execute, request, fun_config, result)
-    else
+            other ->
+              Logger.error("PhoenixGenApi.Executor, unsupported response type: #{inspect(other)}")
 
-        {:error, :rate_limited, details} ->
-          retry_after_ms = Map.get(details, :retry_after_ms, 0)
-          error_resp = Response.error_response(
-            request.request_id,
-            "Rate limit exceeded. Please retry after #{div(retry_after_ms, 1000)} seconds.",
-            true
-          ) |> Map.put(:can_retry, true)
-          Hooks.run_after(fun_config.after_execute, request, fun_config, error_resp)
+              Response.error_response(
+                request.request_id,
+                "unsupported response type: #{inspect(other)}"
+              )
+          end
 
-        {:error, :rate_limiter_error, error_details} ->
-          Logger.error("PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request")
-          do_call(request, fun_config)
+        Hooks.run_after(fun_config.after_execute, request, fun_config, result)
+        result
 
-        {:error, :permission_denied} ->
-          Logger.warning("PhoenixGenApi.Executor, permission denied for request: #{request.request_id}")
-          Hooks.run_after(fun_config.after_execute, request, fun_config,
-            Response.error_response(request.request_id, "Permission denied"))
-
-        error ->
-          Logger.error("PhoenixGenApi.Executor, unexpected error: #{inspect(error)}")
-          do_call(request, fun_config)
-
+      error ->
+        result = handle_rate_limit_error(error, request, fun_config)
+        Hooks.run_after(fun_config.after_execute, request, fun_config, result)
+        result
     end
+  end
+
+  defp handle_rate_limit_error({:error, :rate_limited, details}, request, _fun_config) do
+    retry_after_ms = Map.get(details, :retry_after_ms, 0)
+
+    Response.error_response(
+      request.request_id,
+      "Rate limit exceeded. Please retry after #{div(retry_after_ms, 1000)} seconds.",
+      true
+    )
+    |> Map.put(:can_retry, true)
+  end
+
+  defp handle_rate_limit_error({:error, :rate_limiter_error, error_details}, request, fun_config) do
+    Logger.error(
+      "PhoenixGenApi.Executor, rate limiter error: #{inspect(error_details)}, allowing request"
+    )
+
+    do_call(request, fun_config)
+  end
+
+  defp handle_rate_limit_error({:error, :permission_denied}, request, _fun_config) do
+    Logger.warning("PhoenixGenApi.Executor, permission denied for request: #{request.request_id}")
+
+    Response.error_response(request.request_id, "Permission denied")
+  end
+
+  defp handle_rate_limit_error(error, request, fun_config) do
+    Logger.error("PhoenixGenApi.Executor, unexpected error: #{inspect(error)}")
+    do_call(request, fun_config)
   end
 
   def sync_call(request, fun_config) do
@@ -406,6 +458,17 @@ defmodule PhoenixGenApi.Executor do
       {:ok, nodes} ->
         rpc_timeout = get_rpc_timeout(fun_config)
 
+        state = %RetryState{
+          mod: mod,
+          fun: fun,
+          args: args,
+          fun_config: fun_config,
+          request: request,
+          rpc_timeout: rpc_timeout,
+          nodes: nodes,
+          retry_config: retry_config
+        }
+
         result =
           execute_remote_with_fallback(
             nodes,
@@ -417,17 +480,7 @@ defmodule PhoenixGenApi.Executor do
             nil
           )
 
-        apply_remote_retry(
-          result,
-          mod,
-          fun,
-          args,
-          fun_config,
-          request,
-          rpc_timeout,
-          nodes,
-          retry_config
-        )
+        apply_remote_retry(%{state | result: result})
 
       {:error, reason} ->
         Logger.error("PhoenixGenApi.Executor, failed to select nodes: #{inspect(reason)}")
@@ -435,19 +488,8 @@ defmodule PhoenixGenApi.Executor do
     end
   end
 
-  defp apply_remote_retry(
-         result,
-         mod,
-         fun,
-         args,
-         fun_config,
-         request,
-         rpc_timeout,
-         original_nodes,
-         {:same_node, n}
-       )
-       when n > 0 do
-    if retryable_error?(result) do
+  defp apply_remote_retry(state = %RetryState{retry_config: {:same_node, n}}) when n > 0 do
+    if retryable_error?(state.result) do
       backoff_ms = NodeSelector.calculate_backoff(n)
 
       Logger.info(
@@ -459,53 +501,32 @@ defmodule PhoenixGenApi.Executor do
       :telemetry.execute(
         [:phoenix_gen_api, :executor, :retry],
         %{attempt: n, backoff_ms: backoff_ms},
-        %{mode: :same_node, type: :remote, nodes: original_nodes}
+        %{mode: :same_node, type: :remote, nodes: state.nodes}
       )
 
       # Retry on the same nodes that were originally selected
       new_result =
         execute_remote_with_fallback(
-          original_nodes,
-          mod,
-          fun,
-          args,
-          rpc_timeout,
-          request.request_id,
+          state.nodes,
+          state.mod,
+          state.fun,
+          state.args,
+          state.rpc_timeout,
+          state.request.request_id,
           nil
         )
 
-      apply_remote_retry(
-        new_result,
-        mod,
-        fun,
-        args,
-        fun_config,
-        request,
-        rpc_timeout,
-        original_nodes,
-        {:same_node, n - 1}
-      )
+      apply_remote_retry(%{state | result: new_result, retry_config: {:same_node, n - 1}})
     else
-      result
+      state.result
     end
   end
 
-  defp apply_remote_retry(
-         result,
-         mod,
-         fun,
-         args,
-         fun_config,
-         request,
-         rpc_timeout,
-         _original_nodes,
-         {:all_nodes, n}
-       )
-       when n > 0 do
-    if retryable_error?(result) do
+  defp apply_remote_retry(state = %RetryState{retry_config: {:all_nodes, n}}) when n > 0 do
+    if retryable_error?(state.result) do
       # Retry on ALL available nodes
       all_nodes =
-        case NodeSelector.resolve_nodes_list(fun_config) do
+        case NodeSelector.resolve_nodes_list(state.fun_config) do
           {:ok, nodes} -> nodes
           {:error, _} -> []
         end
@@ -527,43 +548,26 @@ defmodule PhoenixGenApi.Executor do
       new_result =
         execute_remote_with_fallback(
           all_nodes,
-          mod,
-          fun,
-          args,
-          rpc_timeout,
-          request.request_id,
+          state.mod,
+          state.fun,
+          state.args,
+          state.rpc_timeout,
+          state.request.request_id,
           nil
         )
 
-      apply_remote_retry(
-        new_result,
-        mod,
-        fun,
-        args,
-        fun_config,
-        request,
-        rpc_timeout,
-        all_nodes,
-        {:all_nodes, n - 1}
-      )
+      apply_remote_retry(%{
+        state
+        | result: new_result,
+          nodes: all_nodes,
+          retry_config: {:all_nodes, n - 1}
+      })
     else
-      result
+      state.result
     end
   end
 
-  defp apply_remote_retry(
-         result,
-         _mod,
-         _fun,
-         _args,
-         _fun_config,
-         _request,
-         _rpc_timeout,
-         _original_nodes,
-         _retry_config
-       ) do
-    result
-  end
+  defp apply_remote_retry(state = %RetryState{}), do: state.result
 
   defp retryable_error?({:error, _}), do: true
   defp retryable_error?({:error, _, _}), do: true
@@ -668,8 +672,8 @@ defmodule PhoenixGenApi.Executor do
       []
   end
 
-  defp handle_call_result({:error, _reason} = error, request_id) do
-    Response.error_response(request_id, get_error_message(error))
+  defp handle_call_result(result = {:error, _reason}, request_id) do
+    Response.error_response(request_id, get_error_message(result))
   end
 
   defp handle_call_result({:ok, result}, request_id) do

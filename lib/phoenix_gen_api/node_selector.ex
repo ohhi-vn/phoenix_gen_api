@@ -258,7 +258,7 @@ defmodule PhoenixGenApi.NodeSelector do
     {:ok, [node()]}
   end
 
-  def resolve_nodes_list(%FunConfig{} = config) do
+  def resolve_nodes_list(config = %FunConfig{}) do
     case resolve_nodes(config) do
       {:ok, resolved} -> {:ok, Shared.validate_nodes(resolved.nodes)}
       {:error, reason} -> {:error, reason}
@@ -559,30 +559,35 @@ defmodule PhoenixGenApi.NodeSelector do
         "PhoenixGenApi.NodeSelector, sticky hash key #{inspect(hash_key)} not found in request, falling back to random"
       )
 
-      {:ok, Enum.random(nodes)}
+      select_and_store_sticky(nodes, hash_key)
     else
-      sticky_key = build_sticky_key(request.service, request.request_type, value)
       ensure_sticky_table()
+      handle_sticky_lookup(nodes, hash_key)
+    end
+  end
 
-      case :ets.lookup(@sticky_table_name, sticky_key) do
-        [{^sticky_key, node, _ts}] ->
-          if Enum.member?(nodes, node) do
-            # Node still available, check TTL
-            if sticky_valid?(sticky_key) do
-              {:ok, node}
-            else
-              # TTL expired, re-select
-              select_and_store_sticky(nodes, sticky_key)
-            end
-          else
-            # Node no longer in list, select new one
-            select_and_store_sticky(nodes, sticky_key)
-          end
+  defp handle_sticky_lookup(nodes, sticky_key) do
+    case :ets.lookup(@sticky_table_name, sticky_key) do
+      [{^sticky_key, node, _ts}] ->
+        handle_existing_sticky(nodes, node, sticky_key)
 
-        _ ->
-          # No sticky assignment or node no longer in list, select new one
-          select_and_store_sticky(nodes, sticky_key)
+      _ ->
+        # No sticky assignment or node no longer in list, select new one
+        select_and_store_sticky(nodes, sticky_key)
+    end
+  end
+
+  defp handle_existing_sticky(nodes, node, sticky_key) do
+    if Enum.member?(nodes, node) do
+      if sticky_valid?(sticky_key) do
+        {:ok, node}
+      else
+        # TTL expired, re-select
+        select_and_store_sticky(nodes, sticky_key)
       end
+    else
+      # Node no longer in list, select new one
+      select_and_store_sticky(nodes, sticky_key)
     end
   end
 
@@ -631,6 +636,7 @@ defmodule PhoenixGenApi.NodeSelector do
   end
 
   defp select_and_store_sticky(nodes, sticky_key) do
+    ensure_sticky_table()
     node = Enum.random(nodes)
     ts = System.system_time(:millisecond)
     :ets.insert(@sticky_table_name, {sticky_key, node, ts})
@@ -649,6 +655,7 @@ defmodule PhoenixGenApi.NodeSelector do
   """
   def cleanup_sticky_table do
     now_ms = System.system_time(:millisecond)
+
     :ets.foldl(@sticky_table_name, [], fn {key, node, ts}, acc ->
       if ts < now_ms - @sticky_ttl_ms do
         [{key, node, ts} | acc]
@@ -659,6 +666,7 @@ defmodule PhoenixGenApi.NodeSelector do
     |> Enum.each(fn {key, node, ts} ->
       :ets.delete_object(@sticky_table_name, {key, node, ts})
     end)
+
     :ok
   end
 end

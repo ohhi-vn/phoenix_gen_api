@@ -1,5 +1,5 @@
 defmodule PhoenixGenApi.ImplHelper do
-  @doc """
+  @moduledoc """
   Macro to generate simple implementation of protocol.
   Support for easy to use with general encoder.
 
@@ -40,7 +40,7 @@ defmodule PhoenixGenApi.ImplHelper do
   defmacro gen_impl(encoder, module) do
     quote do
       defimpl unquote(encoder), for: unquote(module) do
-        def encode(%unquote(module){} = data, opts) do
+        def encode(data = %unquote(module){}, opts) do
           data
           |> unquote(module).encode!(opts)
         end

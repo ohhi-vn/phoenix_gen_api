@@ -224,33 +224,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   end
 
   def handle_cast(:pull, state) do
-    {new_api_list, new_service_versions, success?} =
-      pull_and_update_cache(state.services, state.api_list, state.service_versions, false)
-
-    new_state =
-      if success? do
-        %{
-          state
-          | api_list: new_api_list,
-            service_versions: new_service_versions,
-            failure_count: 0
-        }
-      else
-        new_failure_count = state.failure_count + 1
-
-        Logger.warning(
-          "PhoenixGenApi.ConfigPuller, pull failed, failure count: #{new_failure_count}"
-        )
-
-        %{
-          state
-          | api_list: new_api_list,
-            service_versions: new_service_versions,
-            failure_count: new_failure_count
-        }
-      end
-
-    schedule_pull(new_state)
+    new_state = do_pull(state)
     {:noreply, new_state}
   end
 
@@ -259,33 +233,7 @@ defmodule PhoenixGenApi.ConfigPuller do
     # forcing a full pull for all services regardless of version changes.
     cleared_versions = %{}
 
-    {new_api_list, new_service_versions, success?} =
-      pull_and_update_cache(state.services, state.api_list, cleared_versions, false)
-
-    new_state =
-      if success? do
-        %{
-          state
-          | api_list: new_api_list,
-            service_versions: new_service_versions,
-            failure_count: 0
-        }
-      else
-        new_failure_count = state.failure_count + 1
-
-        Logger.warning(
-          "PhoenixGenApi.ConfigPuller, force_pull failed, failure count: #{new_failure_count}"
-        )
-
-        %{
-          state
-          | api_list: new_api_list,
-            service_versions: new_service_versions,
-            failure_count: new_failure_count
-        }
-      end
-
-    schedule_pull(new_state)
+    new_state = do_pull(%{state | service_versions: cleared_versions})
     {:noreply, new_state}
   end
 
@@ -329,6 +277,26 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   @impl true
   def handle_info(:pull, state) do
+    new_state = do_pull(state)
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info(:cleanup_sticky, state) do
+    Logger.debug("PhoenixGenApi.ConfigPuller, cleaning up sticky table")
+    PhoenixGenApi.NodeSelector.cleanup_sticky_table()
+    Process.send_after(self(), :cleanup_sticky, 3_600_000)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  ### Private Functions
+
+  defp do_pull(state) do
     {new_api_list, new_service_versions, success?} =
       pull_and_update_cache(state.services, state.api_list, state.service_versions, false)
 
@@ -356,20 +324,7 @@ defmodule PhoenixGenApi.ConfigPuller do
       end
 
     schedule_pull(new_state)
-    {:noreply, new_state}
-  end
-
-  @impl true
-  def handle_info(:cleanup_sticky, state) do
-    Logger.debug("PhoenixGenApi.ConfigPuller, cleaning up sticky table")
-    PhoenixGenApi.NodeSelector.cleanup_sticky_table()
-    Process.send_after(self(), :cleanup_sticky, 3_600_000)
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_info(_msg, state) do
-    {:noreply, state}
+    new_state
   end
 
   ### Private Functions

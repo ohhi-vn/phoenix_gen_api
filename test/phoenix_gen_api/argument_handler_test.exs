@@ -80,9 +80,9 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
 
     test "raises an error for a list argument exceeding the size limit" do
       config = %FunConfig{arg_types: %{"list" => {:list, 2}}}
-      request = %Request{args: %{"list" => [1, 2, 3]}}
+      request = %Request{args: %{"list" => [1, 2, 3, 4]}}
 
-      assert_raise ArgumentError, ~r/invalid argument size for "list" in nil, max/, fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "list", max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -97,7 +97,7 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"map" => {:map, 1}}}
       request = %Request{args: %{"map" => %{"a" => 1, "b" => 2}}}
 
-      assert_raise ArgumentError, ~r/invalid argument size for "map" in nil, max/, fn ->
+      assert_raise ArgumentError, ~r/invalid argument size for "map", max/, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end

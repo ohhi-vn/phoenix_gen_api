@@ -224,129 +224,32 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   Returns `{:ok, config}` if valid, or `{:error, [error_messages]}` if invalid.
   """
   def validate_with_details(config = %__MODULE__{}) do
-    errors = []
+    validations = [
+      {valid_request_type?(config.request_type), "request_type must be a non-empty string"},
+      {config.service != nil, "service must not be nil"},
+      {valid_nodes?(config.nodes), "nodes must be a valid list, MFA tuple, or :local"},
+      {valid_choose_node_mode?(config.choose_node_mode),
+       "choose_node_mode must be :random, :hash, {:hash, key}, or :round_robin"},
+      {valid_timeout?(config.timeout),
+       "timeout must be a positive integer between #{@min_timeout} and #{@max_timeout}, or :infinity"},
+      {valid_mfa?(config.mfa), "mfa must be a valid {module, function, args} tuple"},
+      {validate_args_details(config.arg_types, config.arg_orders), "argument validation failed"},
+      {config.response_type in [:sync, :async, :stream, :none],
+       "response_type must be :sync, :async, :stream, or :none"},
+      {valid_check_permission?(config.check_permission, config.arg_types),
+       "check_permission must be false, :any_authenticated, {:arg, arg_name}, or {:role, roles}"},
+      {valid_permission_callback?(config.permission_callback),
+       "permission_callback must be nil or a valid {module, function, args} tuple"},
+      {is_boolean(config.request_info), "request_info must be a boolean"},
+      {valid_version?(config.version), "version must be a valid version string (e.g., '1.0.0')"},
+      {valid_retry?(config.retry),
+       "retry must be nil, a positive number, {:same_node, number}, or {:all_nodes, number}"}
+    ]
 
     errors =
-      unless valid_request_type?(config.request_type) do
-        ["request_type must be a non-empty string" | errors]
-      else
-        errors
-      end
-
-    errors =
-      unless config.service != nil do
-        ["service must not be nil" | errors]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_nodes?(config.nodes) do
-        ["nodes must be a valid list, MFA tuple, or :local" | errors]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_choose_node_mode?(config.choose_node_mode) do
-        ["choose_node_mode must be :random, :hash, {:hash, key}, or :round_robin" | errors]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_timeout?(config.timeout) do
-        [
-          "timeout must be a positive integer between #{@min_timeout} and #{@max_timeout}, or :infinity"
-          | errors
-        ]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_mfa?(config.mfa) do
-        ["mfa must be a valid {module, function, args} tuple" | errors]
-      else
-        errors
-      end
-
-    errors =
-      case validate_args_details(config.arg_types, config.arg_orders) do
-        :ok -> errors
-        {:error, reason} -> [reason | errors]
-      end
-
-    errors =
-      unless config.response_type in [:sync, :async, :stream, :none] do
-        ["response_type must be :sync, :async, :stream, or :none" | errors]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_check_permission?(config.check_permission, config.arg_types) do
-        [
-          "check_permission must be false, :any_authenticated, {:arg, arg_name}, or {:role, roles}"
-          | errors
-        ]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_permission_callback?(config.permission_callback) do
-        [
-          "permission_callback must be nil or a valid {module, function, args} tuple"
-          | errors
-        ]
-      else
-        errors
-      end
-
-    errors =
-      unless is_boolean(config.request_info) do
-        ["request_info must be a boolean" | errors]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_version?(config.version) do
-        ["version must be a valid version string (e.g., '1.0.0')" | errors]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_retry?(config.retry) do
-        [
-          "retry must be nil, a positive number, {:same_node, number}, or {:all_nodes, number}"
-          | errors
-        ]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_hook?(config.before_execute) do
-        [
-          "before_execute must be nil, {module, function}, or {module, function, args}"
-          | errors
-        ]
-      else
-        errors
-      end
-
-    errors =
-      unless valid_after_hook?(config.after_execute) do
-        [
-          "after_execute must be nil, {module, function}, or {module, function, args}"
-          | errors
-        ]
-      else
-        errors
-      end
+      Enum.reduce(validations, [], fn {valid?, error_msg}, acc ->
+        if valid?, do: acc, else: [error_msg | acc]
+      end)
 
     if Enum.empty?(errors) do
       {:ok, config}
@@ -354,253 +257,6 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       {:error, Enum.reverse(errors)}
     end
   end
-
-  defp valid_request_type?(request_type)
-       when is_binary(request_type) and byte_size(request_type) > 0, do: true
-
-  defp valid_request_type?(_), do: false
-
-  defp valid_nodes?(:local), do: true
-
-  defp valid_nodes?(nodes) when is_list(nodes) do
-    nodes != [] and Enum.all?(nodes, &valid_node?/1)
-  end
-
-  defp valid_nodes?({mod, fun, args})
-       when is_atom(mod) and is_atom(fun) and is_list(args),
-       do: true
-
-  defp valid_nodes?(_), do: false
-
-  defp valid_node?(node), do: PhoenixGenApi.Helpers.Shared.valid_node?(node)
-
-  defp valid_choose_node_mode?(:random), do: true
-  defp valid_choose_node_mode?(:hash), do: true
-  defp valid_choose_node_mode?({:hash, _key}), do: true
-  defp valid_choose_node_mode?(:round_robin), do: true
-  defp valid_choose_node_mode?(_), do: false
-
-  defp valid_timeout?(:infinity), do: true
-
-  defp valid_timeout?(timeout)
-       when is_integer(timeout) and timeout >= @min_timeout and timeout <= @max_timeout,
-       do: true
-
-  defp valid_timeout?(_), do: false
-
-  defp valid_mfa?({mod, fun, args})
-       when is_atom(mod) and is_atom(fun) and is_list(args) do
-    # Note: We don't check Code.ensure_loaded? here because configs are pulled
-    # from remote nodes where the module may not exist locally.
-    true
-  end
-
-  defp valid_mfa?(_), do: false
-
-  defp valid_check_permission?(false, _), do: true
-  defp valid_check_permission?(:any_authenticated, _), do: true
-
-  defp valid_check_permission?({:arg, arg}, args) when is_map(args) do
-    Map.has_key?(args, arg)
-  end
-
-  defp valid_check_permission?({:role, roles}, _args) when is_list(roles) do
-    roles != []
-  end
-
-  defp valid_check_permission?(_, _), do: false
-
-  defp valid_permission_callback?(nil), do: true
-
-  defp valid_permission_callback?({mod, fun, args})
-       when is_atom(mod) and is_atom(fun) and is_list(args),
-       do: true
-
-  defp valid_permission_callback?(_), do: false
-
-  defp valid_args?(nil, nil), do: true
-  defp valid_args?(nil, arg_orders) when arg_orders == [] or arg_orders == nil, do: true
-  defp valid_args?(nil, _), do: false
-
-  defp valid_args?(arg_types, arg_orders) when is_map(arg_types) and map_size(arg_types) == 0 do
-    arg_orders == [] or arg_orders == nil
-  end
-
-  defp valid_args?(arg_types, :map) when is_map(arg_types) and map_size(arg_types) > 0 do
-    # Validate each arg config in the map
-    Enum.all?(arg_types, fn {_name, arg_config} ->
-      valid_arg_config?(arg_config)
-    end)
-  end
-
-  defp valid_args?(arg_types, arg_orders) when is_map(arg_types) and map_size(arg_types) == 1 do
-    # Validate each arg config in the map
-    valid_configs =
-      Enum.all?(arg_types, fn {_name, arg_config} ->
-        valid_arg_config?(arg_config)
-      end)
-
-    valid_configs and
-      (arg_orders == [] or arg_orders == nil or
-         MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders))
-  end
-
-  defp valid_args?(_arg_types, nil), do: false
-
-  defp valid_args?(arg_types, arg_orders)
-       when is_map(arg_types) and is_list(arg_orders) and
-              map_size(arg_types) != length(arg_orders),
-       do: false
-
-  defp valid_args?(arg_types, arg_orders) when is_map(arg_types) and is_list(arg_orders) do
-    # Validate each arg config in the map
-    valid_configs =
-      Enum.all?(arg_types, fn {_name, arg_config} ->
-        valid_arg_config?(arg_config)
-      end)
-
-    valid_configs and MapSet.new(Map.keys(arg_types)) == MapSet.new(arg_orders)
-  end
-
-  defp valid_args?(_, _), do: false
-
-  # Validate arg_config - can be a simple type or extended format
-  defp valid_arg_config?(arg_config) when is_list(arg_config) do
-    # Extended format: [type: :string, allow_nil?: true, default_value: "hello"]
-    Keyword.has_key?(arg_config, :type) and
-      valid_type_with_params?(Keyword.get(arg_config, :type), arg_config) and
-      valid_default_value?(arg_config)
-  end
-
-  defp valid_arg_config?(type) when not is_list(type) do
-    # Simple format: just a type
-    valid_type_with_params?(type, [])
-  end
-
-  defp valid_arg_config?(_), do: false
-
-  # Validate that default_value matches the type
-  defp valid_default_value?(arg_config) do
-    type = Keyword.get(arg_config, :type)
-    default_value = Keyword.get(arg_config, :default_value, nil)
-
-    if default_value == nil do
-      # No default value is fine
-      true
-    else
-      # Validate that the default value matches the type
-      case type do
-        :boolean -> is_boolean_type(default_value)
-        :num -> is_number(default_value)
-        :string -> is_binary(default_value)
-        :datetime -> is_binary(default_value)
-        :naive_datetime -> is_binary(default_value)
-        :uuid -> is_binary(default_value) && Uniq.UUID.valid?(default_value)
-        :list -> is_list(default_value)
-        :list_string -> is_list(default_value) && Enum.all?(default_value, &is_binary/1)
-        :list_num -> is_list(default_value) && Enum.all?(default_value, &is_number/1)
-        :map -> is_map(default_value)
-        _ -> false
-      end
-    end
-  end
-
-  defp is_boolean_type(true), do: true
-  defp is_boolean_type(false), do: true
-  defp is_boolean_type(_), do: false
-
-  # Valid types with parameters
-  defp valid_type_with_params?(:boolean, _params), do: true
-  defp valid_type_with_params?(:datetime, _params), do: true
-  defp valid_type_with_params?(:naive_datetime, _params), do: true
-  defp valid_type_with_params?(:num, _params), do: true
-
-  defp valid_type_with_params?(:string, params) do
-    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
-      [] -> true
-      [max_bytes: max_bytes] when is_integer(max_bytes) and max_bytes > 0 -> true
-      _ -> false
-    end
-  end
-
-  defp valid_type_with_params?(:uuid, _params), do: true
-
-  defp valid_type_with_params?(:list, params) do
-    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
-      [] -> true
-      [max_items: max_items] when is_integer(max_items) and max_items > 0 -> true
-      _ -> false
-    end
-  end
-
-  defp valid_type_with_params?(:list_string, params) do
-    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
-      [] ->
-        true
-
-      params when is_list(params) ->
-        max_items = Keyword.get(params, :max_items, nil)
-        max_item_bytes = Keyword.get(params, :max_item_bytes, nil)
-
-        (max_items == nil or (is_integer(max_items) and max_items > 0)) and
-          (max_item_bytes == nil or (is_integer(max_item_bytes) and max_item_bytes > 0))
-
-      _ ->
-        false
-    end
-  end
-
-  defp valid_type_with_params?(:list_num, params) do
-    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
-      [] -> true
-      [max_items: max_items] when is_integer(max_items) and max_items > 0 -> true
-      _ -> false
-    end
-  end
-
-  defp valid_type_with_params?(:map, params) do
-    case params |> Keyword.drop([:type, :allow_nil?, :default_value]) do
-      [] -> true
-      [max_items: max_items] when is_integer(max_items) and max_items > 0 -> true
-      _ -> false
-    end
-  end
-
-  defp valid_type_with_params?(_, _), do: false
-
-  defp valid_version?(version) when is_binary(version) and byte_size(version) > 0, do: true
-  defp valid_version?(_), do: false
-
-  defp valid_retry?(nil), do: true
-  defp valid_retry?(n) when is_number(n) and n > 0, do: true
-  defp valid_retry?({:same_node, n}) when is_number(n) and n > 0, do: true
-  defp valid_retry?({:all_nodes, n}) when is_number(n) and n > 0, do: true
-  defp valid_retry?(_), do: false
-
-  defp valid_hook?(nil), do: true
-
-  defp valid_hook?({mod, fun}) when is_atom(mod) and is_atom(fun) do
-    function_exported?(mod, fun, 2)
-  end
-
-  defp valid_hook?({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args) do
-    function_exported?(mod, fun, 2 + length(args))
-  end
-
-  defp valid_hook?(_), do: false
-
-  # After hooks take 3 args: (request, fun_config, result) + optional extra args
-  defp valid_after_hook?(nil), do: true
-
-  defp valid_after_hook?({mod, fun}) when is_atom(mod) and is_atom(fun) do
-    function_exported?(mod, fun, 3)
-  end
-
-  defp valid_after_hook?({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args) do
-    function_exported?(mod, fun, 3 + length(args))
-  end
-
-  defp valid_after_hook?(_), do: false
 
   @doc """
   Normalizes the retry configuration into a standard tuple format.
@@ -645,6 +301,22 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       :ok
     else
       {:error, "arg_types is empty but arg_orders is not"}
+    end
+  end
+
+  defp validate_args_details(arg_types, []) when is_map(arg_types) and map_size(arg_types) > 0 do
+    # Empty arg_orders with populated arg_types means arg order doesn't matter
+    # Similar to :map mode - just validate each arg config
+    invalid_args =
+      Enum.filter(arg_types, fn {_name, arg_config} ->
+        not valid_arg_config?(arg_config)
+      end)
+
+    if Enum.empty?(invalid_args) do
+      :ok
+    else
+      {:error,
+       "invalid arg_types configuration for: #{inspect(Enum.map(invalid_args, fn {name, _} -> name end))}"}
     end
   end
 
@@ -695,4 +367,125 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   end
 
   defp validate_args_details(_, _), do: {:error, "invalid arg_types or arg_orders format"}
+
+  # Private validation helpers
+
+  @doc false
+  defp valid_request_type?(request_type)
+       when is_binary(request_type) and byte_size(request_type) > 0 do
+    true
+  end
+
+  defp valid_request_type?(_), do: false
+
+  @doc false
+  defp valid_nodes?(nodes) when is_list(nodes) do
+    nodes != [] and Enum.all?(nodes, &PhoenixGenApi.Helpers.Shared.valid_node?/1)
+  end
+
+  defp valid_nodes?(nodes) when is_tuple(nodes) do
+    case nodes do
+      {module, function, args} when is_atom(module) and is_atom(function) and is_list(args) ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp valid_nodes?(:local), do: true
+  defp valid_nodes?(_), do: false
+
+  @doc false
+  defp valid_choose_node_mode?(:random), do: true
+  defp valid_choose_node_mode?(:hash), do: true
+  defp valid_choose_node_mode?(:round_robin), do: true
+  defp valid_choose_node_mode?({:hash, key}) when is_binary(key), do: true
+  defp valid_choose_node_mode?({:sticky, key}) when is_binary(key), do: true
+  defp valid_choose_node_mode?(_), do: false
+
+  @doc false
+  defp valid_timeout?(:infinity), do: true
+
+  defp valid_timeout?(timeout)
+       when is_integer(timeout) and timeout >= @min_timeout and timeout <= @max_timeout, do: true
+
+  defp valid_timeout?(_), do: false
+
+  @doc false
+  defp valid_mfa?({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args) do
+    true
+  end
+
+  defp valid_mfa?(_), do: false
+
+  @doc false
+  defp valid_args?(arg_types, arg_orders) do
+    case validate_args_details(arg_types, arg_orders) do
+      :ok -> true
+      {:error, _} -> false
+    end
+  end
+
+  @doc false
+  defp valid_check_permission?(false, _arg_types), do: true
+  defp valid_check_permission?(:any_authenticated, _arg_types), do: true
+  defp valid_check_permission?({:arg, arg_name}, _arg_types) when is_binary(arg_name), do: true
+  defp valid_check_permission?({:role, roles}, _arg_types) when is_list(roles), do: true
+  defp valid_check_permission?(_, _), do: false
+
+  @doc false
+  defp valid_permission_callback?(nil), do: true
+
+  defp valid_permission_callback?({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args), do: true
+
+  defp valid_permission_callback?({module, function}) when is_atom(module) and is_atom(function),
+    do: true
+
+  defp valid_permission_callback?(_), do: false
+
+  @doc false
+  defp valid_version?(version) when is_binary(version) and byte_size(version) > 0, do: true
+  defp valid_version?(_), do: false
+
+  @doc false
+  defp valid_retry?(nil), do: true
+  defp valid_retry?(n) when is_number(n) and n > 0, do: true
+  defp valid_retry?({:same_node, n}) when is_number(n) and n > 0, do: true
+  defp valid_retry?({:all_nodes, n}) when is_number(n) and n > 0, do: true
+  defp valid_retry?(_), do: false
+
+  @doc false
+  defp valid_hook?(nil), do: true
+  defp valid_hook?({module, function}) when is_atom(module) and is_atom(function), do: true
+
+  defp valid_hook?({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args), do: true
+
+  defp valid_hook?(_), do: false
+
+  @doc false
+  defp valid_after_hook?(nil), do: true
+  defp valid_after_hook?({module, function}) when is_atom(module) and is_atom(function), do: true
+
+  defp valid_after_hook?({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args), do: true
+
+  @doc false
+  defp valid_arg_config?(arg_config) when is_atom(arg_config) do
+    # Simple format - just a type atom
+    arg_config in [:string, :num, :boolean, :list_string, :list_num, :map, :any]
+  end
+
+  defp valid_arg_config?(arg_config) when is_list(arg_config) do
+    # Extended format - keyword list with :type required
+    case Keyword.get(arg_config, :type) do
+      type when type in [:string, :num, :boolean, :list_string, :list_num, :map, :any] -> true
+      _ -> false
+    end
+  end
+
+  defp valid_arg_config?(_), do: false
 end

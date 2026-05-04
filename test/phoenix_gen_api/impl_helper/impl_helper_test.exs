@@ -8,7 +8,7 @@ end
 defmodule PhoenixGenApi.ImplHelperTest.SimpleStruct do
   defstruct [:name, :value]
 
-  def encode!(%__MODULE__{} = data, _opts) do
+  def encode!(data = %__MODULE__{}, _opts) do
     %{name: data.name, value: data.value}
   end
 end
@@ -17,7 +17,7 @@ end
 defmodule PhoenixGenApi.ImplHelperTest.OptsStruct do
   defstruct [:id, :content]
 
-  def encode!(%__MODULE__{} = data, opts) do
+  def encode!(data = %__MODULE__{}, opts) do
     format = Keyword.get(opts, :format, :default)
     %{id: data.id, content: data.content, format: format}
   end
@@ -51,7 +51,7 @@ PhoenixGenApi.ImplHelper.gen_impl(
 defmodule PhoenixGenApi.ImplHelperTest.UseStruct1 do
   defstruct [:field1]
 
-  def encode!(%__MODULE__{} = data, _opts) do
+  def encode!(data = %__MODULE__{}, _opts) do
     %{field1: data.field1}
   end
 end
@@ -59,7 +59,7 @@ end
 defmodule PhoenixGenApi.ImplHelperTest.UseStruct2 do
   defstruct [:field2]
 
-  def encode!(%__MODULE__{} = data, _opts) do
+  def encode!(data = %__MODULE__{}, _opts) do
     %{field2: data.field2}
   end
 end
@@ -85,7 +85,7 @@ end
 defmodule PhoenixGenApi.ImplHelperTest.SingleImplStruct do
   defstruct [:single]
 
-  def encode!(%__MODULE__{} = data, _opts) do
+  def encode!(data = %__MODULE__{}, _opts) do
     %{single: data.single}
   end
 end

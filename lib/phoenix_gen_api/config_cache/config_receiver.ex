@@ -220,7 +220,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
     end
   end
 
-  defp decode_push_config(%PushConfig{} = config), do: {:ok, config}
+  defp decode_push_config(config = %PushConfig{}), do: {:ok, config}
 
   defp decode_push_config(data) when is_map(data) do
     try do
@@ -242,7 +242,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
     {:error, :invalid_push_config_data}
   end
 
-  defp validate_push_config(%PushConfig{} = config) do
+  defp validate_push_config(config = %PushConfig{}) do
     case PushConfig.validate_with_details(config) do
       {:ok, _} ->
         :ok
@@ -324,7 +324,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
     end
   end
 
-  defp store_and_register(%PushConfig{} = config, prepared_configs, state) do
+  defp store_and_register(config = %PushConfig{}, prepared_configs, state) do
     service = config.service
     version = config.config_version
 
@@ -372,7 +372,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
   ### Private - ConfigPuller Integration
 
-  defp maybe_register_with_puller(%PushConfig{} = config) do
+  defp maybe_register_with_puller(config = %PushConfig{}) do
     case PushConfig.to_service_config(config) do
       nil ->
         Logger.debug(
@@ -390,7 +390,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
     end
   end
 
-  defp maybe_unregister_from_puller(%PushConfig{} = config) do
+  defp maybe_unregister_from_puller(config = %PushConfig{}) do
     case PushConfig.to_service_config(config) do
       nil ->
         :ok

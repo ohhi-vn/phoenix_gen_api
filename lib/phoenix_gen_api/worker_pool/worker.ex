@@ -306,15 +306,11 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
   ## Circuit Breaker Functions
 
-  defp circuit_open?(%State{circuit_open_at: nil}), do: false
-
-  defp circuit_open?(%State{circuit_open_at: opened_at}) do
-    if System.monotonic_time(:millisecond) - opened_at < @circuit_breaker_cooldown do
-      true
-    else
-      # Cooldown period has passed, allow task execution
-      false
-    end
+  defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
+    PhoenixGenApi.WorkerPool.CircuitBreaker.circuit_open?(
+      circuit_open_at,
+      @circuit_breaker_cooldown
+    )
   end
 
   defp record_failure(state) do

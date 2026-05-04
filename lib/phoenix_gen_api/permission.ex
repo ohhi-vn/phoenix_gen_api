@@ -161,7 +161,10 @@ defmodule PhoenixGenApi.Permission do
     true
   end
 
-  def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: :any_authenticated}) do
+  def check_permission(%Request{}, %FunConfig{
+        permission_callback: nil,
+        check_permission: :any_authenticated
+      }) do
     false
   end
 
@@ -186,7 +189,10 @@ defmodule PhoenixGenApi.Permission do
     end
   end
 
-  def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: {:arg, _arg_name}}) do
+  def check_permission(%Request{}, %FunConfig{
+        permission_callback: nil,
+        check_permission: {:arg, _arg_name}
+      }) do
     false
   end
 
@@ -211,11 +217,17 @@ defmodule PhoenixGenApi.Permission do
     end
   end
 
-  def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: {:role, _allowed_roles}}) do
+  def check_permission(
+        %Request{},
+        %FunConfig{
+          permission_callback: nil,
+          check_permission: {:role, _allowed_roles}
+        }
+      ) do
     false
   end
 
-  def check_permission(%Request{}, %FunConfig{permission_callback: nil} = fun_config) do
+  def check_permission(%Request{}, fun_config = %FunConfig{permission_callback: nil}) do
     Logger.error(
       "PhoenixGenApi.Permission, check_permission, invalid permission mode: #{inspect(fun_config.check_permission)}"
     )
@@ -224,7 +236,7 @@ defmodule PhoenixGenApi.Permission do
   end
 
   # Catch-all for any FunConfig with an unrecognized permission_callback format
-  def check_permission(%Request{}, %FunConfig{permission_callback: other} = fun_config) do
+  def check_permission(%Request{}, fun_config = %FunConfig{permission_callback: other}) do
     Logger.error(
       "PhoenixGenApi.Permission, check_permission, invalid permission_callback: #{inspect(other)}, " <>
         "falling back to check_permission: #{inspect(fun_config.check_permission)}"

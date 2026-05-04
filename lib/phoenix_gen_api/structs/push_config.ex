@@ -145,45 +145,45 @@ defmodule PhoenixGenApi.Structs.PushConfig do
     errors = []
 
     errors =
-      unless config.service != nil do
+      if config.service != nil do
+        errors
+      else
         ["service must not be nil" | errors]
-      else
-        errors
       end
 
     errors =
-      unless valid_nodes?(config.nodes) do
+      if valid_nodes?(config.nodes) do
+        errors
+      else
         ["nodes must be a non-empty list of atoms or strings" | errors]
-      else
-        errors
       end
 
     errors =
-      unless valid_config_version?(config.config_version) do
+      if valid_config_version?(config.config_version) do
+        errors
+      else
         ["config_version must be a non-empty string" | errors]
-      else
-        errors
       end
 
     errors =
-      unless valid_fun_configs?(config.fun_configs) do
+      if valid_fun_configs?(config.fun_configs) do
+        errors
+      else
         ["fun_configs must be a non-empty list of FunConfig structs" | errors]
-      else
-        errors
       end
 
     errors =
-      unless fun_configs_match_service?(config.fun_configs, config.service) do
+      if fun_configs_match_service?(config.fun_configs, config.service) do
+        errors
+      else
         ["all fun_configs must have the same service name as the push config" | errors]
-      else
-        errors
       end
 
     errors =
-      unless fun_configs_have_valid_versions?(config.fun_configs) do
-        ["all fun_configs must have valid versions" | errors]
-      else
+      if fun_configs_have_valid_versions?(config.fun_configs) do
         errors
+      else
+        ["all fun_configs must have valid versions" | errors]
       end
 
     if Enum.empty?(errors) do
