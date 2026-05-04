@@ -10,17 +10,36 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
   setup do
     {:ok, counter} = Agent.start_link(fn -> 0 end)
     {:ok, fail_counter} = Agent.start_link(fn -> 0 end)
+    {:ok, config_tracker} = Agent.start_link(fn -> [] end)
 
     on_exit(fn ->
+      # Clean up any configs added during the test
+      # Read the list BEFORE stopping the agent
+      configs_to_clean =
+        if Process.alive?(config_tracker) do
+          Agent.get(config_tracker, & &1)
+        else
+          []
+        end
+
+      Enum.each(configs_to_clean, fn {service, request_type} ->
+        ConfigDb.delete(service, request_type)
+      end)
+
+      # Clean up agents
       if Process.alive?(counter), do: Agent.stop(counter)
       if Process.alive?(fail_counter), do: Agent.stop(fail_counter)
+      if Process.alive?(config_tracker), do: Agent.stop(config_tracker)
     end)
 
-    {:ok, counter: counter, fail_counter: fail_counter}
+    {:ok, counter: counter, fail_counter: fail_counter, config_tracker: config_tracker}
   end
 
   describe "retry with local execution" do
-    test "no retry when retry is nil and execution fails", %{counter: counter} do
+    test "no retry when retry is nil and execution fails", %{
+      counter: counter,
+      config_tracker: config_tracker
+    } do
       config = %FunConfig{
         request_type: "test_no_retry",
         service: "test_service",
@@ -36,7 +55,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: nil
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_no_retry_req",
@@ -55,7 +74,8 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
     end
 
     test "retries local execution on failure with number (equivalent to {:all_nodes, n})", %{
-      counter: counter
+      counter: counter,
+      config_tracker: config_tracker
     } do
       # Function fails first 2 times, succeeds on 3rd
       config = %FunConfig{
@@ -73,7 +93,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: 3
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_retry_number_req",
@@ -91,7 +111,10 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       assert Agent.get(counter, & &1) == 3
     end
 
-    test "retries local execution with {:same_node, n}", %{counter: counter} do
+    test "retries local execution with {:same_node, n}", %{
+      counter: counter,
+      config_tracker: config_tracker
+    } do
       # Function fails first time, succeeds on 2nd
       config = %FunConfig{
         request_type: "test_retry_same_node",
@@ -108,7 +131,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: {:same_node, 2}
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_retry_same_node_req",
@@ -126,7 +149,10 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       assert Agent.get(counter, & &1) == 2
     end
 
-    test "retries local execution with {:all_nodes, n}", %{counter: counter} do
+    test "retries local execution with {:all_nodes, n}", %{
+      counter: counter,
+      config_tracker: config_tracker
+    } do
       # Function fails first 2 times, succeeds on 3rd
       config = %FunConfig{
         request_type: "test_retry_all_nodes",
@@ -143,7 +169,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: {:all_nodes, 3}
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_retry_all_nodes_req",
@@ -161,7 +187,10 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       assert Agent.get(counter, & &1) == 3
     end
 
-    test "returns error when all retries exhausted", %{counter: counter} do
+    test "returns error when all retries exhausted", %{
+      counter: counter,
+      config_tracker: config_tracker
+    } do
       # Function always fails, retry 2 times
       config = %FunConfig{
         request_type: "test_retry_exhausted",
@@ -178,7 +207,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: 2
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_retry_exhausted_req",
@@ -196,7 +225,10 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       assert Agent.get(counter, & &1) == 3
     end
 
-    test "no retry when execution succeeds on first try", %{counter: counter} do
+    test "no retry when execution succeeds on first try", %{
+      counter: counter,
+      config_tracker: config_tracker
+    } do
       config = %FunConfig{
         request_type: "test_no_retry_needed",
         service: "test_service",
@@ -212,7 +244,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: 3
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_no_retry_needed_req",
@@ -230,7 +262,10 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       assert Agent.get(counter, & &1) == 1
     end
 
-    test "retry with {:same_node, 1} retries exactly once", %{counter: counter} do
+    test "retry with {:same_node, 1} retries exactly once", %{
+      counter: counter,
+      config_tracker: config_tracker
+    } do
       # Function fails first time, succeeds on 2nd
       config = %FunConfig{
         request_type: "test_retry_once",
@@ -247,7 +282,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: {:same_node, 1}
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_retry_once_req",
@@ -264,7 +299,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       assert Agent.get(counter, & &1) == 2
     end
 
-    test "retry with {:same_node, 0} is invalid config and function is unsupported" do
+    test "retry with {:same_node, 0} is invalid config and function is unsupported", %{
+      config_tracker: config_tracker
+    } do
       config = %FunConfig{
         request_type: "test_retry_zero",
         service: "test_service",
@@ -281,7 +318,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       }
 
       # Config with retry: 0 is invalid, so ConfigDb won't add it
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_retry_zero_req",
@@ -301,7 +338,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
   end
 
   describe "retry with remote execution" do
-    test "no retry when retry is nil and remote execution fails" do
+    test "no retry when retry is nil and remote execution fails", %{
+      config_tracker: config_tracker
+    } do
       # Use a non-existent node to simulate remote failure
       config = %FunConfig{
         request_type: "test_remote_no_retry",
@@ -318,7 +357,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: nil
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_remote_no_retry_req",
@@ -334,7 +373,10 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       assert result.success == false
     end
 
-    test "retries remote execution with {:same_node, n} on badrpc", %{fail_counter: fail_counter} do
+    test "retries remote execution with {:same_node, n} on badrpc", %{
+      fail_counter: fail_counter,
+      config_tracker: config_tracker
+    } do
       # Use a non-existent node - RPC will fail with badrpc
       config = %FunConfig{
         request_type: "test_remote_retry_same_node",
@@ -351,7 +393,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: {:same_node, 2}
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_remote_retry_same_node_req",
@@ -369,7 +411,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       # but the retry logic should attempt 1 + 2 = 3 times through execute_remote_with_fallback
     end
 
-    test "retries remote execution with {:all_nodes, n} on badrpc" do
+    test "retries remote execution with {:all_nodes, n} on badrpc", %{
+      config_tracker: config_tracker
+    } do
       # Use non-existent nodes - RPC will fail with badrpc
       config = %FunConfig{
         request_type: "test_remote_retry_all_nodes",
@@ -386,7 +430,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: {:all_nodes, 2}
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_remote_retry_all_nodes_req",
@@ -403,7 +447,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       # With {:all_nodes, 2}, it should retry 2 times across all available nodes
     end
 
-    test "retries with number format (equivalent to {:all_nodes, n})" do
+    test "retries with number format (equivalent to {:all_nodes, n})", %{
+      config_tracker: config_tracker
+    } do
       config = %FunConfig{
         request_type: "test_remote_retry_number",
         service: "test_service",
@@ -419,7 +465,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: 2
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_remote_retry_number_req",
@@ -437,7 +483,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
   end
 
   describe "retry telemetry" do
-    test "emits retry telemetry events", %{counter: counter} do
+    test "emits retry telemetry events", %{counter: counter, config_tracker: config_tracker} do
       # Attach a telemetry handler to capture retry events
       test_pid = self()
 
@@ -469,7 +515,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
         retry: {:same_node, 2}
       }
 
-      ConfigDb.add(config)
+      track_config(config_tracker, config)
 
       request = %Request{
         request_id: "test_retry_telemetry_req",
@@ -490,6 +536,14 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
   end
 
   # Test helper functions
+
+  defp track_config(config_tracker, config) do
+    Agent.update(config_tracker, fn list ->
+      [{config.service, config.request_type} | list]
+    end)
+
+    ConfigDb.add(config)
+  end
 
   @doc """
   Always returns an error result. Increments the counter each call.

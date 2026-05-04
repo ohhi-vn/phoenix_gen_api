@@ -435,14 +435,59 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   @doc false
   defp valid_arg_config?(arg_config) when is_atom(arg_config) do
     # Simple format - just a type atom
-    arg_config in [:string, :num, :boolean, :list_string, :list_num, :map, :any]
+    arg_config in [
+      :string,
+      :num,
+      :boolean,
+      :list_string,
+      :list_num,
+      :list_uuid,
+      :map,
+      :any,
+      :uuid
+    ]
+  end
+
+  defp valid_arg_config?(arg_config) when is_tuple(arg_config) do
+    # Old tuple format: {:string, 255}, {:list, 10}, etc.
+    case arg_config do
+      {type, _value} when is_atom(type) ->
+        type in [
+          :string,
+          :num,
+          :boolean,
+          :list_string,
+          :list_num,
+          :list_uuid,
+          :map,
+          :any,
+          :uuid
+        ]
+
+      _ ->
+        false
+    end
   end
 
   defp valid_arg_config?(arg_config) when is_list(arg_config) do
     # Extended format - keyword list with :type required
     case Keyword.get(arg_config, :type) do
-      type when type in [:string, :num, :boolean, :list_string, :list_num, :map, :any] -> true
-      _ -> false
+      type
+      when type in [
+             :string,
+             :num,
+             :boolean,
+             :list_string,
+             :list_num,
+             :list_uuid,
+             :map,
+             :any,
+             :uuid
+           ] ->
+        true
+
+      _ ->
+        false
     end
   end
 

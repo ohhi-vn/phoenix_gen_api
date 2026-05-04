@@ -208,6 +208,16 @@ defmodule PhoenixGenApi.ArgumentHandler do
     {:map, [max_items: max_items]}
   end
 
+  defp build_type_with_params(:uuid, _params) do
+    # UUID type doesn't have additional params currently, but we accept params for consistency
+    {:uuid, []}
+  end
+
+  defp build_type_with_params(:list_uuid, params) do
+    max_items = Keyword.get(params, :max_items, list_max_items())
+    {:list_uuid, [max_items: max_items]}
+  end
+
   defp build_type_with_params(type, _params), do: type
 
   # Helper functions for extracting allow_nil? and default_value
@@ -551,7 +561,10 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
         is_binary(item) ->
           if byte_size(item) > string_max_bytes() do
-            Logger.error("PhoenixGenApi.ArgumentHandler, string item in list exceeds max byte size")
+            Logger.error(
+              "PhoenixGenApi.ArgumentHandler, string item in list exceeds max byte size"
+            )
+
             raise ArgumentError, "string item in list exceeds max byte size"
           end
 
@@ -585,7 +598,9 @@ defmodule PhoenixGenApi.ArgumentHandler do
     # This function is called when value is nil
     # The allow_nil? check should have been done in validate_args! and convert_args!
     # If we reach here with nil, it means allow_nil? is false
-    Logger.error("PhoenixGenApi.ArgumentHandler, nil value not accepted for argument #{inspect(name)}")
+    Logger.error(
+      "PhoenixGenApi.ArgumentHandler, nil value not accepted for argument #{inspect(name)}"
+    )
 
     raise ArgumentError, "nil value not accepted for argument #{inspect(name)}"
   end
@@ -652,6 +667,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
     arg_list_validation!(value, fn item -> is_float(item) or is_integer(item) end)
   end
 
+  defp validate_simple_type!(:list_uuid, value, name, request) do
+    validate_list_size!(name, value, list_max_items(), request.request_type, request.request_id)
+
+    arg_list_validation!(value, fn item ->
+      is_binary(item) and Uniq.UUID.valid?(item)
+    end)
+  end
+
   defp validate_complex_type!(:string, [max_bytes: max_bytes], value, name, _request) do
     validate_string_size!(value, name, max_bytes)
   end
@@ -678,6 +701,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
   defp validate_complex_type!(:list_num, [max_items: max_items], value, name, request) do
     validate_list_size!(name, value, max_items, request.request_type, request.request_id)
     arg_list_validation!(value, fn item -> is_float(item) or is_integer(item) end)
+  end
+
+  defp validate_complex_type!(:list_uuid, [max_items: max_items], value, name, request) do
+    validate_list_size!(name, value, max_items, request.request_type, request.request_id)
+
+    arg_list_validation!(value, fn item ->
+      is_binary(item) and Uniq.UUID.valid?(item)
+    end)
   end
 
   defp validate_complex_type!(:map, [max_items: max_items], value, name, request) do
@@ -789,6 +820,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
     end
   end
 
+  defp convert_arg!(arg, :uuid) when is_binary(arg) do
+    if Uniq.UUID.valid?(arg) do
+      arg
+    else
+      raise InvalidType, arg
+    end
+  end
+
   defp convert_arg!(arg, :num) when is_number(arg) do
     arg
   end
@@ -886,6 +925,38 @@ defmodule PhoenixGenApi.ArgumentHandler do
     if map_size(arg) > map_max_items() do
       raise ArgumentError, "map argument exceeds max items of #{map_max_items()}"
     end
+
+    arg
+  end
+
+  defp convert_arg!(arg, {:list_uuid, [max_items: max_items]}) when is_list(arg) do
+    if length(arg) > max_items do
+      raise ArgumentError, "list_uuid argument exceeds max items of #{max_items}"
+    end
+
+    Enum.each(arg, fn x ->
+      if is_binary(x) and Uniq.UUID.valid?(x) do
+        x
+      else
+        raise InvalidType, x
+      end
+    end)
+
+    arg
+  end
+
+  defp convert_arg!(arg, :list_uuid) when is_list(arg) do
+    if length(arg) > list_max_items() do
+      raise ArgumentError, "list_uuid argument exceeds max items of #{list_max_items()}"
+    end
+
+    Enum.each(arg, fn x ->
+      if is_binary(x) and Uniq.UUID.valid?(x) do
+        x
+      else
+        raise InvalidType, x
+      end
+    end)
 
     arg
   end

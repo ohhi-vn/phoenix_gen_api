@@ -82,7 +82,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
   end
 
   describe "valid?/1" do
-    test "correct function configuration 1" do
+    test "correct function configuration with minimal args" do
       fun = %FunConfig{
         request_type: "test",
         service: "chat",
@@ -98,7 +98,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       assert true == FunConfig.valid?(fun)
     end
 
-    test "correct function configuration 2" do
+    test "correct function configuration with string args" do
       fun = %FunConfig{
         request_type: "test",
         service: "chat",
@@ -106,49 +106,15 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
         choose_node_mode: :random,
         timeout: 5_000,
         mfa: {Test, :test, []},
-        response_type: :async
-      }
-
-      assert true == FunConfig.valid?(fun)
-    end
-
-    test "correct function configuration 3" do
-      fun = %FunConfig{
-        request_type: "test",
-        service: "chat",
-        nodes: [Node.self()],
-        choose_node_mode: :random,
-        timeout: 5_000,
-        arg_types: %{
-          "user1" => :string
-        },
+        arg_types: %{"user1" => :string},
         arg_orders: ["user1"],
-        mfa: {Test, :test, []},
         response_type: :async
       }
 
       assert true == FunConfig.valid?(fun)
     end
 
-    test "correct function configuration 4" do
-      fun = %FunConfig{
-        request_type: "test",
-        service: "chat",
-        nodes: [Node.self()],
-        choose_node_mode: :random,
-        timeout: 5_000,
-        arg_types: %{
-          "user1" => :string
-        },
-        arg_orders: ["user1"],
-        mfa: {Test, :test, []},
-        response_type: :async
-      }
-
-      assert true == FunConfig.valid?(fun)
-    end
-
-    test "correct function configuration" do
+    test "correct function configuration with multiple args" do
       fun = %FunConfig{
         request_type: "test",
         service: "chat",
@@ -167,7 +133,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       assert true == FunConfig.valid?(fun)
     end
 
-    test "incorrect function configuration" do
+    test "incorrect function configuration with arg mismatch" do
       fun = %FunConfig{
         request_type: "test",
         service: "chat",
@@ -186,6 +152,196 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       assert false == FunConfig.valid?(fun)
     end
 
+    test "valid with :uuid type in simple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"user_id" => :uuid},
+        arg_orders: ["user_id"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :uuid type in extended format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"user_id" => [type: :uuid, allow_nil?: true]},
+        arg_orders: ["user_id"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :list_uuid type in simple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"uuid_list" => :list_uuid},
+        arg_orders: ["uuid_list"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :list_uuid type with max_items" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"uuid_list" => [type: :list_uuid, max_items: 10]},
+        arg_orders: ["uuid_list"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with mixed uuid types" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "user_id" => :uuid,
+          "friend_ids" => :list_uuid,
+          "name" => :string
+        },
+        arg_orders: ["user_id", "friend_ids", "name"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with arg_orders :map" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "user_id" => :uuid,
+          "name" => :string
+        },
+        arg_orders: :map,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid with unsupported type" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"user_id" => :invalid_type},
+        arg_orders: ["user_id"],
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid with arg_types and arg_orders mismatch" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"user1" => :uuid},
+        arg_orders: ["user1", "user2"],
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "validate_with_details/1" do
+    test "returns {:ok, config} for valid config" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => :string},
+        arg_orders: ["name"],
+        response_type: :async
+      }
+
+      assert {:ok, _} = FunConfig.validate_with_details(fun)
+    end
+
+    test "returns {:error, list} with all validation errors" do
+      fun = %FunConfig{
+        request_type: "",
+        service: nil,
+        nodes: nil,
+        choose_node_mode: :invalid,
+        timeout: 50,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => :string},
+        arg_orders: ["name"],
+        response_type: :invalid
+      }
+
+      {:error, errors} = FunConfig.validate_with_details(fun)
+      assert is_list(errors)
+      assert length(errors) > 1
+    end
+
+    test "includes argument validation errors" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => :invalid_type},
+        arg_orders: ["name"],
+        response_type: :async
+      }
+
+      {:error, errors} = FunConfig.validate_with_details(fun)
+      assert Enum.any?(errors, &(&1 == "argument validation failed"))
+    end
+  end
+
+  describe "retry validation" do
     test "valid retry with nil" do
       fun = %FunConfig{
         request_type: "test",
@@ -370,8 +526,6 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
     end
 
     test "returns default 0.0.0 for old configs without :version key" do
-      # Simulate old FunConfig struct from remote node without :version key
-      # This happens when old nodes send configs via RPC
       config =
         struct(FunConfig, %{
           request_type: "test",
@@ -387,14 +541,877 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
           request_info: false
         })
 
-      # Remove the :version key to simulate old struct from RPC
       config_without_version = Map.delete(config, :version)
-
-      # Verify :version key is not present
       refute Map.has_key?(config_without_version, :version)
-
-      # Should return default version
       assert FunConfig.version(config_without_version) == "0.0.0"
+    end
+  end
+
+  describe "response_type validation" do
+    test "valid response_type :sync" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :sync
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid response_type :async" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid response_type :stream" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :stream
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid response_type :none" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :none
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid response_type" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :invalid
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "check_permission validation" do
+    test "valid check_permission false" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        check_permission: false,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid check_permission :any_authenticated" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        check_permission: :any_authenticated,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid check_permission {:arg, arg_name}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        check_permission: {:arg, "user_id"},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid check_permission {:role, roles}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        check_permission: {:role, ["admin", "user"]},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid check_permission" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        check_permission: :invalid,
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "nodes validation" do
+    test "valid nodes as list" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: ["node1@localhost", "node2@localhost"],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid nodes as :local" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid nodes as MFA tuple" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: {ClusterHelper, :get_nodes, [:chat]},
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid nodes as empty list" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid nodes as invalid tuple" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: {Invalid, :func},
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "choose_node_mode validation" do
+    test "valid choose_node_mode :random" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid choose_node_mode :hash" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :hash,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid choose_node_mode {:hash, key}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: {:hash, "user_id"},
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid choose_node_mode :round_robin" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :round_robin,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid choose_node_mode {:sticky, key}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: {:sticky, "user_id"},
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid choose_node_mode" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :invalid,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "timeout validation" do
+    test "valid timeout as integer" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid timeout :infinity" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: :infinity,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid timeout too low" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 50,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid timeout too high" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 500_000,
+        mfa: {Test, :test, []},
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "mfa validation" do
+    test "valid mfa tuple" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {String, :upcase, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid mfa not a tuple" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: "not_a_tuple",
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid mfa wrong tuple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {String, :upcase},
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "hooks validation" do
+    test "valid before_execute as nil" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        before_execute: nil,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid before_execute as {module, function}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        before_execute: {MyModule, :my_func},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid before_execute as {module, function, args}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        before_execute: {MyModule, :my_func, [1, 2, 3]},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid before_execute" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        before_execute: "invalid",
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "valid after_execute as nil" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        after_execute: nil,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid after_execute as {module, function}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        after_execute: {MyModule, :my_func},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "permission_callback validation" do
+    test "valid permission_callback as nil" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        permission_callback: nil,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid permission_callback as {module, function, args}" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        permission_callback: {MyModule, :my_func, []},
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid permission_callback" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        permission_callback: "invalid",
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "request_info validation" do
+    test "valid request_info true" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        request_info: true,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid request_info false" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        request_info: false,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid request_info" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        request_info: "not_boolean",
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "disabled field" do
+    test "valid disabled false" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        disabled: false,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid disabled true" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        disabled: true,
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+  end
+
+  describe "arg_types with extended format" do
+    test "valid with allow_nil? option" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => [type: :string, allow_nil?: true]},
+        arg_orders: ["name"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with default_value option" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => [type: :string, default_value: "default"]},
+        arg_orders: ["name"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with max_bytes for string" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => [type: :string, max_bytes: 5000]},
+        arg_orders: ["name"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with max_items for list_uuid" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"uuids" => [type: :list_uuid, max_items: 100]},
+        arg_orders: ["uuids"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "complex: multiple args with mixed options" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "name" => [type: :string, max_bytes: 5000, allow_nil?: true],
+          "age" => [type: :num, default_value: 18],
+          "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100],
+          "metadata" => [type: :map, max_items: 50],
+          "user_id" => [type: :uuid, allow_nil?: false],
+          "friend_ids" => [type: :list_uuid, max_items: 100]
+        },
+        arg_orders: ["name", "age", "tags", "metadata", "user_id", "friend_ids"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "complex: all simple types with extended format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "str" => [type: :string],
+          "num" => [type: :num],
+          "bool" => [type: :boolean],
+          "list_str" => [type: :list_string],
+          "list_num" => [type: :list_num],
+          "list_uuid" => [type: :list_uuid],
+          "uuid" => [type: :uuid],
+          "map" => [type: :map],
+          "any" => [type: :any]
+        },
+        arg_orders: [
+          "str",
+          "num",
+          "bool",
+          "list_str",
+          "list_num",
+          "list_uuid",
+          "uuid",
+          "map",
+          "any"
+        ],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "complex: simple format mixed with extended format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "simple_str" => :string,
+          "ext_str" => [type: :string, max_bytes: 1000],
+          "simple_uuid" => :uuid,
+          "ext_uuid" => [type: :uuid, allow_nil?: true],
+          "simple_list" => :list_uuid,
+          "ext_list" => [type: :list_uuid, max_items: 50]
+        },
+        arg_orders: [
+          "simple_str",
+          "ext_str",
+          "simple_uuid",
+          "ext_uuid",
+          "simple_list",
+          "ext_list"
+        ],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "edge case: empty string with allow_nil?" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "optional_field" => [type: :string, allow_nil?: true],
+          "required_field" => [type: :string, allow_nil?: false]
+        },
+        arg_orders: ["optional_field", "required_field"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "edge case: zero max_items" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"items" => [type: :list_uuid, max_items: 0]},
+        arg_orders: ["items"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid: default_value type mismatch" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"count" => [type: :num, default_value: "not_a_number"]},
+        arg_orders: ["count"],
+        response_type: :async
+      }
+
+      # Note: Config validation doesn't check if default_value matches type
+      # This would fail at runtime, not at config validation time
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "invalid: missing type in extended format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => [max_bytes: 5000]},
+        arg_orders: ["name"],
+        response_type: :async
+      }
+
+      assert false == FunConfig.valid?(fun)
+    end
+
+    test "invalid: unknown option in extended format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => [type: :string, unknown_option: true]},
+        arg_orders: ["name"],
+        response_type: :async
+      }
+
+      # Unknown options are ignored, so this should be valid
+      assert true == FunConfig.valid?(fun)
     end
   end
 end
