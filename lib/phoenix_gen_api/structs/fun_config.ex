@@ -22,7 +22,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       arg_types: %{
         "user_id" => [type: :string, max_bytes: 255, allow_nil?: true],
         "age" => [type: :num, default_value: 18],
-        "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100]
+        "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100],
+        "metadata" => [type: :map, max_items: 200, required: ["name"], accept: ["name", "email", "age"]]
       }
 
   #### Extended Format Options
@@ -33,6 +34,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   - `max_bytes:` - For `:string` type, max byte size
   - `max_items:` - For list/map types, max number of items
   - `max_item_bytes:` - For `:list_string`, max bytes per item
+  - `required:` - For `:map` type only, list of required key names (e.g., `["name", "email"]`)
+  - `accept:` - For `:map` type only, list of accepted key names — any key not in this list causes an error
 
   #### Validation
 
@@ -189,7 +192,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
       {:error, errors} ->
         Logger.error(
-          "PhoenixGenApi.FunConfig, invalid configurations: #{inspect(errors)} for #{inspect(config)}"
+          "[FunConfig] validation failed, errors: #{inspect(errors)}, request_type: #{inspect(config.request_type)}, service: #{inspect(config.service)}"
         )
 
         false

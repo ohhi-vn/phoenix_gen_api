@@ -11,8 +11,6 @@ defmodule PhoenixGenApi.Application do
   def start(_type, _args) do
     client_mode = Application.get_env(:phoenix_gen_api, :client_mode, false)
 
-    Logger.info("PhoenixGenApi.Application, start, client_mode: #{inspect(client_mode)}")
-
     children =
       if client_mode do
         []
@@ -29,6 +27,10 @@ defmodule PhoenixGenApi.Application do
           PhoenixGenApi.ConfigReceiver
         ]
       end
+
+    Logger.info(
+      "[Application] starting, client_mode: #{inspect(client_mode)}, children: #{length(children)}"
+    )
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options

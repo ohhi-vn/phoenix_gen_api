@@ -226,7 +226,7 @@ defmodule PhoenixGenApi.Telemetry do
   @spec default_logger(list(atom()), map(), map(), any()) :: :ok
   def default_logger(event, measurements, metadata, _config) do
     Logger.debug("""
-    [PhoenixGenApi.Telemetry] event=#{inspect(event)}
+    [Telemetry] event=#{inspect(event)}
       measurements=#{inspect(measurements)}
       metadata=#{inspect(metadata)}\
     """)

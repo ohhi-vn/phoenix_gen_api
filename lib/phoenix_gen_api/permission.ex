@@ -176,7 +176,7 @@ defmodule PhoenixGenApi.Permission do
     case Map.get(request.args, arg_name) do
       nil ->
         Logger.warning(
-          "PhoenixGenApi.Permission, check_permission, missing argument #{inspect(arg_name)} in request: #{inspect(request.request_id)}"
+          "[Permission] check_permission: missing argument #{inspect(arg_name)}, request_id: #{inspect(request.request_id)}, user_id: #{inspect(request.user_id)}"
         )
 
         false
@@ -207,7 +207,7 @@ defmodule PhoenixGenApi.Permission do
     case MapSet.intersection(user_roles_set, allowed_roles_set) |> MapSet.size() do
       0 ->
         Logger.warning(
-          "PhoenixGenApi.Permission, check_permission, user #{inspect(request.user_id)} lacks required roles, request: #{inspect(request.request_id)}"
+          "[Permission] check_permission: user #{inspect(request.user_id)} lacks required roles (required: #{inspect(allowed_roles)}, has: #{inspect(user_roles)}), request_id: #{inspect(request.request_id)}"
         )
 
         false
@@ -229,7 +229,7 @@ defmodule PhoenixGenApi.Permission do
 
   def check_permission(%Request{}, fun_config = %FunConfig{permission_callback: nil}) do
     Logger.error(
-      "PhoenixGenApi.Permission, check_permission, invalid permission mode: #{inspect(fun_config.check_permission)}"
+      "[Permission] check_permission: invalid permission mode #{inspect(fun_config.check_permission)}"
     )
 
     false
@@ -238,8 +238,7 @@ defmodule PhoenixGenApi.Permission do
   # Catch-all for any FunConfig with an unrecognized permission_callback format
   def check_permission(%Request{}, fun_config = %FunConfig{permission_callback: other}) do
     Logger.error(
-      "PhoenixGenApi.Permission, check_permission, invalid permission_callback: #{inspect(other)}, " <>
-        "falling back to check_permission: #{inspect(fun_config.check_permission)}"
+      "[Permission] check_permission: invalid permission_callback #{inspect(other)}, falling back to check_permission: #{inspect(fun_config.check_permission)}"
     )
 
     # Fall back to check_permission mode if callback is invalid
@@ -255,15 +254,14 @@ defmodule PhoenixGenApi.Permission do
 
         false ->
           Logger.warning(
-            "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false"
+            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false for request"
           )
 
           false
 
         other ->
           Logger.warning(
-            "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} " <>
-              "returned unexpected value #{inspect(other)}, treating as denied"
+            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value #{inspect(other)}, treating as denied"
           )
 
           false
@@ -271,16 +269,14 @@ defmodule PhoenixGenApi.Permission do
     rescue
       e ->
         Logger.error(
-          "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} " <>
-            "raised exception: #{Exception.message(e)}, denying for safety"
+          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} raised exception: #{Exception.message(e)}, denying for safety"
         )
 
         false
     catch
       kind, reason ->
         Logger.error(
-          "PhoenixGenApi.Permission, permission_callback {#{inspect(mod)}, #{inspect(fun)}} " <>
-            "caught #{inspect(kind)}: #{inspect(reason)}, denying for safety"
+          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} caught #{inspect(kind)}: #{inspect(reason)}, denying for safety"
         )
 
         false
@@ -330,10 +326,7 @@ defmodule PhoenixGenApi.Permission do
       permission_mode = determine_permission_mode(fun_config)
 
       Logger.warning(
-        "PhoenixGenApi.Permission, check_permission!, denied, user: #{inspect(request.user_id)}, " <>
-          "request_id: #{inspect(request.request_id)}, " <>
-          "request_type: #{inspect(request.request_type)}, " <>
-          "permission_mode: #{inspect(permission_mode)}"
+        "[Permission] check_permission!: denied, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, permission_mode: #{inspect(permission_mode)}"
       )
 
       raise PermissionDenied,

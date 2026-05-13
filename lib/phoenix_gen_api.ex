@@ -731,7 +731,7 @@ defmodule PhoenixGenApi do
       @doc false
       def handle_in(@phoenix_gen_api_event, payload, socket) do
         Logger.debug(fn ->
-          "PhoenixGenApi, #{__MODULE__}, request: #{inspect(payload)}"
+          "[PhoenixGenApi] incoming request, module: #{__MODULE__}, payload: #{inspect(payload)}"
         end)
 
         # Only override user_id from socket assigns if it's a valid non-empty string.
@@ -768,7 +768,7 @@ defmodule PhoenixGenApi do
               request_id = Map.get(payload, "request_id", "unknown")
 
               Logger.error(
-                "PhoenixGenApi, #{__MODULE__}, request processing failed: #{Exception.message(e)}"
+                "[PhoenixGenApi] request processing failed, module: #{__MODULE__}, request_id: #{inspect(request_id)}, error: #{Exception.message(e)}"
               )
 
               error_response =
@@ -790,7 +790,10 @@ defmodule PhoenixGenApi do
       @doc false
       @impl true
       def handle_info({:push, result}, socket) do
-        Logger.debug(fn -> "PhoenixGenApi, #{__MODULE__}, push result: #{inspect(result)}" end)
+        Logger.debug(fn ->
+          "[PhoenixGenApi] push result, module: #{__MODULE__}, result: #{inspect(result)}"
+        end)
+
         push(socket, @phoenix_gen_api_event, result)
         {:noreply, socket}
       end
@@ -798,7 +801,7 @@ defmodule PhoenixGenApi do
       @doc false
       def handle_info({:stream_response, result}, socket) do
         Logger.debug(fn ->
-          "PhoenixGenApi, #{__MODULE__}, stream response: #{inspect(result)}"
+          "[PhoenixGenApi] stream response, module: #{__MODULE__}, result: #{inspect(result)}"
         end)
 
         push(socket, @phoenix_gen_api_event, result)
@@ -808,7 +811,7 @@ defmodule PhoenixGenApi do
       @doc false
       def handle_info({:async_call, result}, socket) do
         Logger.debug(fn ->
-          "PhoenixGenApi, #{__MODULE__}, async call result: #{inspect(result)}"
+          "[PhoenixGenApi] async call result, module: #{__MODULE__}, result: #{inspect(result)}"
         end)
 
         push(socket, @phoenix_gen_api_event, result)

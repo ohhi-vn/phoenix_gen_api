@@ -187,7 +187,7 @@ defmodule PhoenixGenApi.WorkerPool do
     }
 
     Logger.info(
-      "WorkerPool started: #{pool_name}, size: #{pool_size}, max_queue: #{max_queue_size}, task_timeout: #{task_timeout}ms"
+      "[WorkerPool] started, pool: #{pool_name}, size: #{pool_size}, max_queue: #{max_queue_size}, task_timeout: #{task_timeout}ms"
     )
 
     {:ok, state}
@@ -215,7 +215,10 @@ defmodule PhoenixGenApi.WorkerPool do
   def handle_call({:execute, task}, _from, state) do
     # Check pool-level circuit breaker
     if circuit_open?(state) do
-      Logger.warning("WorkerPool #{state.pool_name}: circuit breaker open, rejecting task")
+      Logger.warning(
+        "[WorkerPool] circuit breaker open, rejecting task, pool: #{state.pool_name}"
+      )
+
       {:reply, {:error, :circuit_open}, state}
     else
       case find_idle_worker(state.idle_workers, state.idle_workers_list) do
@@ -247,7 +250,10 @@ defmodule PhoenixGenApi.WorkerPool do
     queue_size = :queue.len(state.queue)
 
     if queue_size >= state.max_queue_size do
-      Logger.warning("WorkerPool #{state.pool_name}: queue full, rejecting task")
+      Logger.warning(
+        "[WorkerPool] queue full (max: #{state.max_queue_size}), rejecting task, pool: #{state.pool_name}"
+      )
+
       {:reply, {:error, :queue_full}, state}
     else
       new_queue = :queue.in(task, state.queue)
@@ -299,7 +305,7 @@ defmodule PhoenixGenApi.WorkerPool do
   @impl true
   def handle_info({:DOWN, _ref, :process, worker_pid, reason}, state) do
     Logger.warning(
-      "WorkerPool #{state.pool_name}: worker #{inspect(worker_pid)} died: #{inspect(reason)}"
+      "[WorkerPool] worker #{inspect(worker_pid)} died: #{inspect(reason)}, pool: #{state.pool_name}, restarting worker"
     )
 
     # Remove dead worker and start a new one
@@ -360,7 +366,7 @@ defmodule PhoenixGenApi.WorkerPool do
 
     if new_failures >= @circuit_breaker_threshold and state.circuit_open_at == nil do
       Logger.warning(
-        "WorkerPool #{state.pool_name}: circuit breaker opened after #{new_failures} consecutive failures"
+        "[WorkerPool] circuit breaker opened after #{new_failures} consecutive failures, pool: #{state.pool_name}"
       )
 
       :telemetry.execute(
@@ -386,7 +392,7 @@ defmodule PhoenixGenApi.WorkerPool do
   defp record_success(state) do
     if state.circuit_open_at != nil do
       Logger.info(
-        "WorkerPool #{state.pool_name}: circuit breaker reset after successful task execution"
+        "[WorkerPool] circuit breaker reset after successful task execution, pool: #{state.pool_name}"
       )
 
       :telemetry.execute(

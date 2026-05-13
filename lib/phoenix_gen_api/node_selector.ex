@@ -223,7 +223,7 @@ defmodule PhoenixGenApi.NodeSelector do
 
       {:error, reason} ->
         Logger.error(
-          "PhoenixGenApi.NodeSelector, resolve_nodes, failed to resolve dynamic nodes: #{inspect(reason)}"
+          "[NodeSelector] resolve_nodes: failed to resolve dynamic nodes via MFA, reason: #{inspect(reason)}"
         )
 
         {:error, {:dynamic_node_resolution_failed, reason}}
@@ -231,9 +231,7 @@ defmodule PhoenixGenApi.NodeSelector do
   end
 
   def resolve_nodes(%FunConfig{nodes: other}) do
-    Logger.error(
-      "PhoenixGenApi.NodeSelector, resolve_nodes, invalid nodes configuration: #{inspect(other)}"
-    )
+    Logger.error("[NodeSelector] resolve_nodes: invalid nodes configuration: #{inspect(other)}")
 
     {:error, {:invalid_nodes_configuration, other}}
   end
@@ -379,7 +377,7 @@ defmodule PhoenixGenApi.NodeSelector do
     validated = Shared.validate_nodes(nodes)
 
     if validated == [] do
-      Logger.error("PhoenixGenApi.NodeSelector, no valid nodes available")
+      Logger.error("[NodeSelector] no valid nodes available after filtering")
       {:error, :no_nodes_available}
     else
       {:ok, validated}
@@ -405,7 +403,7 @@ defmodule PhoenixGenApi.NodeSelector do
         sticky_node(request, nodes, hash_key)
 
       _ ->
-        Logger.error("PhoenixGenApi.NodeSelector, invalid choose_node_mode: #{inspect(mode)}")
+        Logger.error("[NodeSelector] invalid choose_node_mode: #{inspect(mode)}")
 
         {:error, {:invalid_choose_node_mode, mode}}
     end
@@ -448,7 +446,7 @@ defmodule PhoenixGenApi.NodeSelector do
         end
 
       _ ->
-        Logger.error("PhoenixGenApi.NodeSelector, invalid choose_node_mode: #{inspect(mode)}")
+        Logger.error("[NodeSelector] invalid choose_node_mode: #{inspect(mode)}")
 
         {:error, {:invalid_choose_node_mode, mode}}
     end
@@ -470,7 +468,7 @@ defmodule PhoenixGenApi.NodeSelector do
     case value do
       nil ->
         Logger.warning(
-          "PhoenixGenApi.NodeSelector, hash key #{inspect(hash_key)} not found in request, falling back to random"
+          "[NodeSelector] hash key #{inspect(hash_key)} not found in request args, falling back to random selection"
         )
 
         {:ok, Enum.random(nodes)}
@@ -556,7 +554,7 @@ defmodule PhoenixGenApi.NodeSelector do
 
     if is_nil(value) do
       Logger.warning(
-        "PhoenixGenApi.NodeSelector, sticky hash key #{inspect(hash_key)} not found in request, falling back to random"
+        "[NodeSelector] sticky hash key #{inspect(hash_key)} not found in request, falling back to random selection"
       )
 
       select_and_store_sticky(nodes, hash_key)

@@ -116,7 +116,7 @@ defmodule PhoenixGenApi.Structs.PushConfig do
 
       {:error, errors} ->
         Logger.error(
-          "PhoenixGenApi.PushConfig, invalid configurations: #{inspect(errors)} for #{inspect(config)}"
+          "[PushConfig] validation failed, errors: #{inspect(errors)}, service: #{inspect(config.service)}, config_version: #{inspect(config.config_version)}"
         )
 
         false

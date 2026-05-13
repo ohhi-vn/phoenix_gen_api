@@ -72,8 +72,7 @@ defmodule PhoenixGenApi.Helpers.Shared do
       config
     else
       Logger.warning(
-        "PhoenixGenApi, service_name mismatch in FunConfig #{inspect(config.request_type)}, " <>
-          "expected #{inspect(service_name)}, got #{inspect(config.service)}, overwriting"
+        "[Shared] service_name mismatch in FunConfig, request_type: #{inspect(config.request_type)}, expected: #{inspect(service_name)}, got: #{inspect(config.service)}, overwriting"
       )
 
       %FunConfig{config | service: service_name}
@@ -100,7 +99,7 @@ defmodule PhoenixGenApi.Helpers.Shared do
       config
     else
       Logger.debug(
-        "PhoenixGenApi, adding default version to config for #{inspect(config.request_type)}"
+        "[Shared] adding default version \"0.0.0\" to config, request_type: #{inspect(config.request_type)}"
       )
 
       %FunConfig{config | version: "0.0.0"}

@@ -40,7 +40,7 @@ defmodule PhoenixGenApi.WorkerPool.WorkerPoolSupervisor do
     max_queue_size = Keyword.get(config, :max_queue_size, 10_000)
 
     Logger.info(
-      "Starting WorkerPoolSupervisor - async: #{async_pool_size}, stream: #{stream_pool_size}"
+      "[WorkerPoolSupervisor] starting, async_pool_size: #{async_pool_size}, stream_pool_size: #{stream_pool_size}, max_queue_size: #{max_queue_size}"
     )
 
     children = [

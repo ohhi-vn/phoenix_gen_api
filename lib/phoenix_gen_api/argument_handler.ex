@@ -27,7 +27,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
         "age" => [type: :num, default_value: 18],
         "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100],
         "scores" => [type: :list_num, max_items: 50],
-        "metadata" => [type: :map, max_items: 200]
+        "metadata" => [type: :map, max_items: 200, required: ["name"], accept: ["name", "email", "age"]]
       }
 
   #### Extended Format Options
@@ -53,7 +53,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   - **`:list`**: `max_items:` (default 1000)
   - **`:list_string`**: `max_items:` (default 1000), `max_item_bytes:` (default 3000)
   - **`:list_num`**: `max_items:` (default 1000)
-  - **`:map`**: `max_items:` (default 1000)
+  - **`:map`**: `max_items:` (default 1000), `required:` (list of required key names), `accept:` (list of accepted key names — any key not in this list causes an error)
 
   ## Size Limits (Defaults)
 
@@ -205,7 +205,9 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   defp build_type_with_params(:map, params) do
     max_items = Keyword.get(params, :max_items, map_max_items())
-    {:map, [max_items: max_items]}
+    required = Keyword.get(params, :required, [])
+    accept = Keyword.get(params, :accept, [])
+    {:map, [max_items: max_items, required: required, accept: accept]}
   end
 
   defp build_type_with_params(:uuid, _params) do
@@ -418,7 +420,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
                   [nil | acc]
                 else
                   Logger.error(
-                    "PhoenixGenApi.ArgumentHandler, missing argument #{inspect(name)} in #{inspect(request.request_type)}"
+                    "[ArgumentHandler] missing argument #{inspect(name)}, request_type: #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
                   )
 
                   raise ArgumentError,
@@ -431,7 +433,10 @@ defmodule PhoenixGenApi.ArgumentHandler do
           end)
           |> Enum.reverse()
 
-        Logger.debug("PhoenixGenApi.ArgumentHandler, converted args: #{inspect(result)}")
+        Logger.debug(
+          "[ArgumentHandler] converted args: #{inspect(result)}, request_type: #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+        )
+
         result
     end
   end
@@ -461,7 +466,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
     unless Enum.empty?(extra_args) do
       Logger.error(
-        "PhoenixGenApi.ArgumentHandler, extra arguments for #{inspect(request_type)}, request_id: #{inspect(request_id)}, extra: #{inspect(extra_args)}"
+        "[ArgumentHandler] extra arguments detected, request_type: #{inspect(request_type)}, request_id: #{inspect(request_id)}, extra: #{inspect(extra_args)}"
       )
 
       raise ArgumentError,
@@ -491,7 +496,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   defp validate_arg!(name, type, params, value, allow_nil, request) do
     if value == nil and not allow_nil do
       Logger.error(
-        "PhoenixGenApi.ArgumentHandler, missing or nil argument #{inspect(name)} in #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+        "[ArgumentHandler] missing or nil argument #{inspect(name)}, request_type: #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
       )
 
       raise ArgumentError,
@@ -517,7 +522,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
         is_binary(val) ->
           if byte_size(val) > string_max_bytes() do
             Logger.error(
-              "PhoenixGenApi.ArgumentHandler, nested map string value exceeds max byte size for key #{inspect(key)}"
+              "[ArgumentHandler] nested map string value exceeds max byte size for key #{inspect(key)}"
             )
 
             raise ArgumentError,
@@ -527,7 +532,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
         is_list(val) ->
           if length(val) > list_max_items() do
             Logger.error(
-              "PhoenixGenApi.ArgumentHandler, nested map list value exceeds max items for key #{inspect(key)}"
+              "[ArgumentHandler] nested map list value exceeds max items for key #{inspect(key)}"
             )
 
             raise ArgumentError,
@@ -537,12 +542,15 @@ defmodule PhoenixGenApi.ArgumentHandler do
           arg_list_validation!(val)
 
         is_map(val) ->
-          Logger.error("PhoenixGenApi.ArgumentHandler, nested map is not supported yet")
+          Logger.error(
+            "[ArgumentHandler] nested map is not supported yet for key #{inspect(key)}"
+          )
+
           raise ArgumentError, "nested map is not supported yet"
 
         true ->
           Logger.error(
-            "PhoenixGenApi.ArgumentHandler, unsupported type #{inspect(val)} in map for key #{inspect(key)}"
+            "[ArgumentHandler] unsupported type #{inspect(val)} in map for key #{inspect(key)}"
           )
 
           raise ArgumentError, "unsupported type #{inspect(val)} in map for key #{inspect(key)}"
@@ -562,22 +570,22 @@ defmodule PhoenixGenApi.ArgumentHandler do
         is_binary(item) ->
           if byte_size(item) > string_max_bytes() do
             Logger.error(
-              "PhoenixGenApi.ArgumentHandler, string item in list exceeds max byte size"
+              "[ArgumentHandler] string item in list exceeds max byte size (#{string_max_bytes()} bytes)"
             )
 
             raise ArgumentError, "string item in list exceeds max byte size"
           end
 
         is_map(item) ->
-          Logger.error("PhoenixGenApi.ArgumentHandler, nested map is not supported yet")
+          Logger.error("[ArgumentHandler] nested map is not supported yet in list item")
           raise ArgumentError, "nested map is not supported yet"
 
         is_list(item) ->
-          Logger.error("PhoenixGenApi.ArgumentHandler, nested list is not supported yet")
+          Logger.error("[ArgumentHandler] nested list is not supported yet in list item")
           raise ArgumentError, "nested list is not supported yet"
 
         true ->
-          Logger.error("PhoenixGenApi.ArgumentHandler, unsupported type #{inspect(item)}")
+          Logger.error("[ArgumentHandler] unsupported type #{inspect(item)} in list item")
           raise ArgumentError, "unsupported type #{inspect(item)}"
       end
     end)
@@ -588,7 +596,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
       if fn_valid?.(item) do
         :ok
       else
-        Logger.error("PhoenixGenApi.ArgumentHandler, unsupported type #{inspect(item)} in list")
+        Logger.error("[ArgumentHandler] unsupported type #{inspect(item)} in list")
         raise "unsupported type of #{inspect(item)} in list"
       end
     end)
@@ -711,8 +719,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
     end)
   end
 
-  defp validate_complex_type!(:map, [max_items: max_items], value, name, request) do
+  defp validate_complex_type!(:map, params, value, name, request) do
+    max_items = Keyword.get(params, :max_items)
+    required = Keyword.get(params, :required, [])
+    accept = Keyword.get(params, :accept, [])
+
     validate_map_size!(name, value, max_items, request.request_type, request.request_id)
+    validate_map_required_keys!(name, value, required, request.request_type, request.request_id)
+    validate_map_accepted_keys!(name, value, accept, request.request_type, request.request_id)
     arg_map_validation!(value)
   end
 
@@ -756,14 +770,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
   end
 
   defp log_and_raise(message) do
-    Logger.error("PhoenixGenApi.ArgumentHandler, " <> message)
+    Logger.error("[ArgumentHandler] " <> message)
     raise ArgumentError, message
   end
 
   defp validate_list_size!(name, value, max_items, request_type, request_id) do
     if length(value) > max_items do
       Logger.error(
-        "PhoenixGenApi.ArgumentHandler, invalid argument size for #{inspect(name)} in #{inspect(request_type)}, request_id: #{inspect(request_id)}"
+        "[ArgumentHandler] invalid list argument size, argument: #{inspect(name)}, request_type: #{inspect(request_type)}, request_id: #{inspect(request_id)}, max_items: #{max_items}, actual: #{length(value)}"
       )
 
       raise ArgumentError,
@@ -774,11 +788,42 @@ defmodule PhoenixGenApi.ArgumentHandler do
   defp validate_map_size!(name, value, max_items, request_type, request_id) do
     if map_size(value) > max_items do
       Logger.error(
-        "PhoenixGenApi.ArgumentHandler, invalid argument size for #{inspect(name)} in #{inspect(request_type)}, request_id: #{inspect(request_id)}"
+        "[ArgumentHandler] invalid map argument size, argument: #{inspect(name)}, request_type: #{inspect(request_type)}, request_id: #{inspect(request_id)}, max_items: #{max_items}, actual: #{map_size(value)}"
       )
 
       raise ArgumentError,
             "invalid argument size for #{inspect(name)} in #{inspect(request_type)}, max #{max_items} items"
+    end
+  end
+
+  defp validate_map_required_keys!(_name, _value, [], _request_type, _request_id), do: :ok
+
+  defp validate_map_required_keys!(name, value, required, request_type, request_id) do
+    missing_keys = Enum.reject(required, &Map.has_key?(value, &1))
+
+    unless Enum.empty?(missing_keys) do
+      Logger.error(
+        "[ArgumentHandler] map argument missing required keys, argument: #{inspect(name)}, request_type: #{inspect(request_type)}, request_id: #{inspect(request_id)}, missing: #{inspect(missing_keys)}"
+      )
+
+      raise ArgumentError,
+            "map argument #{inspect(name)} missing required keys: #{inspect(missing_keys)} in #{inspect(request_type)}"
+    end
+  end
+
+  defp validate_map_accepted_keys!(_name, _value, [], _request_type, _request_id), do: :ok
+
+  defp validate_map_accepted_keys!(name, value, accept, request_type, request_id) do
+    accepted = accept
+    rejected_keys = Enum.reject(Map.keys(value), &(&1 in accepted))
+
+    unless Enum.empty?(rejected_keys) do
+      Logger.error(
+        "[ArgumentHandler] map argument contains rejected keys, argument: #{inspect(name)}, request_type: #{inspect(request_type)}, request_id: #{inspect(request_id)}, rejected: #{inspect(rejected_keys)}"
+      )
+
+      raise ArgumentError,
+            "map argument #{inspect(name)} contains rejected keys: #{inspect(rejected_keys)} in #{inspect(request_type)}"
     end
   end
 
@@ -913,9 +958,30 @@ defmodule PhoenixGenApi.ArgumentHandler do
     arg
   end
 
-  defp convert_arg!(arg, {:map, [max_items: max_items]}) when is_map(arg) do
-    if map_size(arg) > max_items do
+  defp convert_arg!(arg, {:map, params}) when is_map(arg) do
+    max_items = Keyword.get(params, :max_items)
+    required = Keyword.get(params, :required, [])
+    accept = Keyword.get(params, :accept, [])
+
+    if max_items && map_size(arg) > max_items do
       raise ArgumentError, "map argument exceeds max items of #{max_items}"
+    end
+
+    missing_keys = Enum.reject(required, &Map.has_key?(arg, &1))
+
+    unless Enum.empty?(missing_keys) do
+      raise ArgumentError,
+            "map argument missing required keys: #{inspect(missing_keys)}"
+    end
+
+    if accept != [] do
+      accepted = accept
+      rejected_keys = Enum.reject(Map.keys(arg), &(&1 in accepted))
+
+      unless Enum.empty?(rejected_keys) do
+        raise ArgumentError,
+              "map argument contains rejected keys: #{inspect(rejected_keys)}"
+      end
     end
 
     arg
@@ -962,7 +1028,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   end
 
   defp convert_arg!(_arg, type) do
-    Logger.error("PhoenixGenApi.ArgumentHandler, unsupported type #{inspect(type)} for argument")
+    Logger.error("[ArgumentHandler] unsupported type #{inspect(type)} for argument conversion")
     raise InvalidType, message: "unsupported type #{inspect(type)}"
   end
 end

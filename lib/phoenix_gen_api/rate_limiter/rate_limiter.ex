@@ -231,8 +231,7 @@ defmodule PhoenixGenApi.RateLimiter do
     case Supervisor.start_link(children, supervisor_opts) do
       {:ok, sup_pid} ->
         Logger.info(
-          "PhoenixGenApi.RateLimiter started with #{instance_count} instances " <>
-            "(routing: #{routing_strategy})"
+          "[RateLimiter] started, instances: #{instance_count}, routing: #{routing_strategy}"
         )
 
         {:ok, sup_pid}
@@ -400,7 +399,7 @@ defmodule PhoenixGenApi.RateLimiter do
     e ->
       if fail_open?() do
         Logger.error(
-          "PhoenixGenApi.RateLimiter, check_rate_limit failed, allowing request: #{Exception.message(e)}"
+          "[RateLimiter] check_rate_limit failed, allowing request (fail-open): #{Exception.message(e)}"
         )
 
         :ok
@@ -678,7 +677,7 @@ defmodule PhoenixGenApi.RateLimiter do
     }
 
     Logger.info(
-      "PhoenixGenApi.RateLimiter instance initialized with #{length(state.global_limits)} global limits and #{length(state.api_limits)} API limits"
+      "[RateLimiter] instance initialized, global_limits: #{length(state.global_limits)}, api_limits: #{length(state.api_limits)}, cleanup_interval: #{state.cleanup_interval}ms"
     )
 
     schedule_cleanup()
@@ -715,7 +714,7 @@ defmodule PhoenixGenApi.RateLimiter do
   end
 
   def handle_call({:set_global_limits, limits}, _from, state) do
-    Logger.info("PhoenixGenApi.RateLimiter, global limits replaced: #{inspect(limits)}")
+    Logger.info("[RateLimiter] global limits replaced: #{inspect(limits)}")
     {:reply, :ok, %{state | global_limits: limits}}
   end
 
@@ -727,13 +726,17 @@ defmodule PhoenixGenApi.RateLimiter do
       |> Enum.reject(fn l -> Map.get(l, :key) == key end)
       |> Enum.concat([limit])
 
-    Logger.info("PhoenixGenApi.RateLimiter, global limit added/updated: #{inspect(limit)}")
+    Logger.info("[RateLimiter] global limit added/updated: #{inspect(limit)}")
     {:reply, :ok, %{state | global_limits: new_limits}}
   end
 
   def handle_call({:remove_global_limit, key}, _from, state) do
     new_limits = Enum.reject(state.global_limits, fn l -> Map.get(l, :key) == key end)
-    Logger.info("PhoenixGenApi.RateLimiter, global limit removed for key: #{inspect(key)}")
+
+    Logger.info(
+      "[RateLimiter] global limit removed, key: #{inspect(key)}, remaining: #{length(new_limits)}"
+    )
+
     {:reply, :ok, %{state | global_limits: new_limits}}
   end
 
@@ -749,7 +752,7 @@ defmodule PhoenixGenApi.RateLimiter do
       |> maybe_update_global_limits(config)
       |> maybe_update_api_limits(config)
 
-    Logger.info("PhoenixGenApi.RateLimiter, configuration updated")
+    Logger.info("[RateLimiter] configuration updated")
     {:reply, :ok, new_state}
   end
 
@@ -886,8 +889,7 @@ defmodule PhoenixGenApi.RateLimiter do
           }
 
           Logger.warning(
-            "PhoenixGenApi.RateLimiter, rate limit exceeded for key: #{inspect(key)}, " <>
-              "current: #{current_count}/#{limit.max_requests}, retry_after: #{retry_after_ms}ms"
+            "[RateLimiter] rate limit exceeded, key: #{inspect(key)}, current: #{current_count}/#{limit.max_requests}, window: #{limit.window_ms}ms, retry_after: #{retry_after_ms}ms"
           )
 
           {:error, :rate_limited, details}
@@ -917,7 +919,7 @@ defmodule PhoenixGenApi.RateLimiter do
     :ets.delete(table, ets_key)
 
     Logger.info(
-      "PhoenixGenApi.RateLimiter, reset rate limit for key: #{inspect(key_value)}, scope: #{inspect(scope)}"
+      "[RateLimiter] rate limit reset, key: #{inspect(key_value)}, scope: #{inspect(scope)}"
     )
   end
 
@@ -1021,7 +1023,7 @@ defmodule PhoenixGenApi.RateLimiter do
     api_cleaned = cleanup_table(:rate_limiter_api, now)
 
     Logger.debug(
-      "PhoenixGenApi.RateLimiter, cleanup completed, removed #{global_cleaned + api_cleaned} entries"
+      "[RateLimiter] cleanup completed, removed: #{global_cleaned + api_cleaned} entries (global: #{global_cleaned}, api: #{api_cleaned})"
     )
 
     global_cleaned + api_cleaned

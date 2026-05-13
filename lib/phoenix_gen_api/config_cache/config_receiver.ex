@@ -135,7 +135,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
   @impl true
   def init(_opts) do
-    Logger.info("PhoenixGenApi.ConfigReceiver, init")
+    Logger.info("[ConfigReceiver] init")
 
     state = %{
       pushed_configs: %{},
@@ -197,7 +197,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
             service_versions: Map.delete(state.service_versions, service)
         }
 
-        Logger.info("PhoenixGenApi.ConfigReceiver, deleted pushed service #{inspect(service)}")
+        Logger.info("[ConfigReceiver] deleted pushed service: service=#{inspect(service)}")
 
         {:reply, :ok, new_state}
     end
@@ -228,16 +228,14 @@ defmodule PhoenixGenApi.ConfigReceiver do
       {:ok, config}
     rescue
       e ->
-        Logger.error("PhoenixGenApi.ConfigReceiver, failed to decode PushConfig: #{inspect(e)}")
+        Logger.error("[ConfigReceiver] failed to decode PushConfig: error=#{inspect(e)}")
 
         {:error, :invalid_push_config_data}
     end
   end
 
   defp decode_push_config(other) do
-    Logger.error(
-      "PhoenixGenApi.ConfigReceiver, push received invalid data type: #{inspect(other)}"
-    )
+    Logger.error("[ConfigReceiver] push received invalid data type: data=#{inspect(other)}")
 
     {:error, :invalid_push_config_data}
   end
@@ -248,9 +246,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
         :ok
 
       {:error, errors} ->
-        Logger.error(
-          "PhoenixGenApi.ConfigReceiver, PushConfig validation failed: #{inspect(errors)}"
-        )
+        Logger.error("[ConfigReceiver] PushConfig validation failed: errors=#{inspect(errors)}")
 
         {:error, {:validation_failed, errors}}
     end
@@ -262,7 +258,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
          _state
        ) do
     Logger.debug(
-      "PhoenixGenApi.ConfigReceiver, force push for service #{inspect(service)}, version #{inspect(version)}"
+      "[ConfigReceiver] force push: service=#{inspect(service)} version=#{inspect(version)}"
     )
 
     :ok
@@ -276,7 +272,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
     case Map.get(state.service_versions, service) do
       ^version ->
         Logger.warning(
-          "PhoenixGenApi.ConfigReceiver, skipping push for service #{inspect(service)}, version #{inspect(version)} already stored"
+          "[ConfigReceiver] skipping push: service=#{inspect(service)} version=#{inspect(version)} already stored"
         )
 
         {:skip, :version_matches}
@@ -299,24 +295,20 @@ defmodule PhoenixGenApi.ConfigReceiver do
             [config]
           else
             Logger.error(
-              "PhoenixGenApi.ConfigReceiver, invalid FunConfig for #{inspect(config.request_type)} in service #{inspect(service)}"
+              "[ConfigReceiver] invalid FunConfig: request_type=#{inspect(config.request_type)} service=#{inspect(service)}"
             )
 
             []
           end
 
         other ->
-          Logger.error(
-            "PhoenixGenApi.ConfigReceiver, unexpected item in fun_configs: #{inspect(other)}"
-          )
+          Logger.error("[ConfigReceiver] unexpected item in fun_configs: item=#{inspect(other)}")
 
           []
       end)
 
     if prepared == [] do
-      Logger.error(
-        "PhoenixGenApi.ConfigReceiver, no valid FunConfig items for service #{inspect(service)}"
-      )
+      Logger.error("[ConfigReceiver] no valid FunConfig items: service=#{inspect(service)}")
 
       {:error, :no_valid_fun_configs}
     else
@@ -337,7 +329,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
         )
 
         Logger.info(
-          "PhoenixGenApi.ConfigReceiver, stored #{count} configs for service #{inspect(service)} version #{inspect(version)}"
+          "[ConfigReceiver] stored configs: service=#{inspect(service)} version=#{inspect(version)} count=#{count}"
         )
 
         # Register with ConfigPuller if module/function are present
@@ -353,7 +345,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
       {:error, :all_invalid} ->
         Logger.error(
-          "PhoenixGenApi.ConfigReceiver, ConfigDb.batch_add reported all configs invalid for service #{inspect(service)}"
+          "[ConfigReceiver] ConfigDb.batch_add failed: service=#{inspect(service)} reason=all_invalid"
         )
 
         {:error, :batch_add_failed, state}
@@ -366,14 +358,14 @@ defmodule PhoenixGenApi.ConfigReceiver do
     case PushConfig.to_service_config(config) do
       nil ->
         Logger.debug(
-          "PhoenixGenApi.ConfigReceiver, no auto-pull registration for service #{inspect(config.service)} (module/function not provided)"
+          "[ConfigReceiver] no auto-pull registration: service=#{inspect(config.service)} reason=module_function_not_provided"
         )
 
         :ok
 
       %ServiceConfig{} = service_config ->
         Logger.info(
-          "PhoenixGenApi.ConfigReceiver, registering service #{inspect(config.service)} with ConfigPuller for auto-pull"
+          "[ConfigReceiver] registering service with ConfigPuller: service=#{inspect(config.service)}"
         )
 
         ConfigPuller.add([service_config])
@@ -387,7 +379,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
       %ServiceConfig{} = service_config ->
         Logger.info(
-          "PhoenixGenApi.ConfigReceiver, unregistering service #{inspect(config.service)} from ConfigPuller"
+          "[ConfigReceiver] unregistering service from ConfigPuller: service=#{inspect(config.service)}"
         )
 
         ConfigPuller.delete([service_config])

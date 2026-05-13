@@ -78,12 +78,12 @@ defmodule PhoenixGenApi.ConfigDb do
       )
 
       Logger.debug(
-        "PhoenixGenApi.ConfigDb, added config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}"
+        "[ConfigDb] added: service=#{inspect(config.service)} request_type=#{inspect(config.request_type)} version=#{version}"
       )
 
       :ok
     else
-      Logger.error("PhoenixGenApi.ConfigDb, add, invalid config: #{inspect(config)}")
+      Logger.error("[ConfigDb] add failed: invalid config=#{inspect(config)}")
       {:error, :invalid_config}
     end
   end
@@ -111,12 +111,12 @@ defmodule PhoenixGenApi.ConfigDb do
             version = FunConfig.version(config)
             [{{config.service, config.request_type, version}, config}]
           else
-            Logger.error("PhoenixGenApi.ConfigDb, batch_add, invalid config: #{inspect(config)}")
+            Logger.error("[ConfigDb] batch_add: invalid config=#{inspect(config)}, skipping")
             []
           end
 
         other ->
-          Logger.error("PhoenixGenApi.ConfigDb, batch_add, unexpected item: #{inspect(other)}")
+          Logger.error("[ConfigDb] batch_add: unexpected item=#{inspect(other)}, skipping")
           []
       end)
 
@@ -133,7 +133,7 @@ defmodule PhoenixGenApi.ConfigDb do
           %{service: List.first(entries) |> elem(1) |> Map.get(:service)}
         )
 
-        Logger.debug("PhoenixGenApi.ConfigDb, batch_add inserted #{length(entries)} configs")
+        Logger.debug("[ConfigDb] batch_add: inserted count=#{length(entries)}")
         {:ok, length(entries)}
     end
   end
@@ -207,12 +207,12 @@ defmodule PhoenixGenApi.ConfigDb do
       )
 
       Logger.debug(
-        "PhoenixGenApi.ConfigDb, updated config for #{inspect(config.service)}/#{inspect(config.request_type)}/#{version}"
+        "[ConfigDb] updated: service=#{inspect(config.service)} request_type=#{inspect(config.request_type)} version=#{version}"
       )
 
       :ok
     else
-      Logger.error("PhoenixGenApi.ConfigDb, update, invalid config: #{inspect(config)}")
+      Logger.error("[ConfigDb] update failed: invalid config=#{inspect(config)}")
       {:error, :invalid_config}
     end
   end
@@ -312,7 +312,9 @@ defmodule PhoenixGenApi.ConfigDb do
           end)
 
         case enabled_configs do
-          [] -> {:error, :not_found}
+          [] ->
+            {:error, :not_found}
+
           configs ->
             {_key, latest} =
               Enum.max_by(configs, fn {{_s, _r, version}, _config} ->
@@ -488,7 +490,7 @@ defmodule PhoenixGenApi.ConfigDb do
       write_concurrency: true
     ])
 
-    Logger.info("PhoenixGenApi.ConfigDb, initialized ETS table with read/write concurrency")
+    Logger.info("[ConfigDb] initialized ETS table with read/write concurrency")
     {:ok, %{}}
   end
 
@@ -502,7 +504,7 @@ defmodule PhoenixGenApi.ConfigDb do
     :ets.delete(__MODULE__, {service, request_type, version})
 
     Logger.debug(
-      "PhoenixGenApi.ConfigDb, deleted config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+      "[ConfigDb] deleted: service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
     )
 
     {:reply, :ok, state}
@@ -525,14 +527,14 @@ defmodule PhoenixGenApi.ConfigDb do
         )
 
         Logger.info(
-          "PhoenixGenApi.ConfigDb, disabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+          "[ConfigDb] disabled: service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
         )
 
         {:reply, :ok, state}
 
       [] ->
         Logger.warning(
-          "PhoenixGenApi.ConfigDb, disable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+          "[ConfigDb] disable failed: not found service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
         )
 
         {:reply, {:error, :not_found}, state}
@@ -556,14 +558,14 @@ defmodule PhoenixGenApi.ConfigDb do
         )
 
         Logger.info(
-          "PhoenixGenApi.ConfigDb, enabled config for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+          "[ConfigDb] enabled: service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
         )
 
         {:reply, :ok, state}
 
       [] ->
         Logger.warning(
-          "PhoenixGenApi.ConfigDb, enable failed, config not found for #{inspect(service)}/#{inspect(request_type)}/#{version}"
+          "[ConfigDb] enable failed: not found service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
         )
 
         {:reply, {:error, :not_found}, state}
@@ -572,7 +574,7 @@ defmodule PhoenixGenApi.ConfigDb do
 
   def handle_call(:clear, _from, state) do
     :ets.delete_all_objects(__MODULE__)
-    Logger.info("PhoenixGenApi.ConfigDb, cleared all configurations")
+    Logger.info("[ConfigDb] cleared all configurations")
     {:reply, :ok, state}
   end
 
@@ -580,7 +582,7 @@ defmodule PhoenixGenApi.ConfigDb do
   def terminate(_reason, _state) do
     try do
       :ets.delete(__MODULE__)
-      Logger.debug("PhoenixGenApi.ConfigDb, ETS table deleted on terminate")
+      Logger.debug("[ConfigDb] ETS table deleted on terminate")
     catch
       :error, :badarg -> :ok
     end

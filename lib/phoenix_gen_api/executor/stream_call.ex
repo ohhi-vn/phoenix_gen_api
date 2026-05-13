@@ -37,14 +37,15 @@ defmodule PhoenixGenApi.StreamCall do
   def stop(request_id) when is_binary(request_id) do
     case Process.get({:phoenix_gen_api, :stream_call_pid, request_id}) do
       nil ->
-        Logger.warning(
-          "PhoenixGenApi.StreamCall, stop, not found stream for request_id: #{inspect(request_id)}"
-        )
+        Logger.warning("[StreamCall] stop stream not_found, request_id: #{inspect(request_id)}")
 
         {:error, :not_found}
 
       pid when is_pid(pid) ->
-        Logger.debug("PhoenixGenApi.StreamCall, stop, stream call pid: #{inspect(pid)}")
+        Logger.debug(
+          "[StreamCall] stop stream pid: #{inspect(pid)}, request_id: #{inspect(request_id)}"
+        )
+
         stop(pid)
     end
   end
@@ -120,14 +121,17 @@ defmodule PhoenixGenApi.StreamCall do
   end
 
   def handle_info(unknown, state) do
-    Logger.warning("PhoenixGenApi.StreamCall, received unknown message: #{inspect(unknown)}")
+    Logger.warning(
+      "[StreamCall] received unknown message: #{inspect(unknown)}, request_id: #{state.request.request_id}"
+    )
+
     {:noreply, state}
   end
 
   @impl true
   def terminate(reason, state) do
     Logger.debug(
-      "PhoenixGenApi.StreamCall, terminating for request_id: #{state.request.request_id}, reason: #{inspect(reason)}"
+      "[StreamCall] terminating, request_id: #{state.request.request_id}, reason: #{inspect(reason)}"
     )
 
     :ok

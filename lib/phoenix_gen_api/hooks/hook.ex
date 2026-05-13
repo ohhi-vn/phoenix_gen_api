@@ -174,7 +174,9 @@ defmodule PhoenixGenApi.Hooks do
           }
         )
 
-        Logger.error("PhoenixGenApi.Hooks, #{type} hook failed: #{Exception.message(e)}")
+        Logger.error(
+          "[Hooks] #{type} hook failed: #{Exception.message(e)}, module: #{inspect(mod)}, function: #{inspect(fun)}"
+        )
 
         {:error, Exception.message(e)}
     end

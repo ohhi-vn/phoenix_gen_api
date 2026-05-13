@@ -98,7 +98,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
     # Check circuit breaker state
     if circuit_open?(state) do
       Logger.warning(
-        "WorkerPool.Worker: circuit breaker open, rejecting task for pool #{inspect(state.pool_name)}"
+        "[Worker] circuit breaker open, rejecting task, pool: #{inspect(state.pool_name)}"
       )
 
       :telemetry.execute(
@@ -143,7 +143,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
               )
 
               Logger.error(
-                "WorkerPool.Worker: task failed: #{Exception.message(error)}\n#{Exception.format_stacktrace(__STACKTRACE__)}"
+                "[Worker] task failed in pool #{inspect(pool)}: #{Exception.message(error)}"
               )
 
               # Notify worker that task failed so it can record the failure
@@ -163,7 +163,9 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
                 }
               )
 
-              Logger.error("WorkerPool.Worker: task crashed: #{kind}: #{inspect(value)}")
+              Logger.error(
+                "[Worker] task crashed in pool #{inspect(pool)}: #{kind}: #{inspect(value)}"
+              )
 
               # Notify worker that task failed so it can record the failure
               send(parent, {:task_exception, self()})
@@ -186,7 +188,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   def handle_info({:task_timeout, task_pid}, state) do
     if state.current_task_pid == task_pid and Process.alive?(task_pid) do
       Logger.error(
-        "WorkerPool.Worker: task timed out after #{state.task_timeout}ms, terminating task"
+        "[Worker] task timed out after #{state.task_timeout}ms, terminating task, pool: #{inspect(state.pool_name)}"
       )
 
       duration = System.monotonic_time(:microsecond) - state.task_start_time
@@ -237,7 +239,9 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
             state
 
           reason != :normal and reason != :shutdown ->
-            Logger.warning("WorkerPool.Worker: task process died: #{inspect(reason)}")
+            Logger.warning(
+              "[Worker] task process died: #{inspect(reason)}, pool: #{inspect(state.pool_name)}"
+            )
 
             :telemetry.execute(
               [:phoenix_gen_api, :worker_pool, :task, :exception],
@@ -323,7 +327,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
     if new_failures >= @circuit_breaker_threshold do
       Logger.warning(
-        "WorkerPool.Worker: circuit breaker opened after #{new_failures} consecutive failures"
+        "[Worker] circuit breaker opened after #{new_failures} consecutive failures, pool: #{inspect(state.pool_name)}"
       )
 
       :telemetry.execute(
@@ -347,7 +351,9 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
   defp record_success(state) do
     if state.consecutive_failures > 0 do
-      Logger.info("WorkerPool.Worker: circuit breaker reset after successful task execution")
+      Logger.info(
+        "[Worker] circuit breaker reset after successful task execution, pool: #{inspect(state.pool_name)}"
+      )
 
       :telemetry.execute(
         [:phoenix_gen_api, :worker_pool, :circuit_breaker, :close],

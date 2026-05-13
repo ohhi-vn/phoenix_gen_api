@@ -38,28 +38,40 @@ defmodule PhoenixGenApi.ChannelHelpers do
 
       @doc false
       def handle_info({:push, result}, socket) do
-        Logger.debug(fn -> "#{__MODULE__}, push result: #{inspect(result)}" end)
+        Logger.debug(fn ->
+          "[ChannelHelpers] push result: #{inspect(result)}, module: #{__MODULE__}"
+        end)
+
         push(socket, @phoenix_gen_api_channel_event, result)
         {:noreply, socket}
       end
 
       @doc false
       def handle_info({:stream_response, result}, socket) do
-        Logger.debug(fn -> "#{__MODULE__}, stream response: #{inspect(result)}" end)
+        Logger.debug(fn ->
+          "[ChannelHelpers] stream response: #{inspect(result)}, module: #{__MODULE__}"
+        end)
+
         push(socket, @phoenix_gen_api_channel_event, result)
         {:noreply, socket}
       end
 
       @doc false
       def handle_info({:async_call, result}, socket) do
-        Logger.debug(fn -> "#{__MODULE__}, async call result: #{inspect(result)}" end)
+        Logger.debug(fn ->
+          "[ChannelHelpers] async call result: #{inspect(result)}, module: #{__MODULE__}"
+        end)
+
         push(socket, @phoenix_gen_api_channel_event, result)
         {:noreply, socket}
       end
 
       @doc false
       def handle_info({:stream_started, request_id, pid}, socket) do
-        Logger.debug(fn -> "#{__MODULE__}, stream started: #{inspect(request_id)}" end)
+        Logger.debug(fn ->
+          "[ChannelHelpers] stream started: request_id=#{inspect(request_id)}, module: #{__MODULE__}"
+        end)
+
         {:noreply, socket}
       end
     end

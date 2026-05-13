@@ -482,6 +482,340 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
     end
   end
 
+  describe "map type with required keys" do
+    test "validates map with all required keys present" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name", "email"]]}
+      }
+
+      request = %Request{
+        args: %{"data" => %{"name" => "John", "email" => "john@example.com", "age" => 30}}
+      }
+
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "validates map with only required keys (no extra keys)" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "raises error when map is missing a single required key" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name", "email"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John"}}}
+
+      assert_raise ArgumentError, ~r/missing required keys.*email/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "raises error when map is missing multiple required keys" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name", "email", "phone"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John"}}}
+
+      assert_raise ArgumentError, ~r/missing required keys/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "raises error when map is empty but has required keys" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name"]]}
+      }
+
+      request = %Request{args: %{"data" => %{}}}
+
+      assert_raise ArgumentError, ~r/missing required keys.*name/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "passes validation with empty required list (no keys required)" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: []]}
+      }
+
+      request = %Request{args: %{"data" => %{"any_key" => "value"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "passes validation when required is not specified" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, max_items: 10]}
+      }
+
+      request = %Request{args: %{"data" => %{"key" => "value"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "validates required keys combined with max_items" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, max_items: 5, required: ["name", "email"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "email" => "john@example.com"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "raises error for max_items even when required keys are present" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, max_items: 2, required: ["name"]]}
+      }
+
+      request = %Request{
+        args: %{"data" => %{"name" => "John", "email" => "a@b.com", "age" => 30}}
+      }
+
+      assert_raise ArgumentError, ~r/invalid argument size for "data".*max/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "convert_args! succeeds with required keys present" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name", "email"]]},
+        arg_orders: ["data"]
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "email" => "john@example.com"}}}
+      result = ArgumentHandler.convert_args!(config, request)
+      assert result == [%{"name" => "John", "email" => "john@example.com"}]
+    end
+
+    test "convert_args! raises error when required keys are missing" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name", "email"]]},
+        arg_orders: ["data"]
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John"}}}
+
+      assert_raise ArgumentError, ~r/missing required keys.*email/, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+
+    test "convert_args! with arg_orders :map and required keys" do
+      config = %FunConfig{
+        arg_types: %{"metadata" => [type: :map, required: ["id"]]},
+        arg_orders: :map
+      }
+
+      request = %Request{args: %{"metadata" => %{"id" => 123, "extra" => true}}}
+      result = ArgumentHandler.convert_args!(config, request)
+      assert result == [%{"metadata" => %{"id" => 123, "extra" => true}}]
+    end
+
+    test "simple format :map without required still works" do
+      config = %FunConfig{arg_types: %{"data" => :map}}
+      request = %Request{args: %{"data" => %{"key" => "value"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "old tuple format :map without required still works" do
+      config = %FunConfig{arg_types: %{"data" => {:map, 10}}}
+      request = %Request{args: %{"data" => %{"key" => "value"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+  end
+
+  describe "map type with accept keys" do
+    test "validates map when all keys are in accept list" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["name", "email", "age"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "email" => "john@example.com"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "validates map with single accepted key" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["id"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"id" => 123}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "raises error when map has a key not in accept list" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["name", "email"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "age" => 30}}}
+
+      assert_raise ArgumentError, ~r/contains rejected keys.*age/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "raises error when map has multiple keys not in accept list" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["name"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "age" => 30, "city" => "NYC"}}}
+
+      assert_raise ArgumentError, ~r/contains rejected keys/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "raises error when map has only unaccepted keys" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["name", "email"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"age" => 30, "city" => "NYC"}}}
+
+      assert_raise ArgumentError, ~r/contains rejected keys/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "passes validation with empty accept list (no restriction)" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: []]}
+      }
+
+      request = %Request{args: %{"data" => %{"any_key" => "value"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "passes validation when accept is not specified" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, max_items: 10]}
+      }
+
+      request = %Request{args: %{"data" => %{"key" => "value"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "accept combined with required — all constraints satisfied" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name"], accept: ["name", "email", "age"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "email" => "john@example.com"}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "accept combined with required — required key missing" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name"], accept: ["name", "email"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"email" => "john@example.com"}}}
+
+      assert_raise ArgumentError, ~r/missing required keys.*name/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "accept combined with required — rejected key present" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["name"], accept: ["name", "email"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "age" => 30}}}
+
+      assert_raise ArgumentError, ~r/contains rejected keys.*age/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "accept combined with max_items — both constraints satisfied" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, max_items: 3, accept: ["name", "email", "age"]]}
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "age" => 30}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+
+    test "accept combined with max_items — max_items violated" do
+      config = %FunConfig{
+        arg_types: %{
+          "data" => [type: :map, max_items: 2, accept: ["name", "email", "age", "city"]]
+        }
+      }
+
+      request = %Request{
+        args: %{"data" => %{"name" => "John", "email" => "a@b.com", "age" => 30}}
+      }
+
+      assert_raise ArgumentError, ~r/invalid argument size for "data".*max/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "convert_args! succeeds with accepted keys" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["name", "email"]]},
+        arg_orders: ["data"]
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "email" => "john@example.com"}}}
+      result = ArgumentHandler.convert_args!(config, request)
+      assert result == [%{"name" => "John", "email" => "john@example.com"}]
+    end
+
+    test "convert_args! raises error when rejected key present" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["name"]]},
+        arg_orders: ["data"]
+      }
+
+      request = %Request{args: %{"data" => %{"name" => "John", "age" => 30}}}
+
+      assert_raise ArgumentError, ~r/contains rejected keys.*age/, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+
+    test "convert_args! with arg_orders :map and accept keys" do
+      config = %FunConfig{
+        arg_types: %{"metadata" => [type: :map, accept: ["id", "extra"]]},
+        arg_orders: :map
+      }
+
+      request = %Request{args: %{"metadata" => %{"id" => 123, "extra" => true}}}
+      result = ArgumentHandler.convert_args!(config, request)
+      assert result == [%{"metadata" => %{"id" => 123, "extra" => true}}]
+    end
+
+    test "convert_args! with accept and required combined" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, required: ["id"], accept: ["id", "name"]]},
+        arg_orders: ["data"]
+      }
+
+      request = %Request{args: %{"data" => %{"id" => 1, "name" => "John"}}}
+      result = ArgumentHandler.convert_args!(config, request)
+      assert result == [%{"id" => 1, "name" => "John"}]
+    end
+
+    test "empty map passes accept validation" do
+      config = %FunConfig{
+        arg_types: %{"data" => [type: :map, accept: ["name", "email"]]}
+      }
+
+      request = %Request{args: %{"data" => %{}}}
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+  end
+
   describe "uuid type" do
     test "accepts valid UUID" do
       uuid = "550e8400-e29b-41d4-a716-446655440000"
