@@ -31,6 +31,7 @@ Service nodes can register new APIs at any time — the gateway picks them up au
 - **Retry** — Configurable retry on the same node or across all nodes
 - **Hooks** — `before_execute` / `after_execute` callbacks for cross-cutting concerns
 - **Telemetry** — 28 events across 5 categories for observability
+- **Relay Messages** — Group-based message relaying with public, private, and strict_private group types
 
 ## Installation
 
@@ -554,6 +555,130 @@ User must have at least one of the specified roles.
 - Permission checks run *before* argument validation and function execution
 - All permission failures are logged for auditing
 - Missing arguments result in denial
+
+---
+
+## Relay Messages
+
+Group-based message relaying: a user sends a message to a group, and all members (including the sender) receive it through their Phoenix Channel.
+
+### Group Types
+
+| Type | Join | Accept | Mute/Unmute | Who can send |
+|---|---|---|---|---|
+| `:public` | Immediate `:active` | N/A | ❌ | Any `:active` member |
+| `:private` | `:pending` | Any `:active` member | ❌ | Any `:active` member |
+| `:strict_private` | `:pending` | Only `:admin` | Admin only | `:active` (not muted) |
+
+Muted members in `:strict_private` groups can **receive** messages but cannot **send** them.
+
+### Architecture
+
+- **ETS table** (`:phoenix_gen_api_relay_groups`) stores group metadata: type, members, roles, status.
+- **Registry** (`PhoenixGenApi.RelayRegistry`) with `:duplicate` keys maps `group_id` → `{user_id, channel_pid}` for dispatching messages to channel processes.
+
+### Example FunConfig Setup
+
+```elixir
+# Create a group (one-time setup, e.g. in an admin API)
+PhoenixGenApi.Relay.create_group("room_1", :public, "admin_user", channel_pid)
+
+# Join a group
+PhoenixGenApi.Relay.join_group("room_1", "user_2", user2_channel_pid)
+
+# Accept a pending member (private/strict_private)
+PhoenixGenApi.Relay.accept_member("room_1", "admin_user", "user_2")
+
+# Mute a member (strict_private only)
+PhoenixGenApi.Relay.mute_member("room_1", "admin_user", "user_2")
+
+# Send a relay message (configured as FunConfig, called via WebSocket)
+%FunConfig{
+  request_type: "relay_msg",
+  service: "chat_service",
+  nodes: :local,
+  mfa: {PhoenixGenApi.Relay, :handle_relay, []},
+  arg_types: %{"group_id" => :string, "message" => :string},
+  arg_orders: ["group_id", "message"],
+  check_permission: :any_authenticated,
+  response_type: :sync
+}
+```
+
+### Client → Server → All Members Flow
+
+```
+Client A                    Gateway (Phoenix Channel)           Client B
+  │  WebSocket: relay_msg                                      │
+  │  {group_id, message}                                       │
+  │──────────────────────────►│                                 │
+  │                            │ handle_in()                     │
+  │                            │  └─ Executor.execute!(request)  │
+  │                            │     └─ Relay.handle_relay()     │
+  │                            │        ├─ ETS: validate member  │
+  │                            │        ├─ Registry: dispatch     │
+  │                            │        └─ send(pid, {:relay_message, response})
+  │                            │                                 │
+  │                            │ handle_info({:relay_message})  │
+  │                            │  └─ push(socket, result)───────►│
+  │◄───────────────────────────│                                 │
+  │  {status: "relayed",       │                                 │
+  │   recipients_count: 2}     │                                 │
+```
+
+### Client WebSocket Payload
+
+```json
+{
+  "service": "chat_service",
+  "request_type": "relay_msg",
+  "request_id": "req_123",
+  "args": {
+    "group_id": "room_1",
+    "message": "Hello everyone!"
+  }
+}
+```
+
+### Client Receives (all members)
+
+```json
+{
+  "request_id": "req_123",
+  "success": true,
+  "result": {
+    "group_id": "room_1",
+    "from_user_id": "user_1",
+    "message": "Hello everyone!",
+    "timestamp": "2025-01-15T10:30:00Z"
+  }
+}
+```
+
+### Direct API (outside WebSocket)
+
+You can also manage groups programmatically:
+
+```elixir
+# Create
+:ok = PhoenixGenApi.Relay.create_group("room_1", :public, "admin", channel_pid)
+
+# Join
+{:ok, :active} = PhoenixGenApi.Relay.join_group("room_1", "user_2", pid)
+
+# Leave
+:ok = PhoenixGenApi.Relay.leave_group("room_1", "user_2")
+
+# Accept (private/strict_private)
+:ok = PhoenixGenApi.Relay.accept_member("room_1", "admin", "user_2")
+
+# Mute / Unmute (strict_private only)
+:ok = PhoenixGenApi.Relay.mute_member("room_1", "admin", "user_2")
+:ok = PhoenixGenApi.Relay.unmute_member("room_1", "admin", "user_2")
+
+# Inspect
+{:ok, info} = PhoenixGenApi.Relay.get_group_info("room_1")
+```
 
 ---
 

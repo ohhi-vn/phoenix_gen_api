@@ -17,6 +17,7 @@ defmodule PhoenixGenApi do
   - **Configuration Caching**: Efficient caching of function configurations with automatic updates
   - **Configuration Push**: Remote nodes can actively push their service and function configs to the gateway
   - **Rate Limiting**: Global and per-API rate limiting with sliding window algorithm
+  - **Relay Messages**: Group-based message relaying with public, private, and strict_private group types
 
   ## Architecture
 
@@ -32,6 +33,7 @@ defmodule PhoenixGenApi do
   - `PhoenixGenApi.ArgumentHandler` - Validates and converts request arguments
   - `PhoenixGenApi.StreamCall` - Manages streaming function calls
   - `PhoenixGenApi.RateLimiter` - Rate limiting for global and per-API requests
+  - `PhoenixGenApi.Relay` - Group-based message relaying (public, private, strict_private)
 
   ## Usage Example
 
@@ -812,6 +814,16 @@ defmodule PhoenixGenApi do
       def handle_info({:async_call, result}, socket) do
         Logger.debug(fn ->
           "[PhoenixGenApi] async call result, module: #{__MODULE__}, result: #{inspect(result)}"
+        end)
+
+        push(socket, @phoenix_gen_api_event, result)
+        {:noreply, socket}
+      end
+
+      @doc false
+      def handle_info({:relay_message, result}, socket) do
+        Logger.debug(fn ->
+          "[PhoenixGenApi] relay message, module: #{__MODULE__}, result: #{inspect(result)}"
         end)
 
         push(socket, @phoenix_gen_api_event, result)
