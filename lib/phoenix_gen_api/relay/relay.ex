@@ -148,7 +148,8 @@ defmodule PhoenixGenApi.Relay do
             {:error, :already_member}
 
           %{status: _old_status} ->
-            # Re-join with updated status
+            # Re-join with updated status — unregister old entries first to avoid duplicates
+            Registry.unregister_match(@registry, group_id, {user_id, :_})
             member = new_member([:member], :active)
             :ets.insert(@table, {group_id, :public, Map.put(members, user_id, member)})
             Registry.register(@registry, group_id, {user_id, channel_pid})
@@ -171,7 +172,8 @@ defmodule PhoenixGenApi.Relay do
             {:error, :already_member}
 
           %{status: :muted} ->
-            # Re-join muted user as pending
+            # Re-join muted user as pending — unregister old entries first to avoid duplicates
+            Registry.unregister_match(@registry, group_id, {user_id, :_})
             member = new_member([:member], :pending)
             :ets.insert(@table, {group_id, group_type, Map.put(members, user_id, member)})
             Registry.register(@registry, group_id, {user_id, channel_pid})
@@ -195,7 +197,10 @@ defmodule PhoenixGenApi.Relay do
       [{^group_id, group_type, members}] ->
         if Map.has_key?(members, user_id) do
           :ets.insert(@table, {group_id, group_type, Map.delete(members, user_id)})
-          Registry.unregister(@registry, group_id)
+          # Unregister only this user's channel entries for the group.
+          # Registry.unregister/2 would remove ALL entries for the key,
+          # so we use unregister_match to target the specific {user_id, _} value.
+          Registry.unregister_match(@registry, group_id, {user_id, :_})
           :ok
         else
           {:error, :user_not_in_group}
@@ -433,7 +438,7 @@ defmodule PhoenixGenApi.Relay do
     Registry.select(@registry, [
       {{:"$1", :"$2", :"$3"}, [{:==, :"$1", group_id}], [{{:"$2", :"$3"}}]}
     ])
-    |> Enum.each(fn {_reg_pid, {_user_id, channel_pid}} ->
+    |> Enum.each(fn {_key, {_user_id, channel_pid}} ->
       send(channel_pid, {:relay_message, relay_response})
     end)
   end

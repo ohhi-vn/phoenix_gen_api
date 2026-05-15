@@ -43,7 +43,7 @@ defmodule PhoenixGenApi.Telemetry do
   | `[:phoenix_gen_api, :worker_pool, :task, :start]` | `%{system_time: integer()}` | `%{pool_name: atom()}` |
   | `[:phoenix_gen_api, :worker_pool, :task, :stop]` | `%{duration_us: integer()}` | `%{pool_name: atom()}` |
   | `[:phoenix_gen_api, :worker_pool, :task, :exception]` | `%{duration_us: integer()}` | `%{pool_name: atom(), kind: atom(), reason: term(), stacktrace: Exception.stacktrace()}` |
-  | `[:phoenix_gen_api, :worker_pool, :task, :rejected]` | `%{system_time: integer()}` | `%{pool_name: atom(), reason: atom()}` |
+  | `[:phoenix_gen_api, :worker_pool, :task, :rejected]` | `%{system_time: integer()}` | `%{pool_name: atom(), reason: :circuit_open}` |
   | `[:phoenix_gen_api, :worker_pool, :circuit_breaker, :open]` | `%{}` | `%{pool_name: atom(), consecutive_failures: non_neg_integer()}` |
   | `[:phoenix_gen_api, :worker_pool, :circuit_breaker, :close]` | `%{}` | `%{pool_name: atom()}` |
 

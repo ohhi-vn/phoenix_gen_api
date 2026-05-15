@@ -317,3 +317,5 @@ channel.on("chat", (payload) => {
 - **Self-inclusion**: The sender is included in the recipient list — they receive their own relayed message.
 - **Pending exclusion**: Pending members are not in the recipient list — they cannot receive messages until accepted.
 - **Muted members**: Muted members are in the recipient list (they receive) but cannot send.
+- **Registry cleanup on leave**: `leave_group/2` uses `Registry.unregister_match/3` to remove only the leaving user's entries (not all group members), since the Registry uses `:duplicate` keys.
+- **Re-join deduplication**: When a user re-joins (e.g. from `:muted` to `:pending`), `Registry.unregister_match/3` is called first to prevent duplicate Registry entries.

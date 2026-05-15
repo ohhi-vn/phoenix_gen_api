@@ -36,7 +36,7 @@ cd my_service
 # my_service/mix.exs
 def deps do
   [
-    {:phoenix_gen_api, "~> 2.10"},
+    {:phoenix_gen_api, "~> 2.16"},
     {:libcluster, "~> 3.3"}
   ]
 end
@@ -169,7 +169,7 @@ cd my_gateway
 # my_gateway/mix.exs
 def deps do
   [
-    {:phoenix_gen_api, "~> 2.10"},
+    {:phoenix_gen_api, "~> 2.16"},
     {:libcluster, "~> 3.3"}
     # ... other Phoenix deps already present
   ]
@@ -407,35 +407,6 @@ PhoenixGenApi.Executor.execute!(request)
 
 ---
 
-## Next Steps
-
-- **Add permissions** — set `check_permission: :any_authenticated` on your `FunConfig` and pass `user_id` from the socket
-- **Add rate limiting** — configure `api_limits` for expensive endpoints
-- **Use async/stream** — set `response_type: :async` or `:stream` for long-running operations
-- **Push instead of pull** — use `ConfigPusher.push_on_startup/2` for immediate registration
-- **Version your APIs** — add multiple `FunConfig` entries with different `version` strings
-- **Monitor with telemetry** — attach handlers to track request duration, errors, and rate limits
-- **Sticky node affinity** — use `{:sticky, "user_id"}` in `choose_node_mode` to always route the same user to the same node
-
-### Sticky Node Affinity Example
-
-For stateful services where a user's requests should consistently go to the same node:
-
-```elixir
-config = %FunConfig{
-  request_type: "get_profile",
-  service: "user_service",
-  nodes: [:"node1@host", :"node2@host"],
-  choose_node_mode: {:sticky, "user_id"},
-  mfa: {MyApp.Api, :get_profile, []},
-  arg_types: %{"user_id" => :string},
-  response_type: :sync
-}
-```
-
-The first time `user_123` makes a request, a node is randomly selected and "stuck" for that user.
-Subsequent requests from `user_123` will go to the same node (for up to 1 hour, after which it may re-select).
-
 ## Step 6 — Add Relay Messages
 
 Enable group-based chat where all members receive each other's messages.
@@ -506,34 +477,16 @@ See the [Relay Messages Guide](./relay_messages.md) for the full reference inclu
 
 ---
 
-## Next Steps
+## What's Next
 
 - **Add permissions** — set `check_permission: :any_authenticated` on your `FunConfig` and pass `user_id` from the socket
 - **Add rate limiting** — configure `api_limits` for expensive endpoints
 - **Use async/stream** — set `response_type: :async` or `:stream` for long-running operations
-- **Push instead of pull** — use `ConfigPusher.push_on_startup/2` for immediate registration
+- **Push instead of pull** — use `ConfigPusher.push_on_startup/3` for immediate registration
 - **Version your APIs** — add multiple `FunConfig` entries with different `version` strings
 - **Monitor with telemetry** — attach handlers to track request duration, errors, and rate limits
 - **Sticky node affinity** — use `{:sticky, "user_id"}` in `choose_node_mode` to always route the same user to the same node
 - **Relay messages** — see the [Relay Messages Guide](./relay_messages.md) for group-based messaging
-
-### Sticky Node Affinity Example
-
-For stateful services where a user's requests should consistently go to the same node:
-
-```elixir
-config = %FunConfig{
-  request_type: "get_profile",
-  service: "user_service",
-  nodes: [:"node1@host", :"node2@host"],
-  choose_node_mode: {:sticky, "user_id"},
-  mfa: {MyApp.Api, :get_profile, []},
-  arg_types: %{"user_id" => :string},
-  response_type: :sync
-}
-```
-
-The first time `user_123` makes a request, a node is randomly selected and "stuck" for that user.
-Subsequent requests from `user_123` will go to the same node (for up to 1 hour, after which it may re-select).
+- **Hooks** — add `before_execute` / `after_execute` callbacks for cross-cutting concerns
 
 See the [README](../README.md) for the full feature reference and the [Telemetry Guide](./telemetry.md) for observability.

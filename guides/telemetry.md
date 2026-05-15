@@ -114,7 +114,7 @@ The handler function signature is:
 
 ## Event Reference
 
-PhoenixGenApi emits **28 telemetry events** across 5 categories. All event names are
+PhoenixGenApi emits **30 telemetry events** across 5 categories. All event names are
 prefixed with `:phoenix_gen_api`.
 
 ### Executor Events
@@ -384,6 +384,18 @@ Emitted when a task fails (exception, timeout, or abnormal exit).
 | `kind` | `:error \| :timeout \| atom()` | Failure kind |
 | `reason` | `String.t() \| term()` | Error message or inspected value |
 | `stacktrace` | `Exception.stacktrace() \| nil` | Stack trace (nil for catches/timeouts) |
+
+#### `[:phoenix_gen_api, :worker_pool, :task, :rejected]`
+
+Emitted when a task is rejected because the circuit breaker is open.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| **Measurements** | | |
+| `system_time` | `integer()` | System time in native units |
+| **Metadata** | | |
+| `pool_name` | `atom()` | Name of the worker pool |
+| `reason` | `:circuit_open` | Reason for rejection |
 
 #### `[:phoenix_gen_api, :worker_pool, :circuit_breaker, :open]`
 
@@ -942,7 +954,7 @@ function instead of `attach_all/3`:
 # Good — only executor events
 PhoenixGenApi.Telemetry.attach_executor("my-app", &handle/4)
 
-# Wasteful — attaches to all 28 events but only uses 4
+# Wasteful — attaches to all 30 events but only uses 4
 PhoenixGenApi.Telemetry.attach_all("my-app", fn event, measurements, metadata, config ->
   case event do
     [:phoenix_gen_api, :executor | _] -> handle(event, measurements, metadata, config)
@@ -1043,6 +1055,7 @@ iex> PhoenixGenApi.Telemetry.list_events()
   [:phoenix_gen_api, :worker_pool, :task, :start],
   [:phoenix_gen_api, :worker_pool, :task, :stop],
   [:phoenix_gen_api, :worker_pool, :task, :exception],
+  [:phoenix_gen_api, :worker_pool, :task, :rejected],
   [:phoenix_gen_api, :worker_pool, :circuit_breaker, :open],
   [:phoenix_gen_api, :worker_pool, :circuit_breaker, :close],
   [:phoenix_gen_api, :config, :pull, :start],

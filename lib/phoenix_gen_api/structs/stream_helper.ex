@@ -1,6 +1,19 @@
 defmodule PhoenixGenApi.Structs.StreamHelper do
   @moduledoc """
-  Support for send data to stream.
+  Helper struct and functions for sending streaming data to a `StreamCall` process.
+
+  A `%StreamHelper{}` holds the PID of the stream process and the request ID.
+  Use the provided functions to send data chunks, completion signals, and errors
+  to the stream process, which forwards them to the client as `{:stream_response, response}`
+  messages.
+
+  ## Usage
+
+      stream = %StreamHelper{stream_pid: pid, request_id: "req_123"}
+      StreamHelper.send_result(stream, chunk_data)       # intermediate chunk
+      StreamHelper.send_last_result(stream, final_data)   # final chunk
+      StreamHelper.send_complete(stream)                   # normal completion
+      StreamHelper.send_error(stream, reason)              # error
   """
 
   alias __MODULE__

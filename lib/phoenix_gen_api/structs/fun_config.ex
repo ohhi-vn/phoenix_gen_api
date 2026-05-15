@@ -64,12 +64,48 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   Use `normalize_retry/1` to convert a raw config value to the standard tuple
   format. Zero, negative numbers, strings, and other formats are invalid.
 
+  ## Hooks
+
+  The `before_execute` and `after_execute` fields allow you to run custom code
+  before and/or after a function is executed through the API. Hooks are specified
+  as MFA tuples:
+
+    - `{module, function}` — Called as `module.function(request, fun_config)` (before)
+      or `module.function(request, fun_config, result)` (after).
+    - `{module, function, extra_args}` — Extra arguments are appended.
+
+  ### Before execute
+
+  Must return one of:
+
+    - `{:ok, request, fun_config}` — Proceed with (possibly modified) request/config.
+    - `{:error, reason}` — Abort execution and return an error response.
+
+  ### After execute
+
+  Must return the (possibly modified) result. Any other return value is ignored and
+  the original result is preserved.
+
+  Hooks emit telemetry events at `[:phoenix_gen_api, :hook, :before|:after, :start|:stop|:exception]`.
+
+  ## Permission Callback
+
+  The `permission_callback` field allows a custom MFA to override the built-in
+  `check_permission` modes. When set to `{module, function, args}` (or
+  `{module, function}`), it is called as `apply(module, function, [request | args])`
+  and must return `true` or `false`. Any other return, exception, or catch is
+  treated as `false` (denied). When `permission_callback` is set, `check_permission`
+  is ignored.
+
   ## Security Considerations
 
   - MFA tuples are validated to ensure modules are loaded and functions exist
   - Node lists are validated to prevent routing to invalid destinations
   - Permission modes are checked against available request fields
   - Timeout values are bounded to prevent resource exhaustion
+  - Hook failures in `before_execute` abort the request; hook failures in `after_execute`
+    are silently ignored (the original result is preserved)
+  - Permission callbacks that raise exceptions are treated as denied (fail-closed)
   """
 
   alias PhoenixGenApi.ArgumentHandler
@@ -210,7 +246,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       {config.service != nil, "service must not be nil"},
       {valid_nodes?(config.nodes), "nodes must be a valid list, MFA tuple, or :local"},
       {valid_choose_node_mode?(config.choose_node_mode),
-       "choose_node_mode must be :random, :hash, {:hash, key}, or :round_robin"},
+       "choose_node_mode must be :random, :hash, {:hash, key}, :round_robin, or {:sticky, key}"},
       {valid_timeout?(config.timeout),
        "timeout must be a positive integer between #{@min_timeout} and #{@max_timeout}, or :infinity"},
       {valid_mfa?(config.mfa), "mfa must be a valid {module, function, args} tuple"},

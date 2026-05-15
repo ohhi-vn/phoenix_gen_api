@@ -285,10 +285,28 @@ defmodule PhoenixGenApi.ConfigDb do
   end
 
   @doc """
-  Fast path lookup for the common case: get latest enabled config.
+  Fast path lookup that returns a matching config for a service/request_type.
 
-  Uses :ets.lookup_element for better performance when we only need
-  the config and don't need version comparison.
+  When only one version exists, returns it directly (fast path). When multiple
+  versions exist, returns the latest enabled one using `Version.parse!/1` for
+  comparison. This is faster than `get_latest/2` for the common single-version case.
+
+  Uses `:ets.match_object` for efficient pattern matching.
+
+  ## Parameters
+
+    - `service` - The service name (string or atom)
+    - `request_type` - The request type (string)
+
+  ## Returns
+
+    - `{:ok, config}` - An enabled configuration was found
+    - `{:error, :not_found}` - No configuration exists or all are disabled
+    - `{:error, :disabled}` - Configuration exists but is disabled
+
+  ## Raises
+
+    - `Version.ParseError` - If a stored version string is not valid semver
   """
   @spec get_fast(String.t() | atom(), String.t()) ::
           {:ok, FunConfig.t()} | {:error, :not_found}

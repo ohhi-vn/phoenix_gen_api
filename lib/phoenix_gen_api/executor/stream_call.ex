@@ -3,7 +3,32 @@ defmodule PhoenixGenApi.StreamCall do
   A GenServer that manages a streaming function call.
 
   This process is responsible for executing a function that returns a stream of
-  results, and sending those results back to the client in chunks.
+  results, and sending those results back to the client in chunks via
+  `{:stream_response, response}` messages.
+
+  ## Lifecycle
+
+  1. Started via `start_link/1` with a `%FunConfig{}`, `%Request{}`, and receiver pid.
+  2. On init, immediately starts the stream via `handle_continue(:start_stream, ...)`.
+  3. The MFA is called through `Executor.sync_call/2`.
+  4. If the result is an error, sends a single error response and stops.
+  5. If successful, sends the initial chunk and waits for further messages.
+  6. The data generator sends `{:result, data}` for intermediate chunks,
+     `{:last_result, data}` for the final chunk, or `{:error, reason}` on failure.
+  7. On `:complete` or `:stop`, sends a stream-end response and stops.
+
+  ## Messages to Data Generator
+
+  The stream process expects these messages from the data generator:
+  - `{:result, data}` — Intermediate chunk (sets `has_more: true`)
+  - `{:last_result, data}` — Final chunk (sets `has_more: false`)
+  - `{:error, reason}` — Error (sends error response)
+  - `:complete` — Normal completion (sends stream-end response)
+
+  ## Stopping
+
+  Use `stop/1` with either the stream PID or the request_id to gracefully
+  terminate a stream. This sends a completion response before stopping.
   """
 
   use GenServer, restart: :temporary

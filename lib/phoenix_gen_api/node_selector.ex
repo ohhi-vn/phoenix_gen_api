@@ -26,6 +26,13 @@ defmodule PhoenixGenApi.NodeSelector do
   Distributes requests evenly across all nodes in a circular fashion. Uses an atomic
   counter for true global round-robin distribution across all processes.
 
+  ### {:sticky, hash_key}
+  Selects a node on the first request and "sticks" it to the given hash_key value
+  (e.g., `user_id`). Subsequent requests with the same value go to the same node.
+  The sticky mapping expires after 1 hour (configurable via `@sticky_ttl_ms`),
+  after which a new node is randomly selected. If the node is removed from the
+  available nodes list, a new node is selected immediately.
+
   ## Dynamic Node Resolution
 
   Instead of a static list of nodes, you can provide a module-function-args tuple that
@@ -88,12 +95,23 @@ defmodule PhoenixGenApi.NodeSelector do
       {:ok, node3} = NodeSelector.get_node(config, request)
       {:ok, node1_again} = NodeSelector.get_node(config, request)  # wraps around
 
+      # Sticky node affinity
+      config = %FunConfig{
+        nodes: ["node1@host", "node2@host"],
+        choose_node_mode: {:sticky, "user_id"}
+      }
+      # First request from user_123 -> randomly selects node1
+      # Subsequent requests from user_123 -> always node1 (for up to 1 hour)
+      {:ok, node} = NodeSelector.get_node(config, request)
+
   ## Notes
 
   - Round-robin uses an atomic counter for true global distribution (no process dictionary)
   - Hash functions use `:erlang.phash2/2` for deterministic hashing
   - Dynamic node resolution happens on every call, allowing real-time cluster updates
   - If a hash_key is not found in the request, falls back to random selection
+  - Sticky mappings are stored in ETS and cleaned up periodically by `ConfigPuller` (every 1 hour)
+  - Use `NodeSelector.cleanup_sticky_table/0` for manual cleanup
   - Returns `{:ok, node}` on success or `{:error, reason}` on failure
   """
 
@@ -278,6 +296,7 @@ defmodule PhoenixGenApi.NodeSelector do
       :hash -> true
       {:hash, _} -> true
       :round_robin -> true
+      {:sticky, _} -> true
       _ -> false
     end
   end

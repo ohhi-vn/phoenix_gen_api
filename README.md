@@ -5,6 +5,8 @@
 
 Build dynamic API gateways on top of Phoenix Channels. Register APIs at runtime from any node in the cluster — no restarts, no redeploys.
 
+**Version**: 2.16.0 | **Elixir**: ~> 1.18 | **OTP**: ~> 27 | **License**: MPL-2.0
+
 ## How It Works
 
 ```text
@@ -40,7 +42,7 @@ Requires Elixir ~> 1.18 and OTP ~> 27.
 ```elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 2.10"}
+    {:phoenix_gen_api, "~> 2.16"}
   ]
 end
 ```
@@ -192,7 +194,7 @@ That's it — you have a working API gateway.
 | `response_type` | `:sync \| :async \| :stream \| :none` | How the result is delivered |
 | `check_permission` | `false \| :any_authenticated \| {:arg, name} \| {:role, roles}` | Permission mode |
 | `permission_callback` | `{m, f, a} \| nil` | Custom permission check |
-| `request_info` | `boolean()` | Pass the full `%Request{}` as first arg to the MFA |
+| `request_info` | `boolean()` | Pass the full `%Request{}` as first arg to the MFA (legacy field, currently unused in execution) |
 | `version` | `String.t()` | API version (default `"0.0.0"`) |
 | `disabled` | `boolean()` | Disable this version without removing it |
 | `retry` | `nil \| number \| {:same_node, n} \| {:all_nodes, n}` | Retry configuration |
@@ -252,13 +254,35 @@ config :phoenix_gen_api, :gen_api,
   ]
 ```
 
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `pull_timeout` | `integer` | `5_000` | Timeout in ms for each pull RPC call |
+| `pull_interval` | `integer` | `30_000` | Interval in ms between automatic pulls |
+| `detail_error` | `boolean` | `false` | Include detailed error messages in responses |
+| `service_configs` | `[map()]` | `[]` | List of service configurations for pull mode |
+
+Each `service_config` map supports:
+
+| Key | Type | Description |
+|---|---|---|
+| `service` | `String.t() \| atom()` | Service name (used as lookup key) |
+| `nodes` | `[atom()] \| {m, f, a}` | Target nodes or MFA that resolves to node list |
+| `module` | `module()` | Remote module implementing the config function |
+| `function` | `atom()` | Function on the remote module |
+| `args` | `list()` | Extra arguments passed to the config function |
+| `version_module` | `module() \| nil` | Module for lightweight version check RPC |
+| `version_function` | `atom() \| nil` | Function returning current config version |
+| `version_args` | `list()` | Args for the version check function |
+
 ### Remote Node (Pull Mode)
 
-Mark the node as a client so it can push configs:
+Mark the node as a client so it doesn't start gateway-only services (RateLimiter, WorkerPool, ConfigDb, etc.):
 
 ```elixir
 config :phoenix_gen_api, :client_mode, true
 ```
+
+When `client_mode: true`, the application starts with an empty supervision tree and no ETS tables. This is the standard setting for service/worker nodes that push configs to the gateway.
 
 Define a supporter module that returns `FunConfig` lists:
 
@@ -358,15 +382,18 @@ Options:
 
 | Option | Default | Description |
 |---|---|---|
-| `:event` | `"phoenix_gen_api"` | Channel event name |
-| `:override_user_id` | `true` | Override `user_id` from `socket.assigns.user_id` |
+| `:event` | `"phoenix_gen_api"` | Channel event name for incoming requests and outgoing pushes |
+| `:override_user_id` | `true` | Override `user_id` from `socket.assigns.user_id` (only if it's a non-empty string) |
 
 The `use` macro injects these handlers:
 
-- `handle_in(event, payload, socket)` — decodes the request, executes it, replies
-- `handle_info({:push, result}, socket)` — pushes async results to the client
+- `handle_in(event, payload, socket)` — decodes the request via `Request.decode!/1`, executes it via `Executor.execute!`, replies to the client. Wraps errors in `try/rescue` to prevent channel crashes.
+- `handle_info({:push, result}, socket)` — pushes sync results to the client
 - `handle_info({:stream_response, result}, socket)` — pushes stream chunks
 - `handle_info({:async_call, result}, socket)` — pushes async call results
+- `handle_info({:relay_message, result}, socket)` — pushes relay messages to the client
+
+It also derives `JSON.Encoder` for `Response` using the configured JSON library.
 
 ---
 
@@ -408,7 +435,7 @@ Clients request a specific version:
 }
 ```
 
-If no `version` is sent, `"0.0.0"` is used.
+If no `version` is sent, `"0.0.0"` is used. Use `ConfigDb.get_latest/2` to resolve the highest enabled version.
 
 ### Managing Versions
 
@@ -438,14 +465,15 @@ ConfigDb.get_all_functions()
 
 - Disabled versions return `{:error, :disabled}`
 - Non-existent versions return `{:error, :not_found}`
-- `get_latest/2` returns the highest enabled version number
+- `get_latest/2` returns the highest enabled version number (sorted lexicographically)
 - Disabling one version does not affect others
+- `get_fast/2` is an optimized lookup that returns the first matching config without version resolution
 
 ---
 
 ## Rate Limiter
 
-Sliding-window rate limiter backed by ETS.
+Sliding-window rate limiter backed by ETS. Uses a multi-instance architecture for high concurrency — instances are supervised under a `:one_for_one` supervisor and requests are routed via consistent hashing (`:erlang.phash2`) by default.
 
 ### Configuration
 
@@ -453,6 +481,9 @@ Sliding-window rate limiter backed by ETS.
 config :phoenix_gen_api, :rate_limiter,
   enabled: true,
   fail_open: true,
+  # Multi-instance sharding (default: number of online schedulers)
+  instance_count: :auto,  # :auto or positive integer
+  routing_strategy: :hash,  # :hash (consistent) or :random
   global_limits: [
     # 2 000 requests per minute per user
     %{key: :user_id, max_requests: 2000, window_ms: 60_000},
@@ -499,6 +530,8 @@ RateLimiter.update_config(%{enabled: true, global_limits: [...], api_limits: [..
 ### Supported Keys
 
 `:user_id`, `:device_id`, `:ip_address`, or any custom string key.
+
+The rate limiter uses a sharded ETS architecture — multiple GenServer instances distribute the load. The routing strategy is `:erlang.phash2/1` by default (configurable via `routing_strategy`). ETS tables (`:rate_limiter_global` and `:rate_limiter_api`) are shared across all instances with `read_concurrency` and `write_concurrency` enabled.
 
 ### IEx Helpers
 
@@ -705,21 +738,23 @@ Configure retry behavior when execution fails:
 
 For `nodes: :local`, both `:same_node` and `:all_nodes` retry locally.
 
-Retry attempts emit telemetry at `[:phoenix_gen_api, :executor, :retry]`.
+Retry attempts emit telemetry at `[:phoenix_gen_api, :executor, :retry]` with metadata including `mode` (`:same_node` or `:all_nodes`), `type` (`:local` or `:remote`), and the current `attempt` number in measurements.
 
 ---
 
 ## Telemetry
 
-28 events across 5 categories:
+30 events across 5 categories:
 
 | Category | Events | Description |
 |---|---|---|
 | Executor | 4 | Request lifecycle (`start`/`stop`/`exception`) and retry |
 | Rate Limiter | 4 | Check, exceeded, reset, cleanup |
 | Hooks | 6 | Before/after hook `start`/`stop`/`exception` |
-| Worker Pool | 5 | Task `start`/`stop`/`exception`, circuit breaker `open`/`close` |
+| Worker Pool | 6 | Task `start`/`stop`/`exception`/`rejected`, circuit breaker `open`/`close` |
 | Config Cache | 9 | Pull/push, add, batch_add, delete, clear, disable, enable |
+
+> **Note**: The `[:phoenix_gen_api, :worker_pool, :task, :rejected]` event is emitted when a task is rejected due to the circuit breaker being open.
 
 ### Quick Start
 
@@ -744,7 +779,19 @@ PhoenixGenApi.Telemetry.attach_default_logger()
 
 # List all available events
 PhoenixGenApi.Telemetry.list_events()
+
+# Detach when done
+PhoenixGenApi.Telemetry.detach_all("my-app")
 ```
+
+You can also use the convenience functions on the main module:
+
+```elixir
+PhoenixGenApi.attach_telemetry("my-app", &MyHandler.handle_event/4)
+PhoenixGenApi.detach_telemetry("my-app")
+```
+
+These attach to both executor and rate limiter events simultaneously.
 
 ### Integration with Telemetry.Metrics
 

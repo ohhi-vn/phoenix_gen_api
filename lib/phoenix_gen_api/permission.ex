@@ -32,6 +32,13 @@ defmodule PhoenixGenApi.Permission do
   For example, with `{:role, ["admin", "moderator"]}`, only users with those roles
   are allowed access.
 
+  ### Custom Callback (`permission_callback`)
+  When `permission_callback: {module, function, args}` (or `{module, function}`) is set,
+  the callback takes precedence over `check_permission`. Called as
+  `apply(module, function, [request | args])`. Must return `true` or `false`.
+  Any other return value is treated as `false`. Exceptions are caught and treated
+  as `false` for safety.
+
   ## Examples
 
       # Public endpoint - no permission check
