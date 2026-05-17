@@ -177,6 +177,33 @@ defmodule PhoenixGenApi.Permission do
 
   def check_permission(
         request = %Request{user_id: user_id},
+        %FunConfig{
+          permission_callback: nil,
+          check_permission: {:arg, arg_name},
+          arg_orders: :map
+        }
+      )
+      when is_binary(user_id) and byte_size(user_id) > 0 do
+    arg_value = Map.get(request.args, arg_name) || find_in_map_args(request.args, arg_name)
+
+    case arg_value do
+      nil ->
+        Logger.warning(
+          "[Permission] check_permission: missing argument #{inspect(arg_name)}, request_id: #{inspect(request.request_id)}, user_id: #{inspect(request.user_id)}"
+        )
+
+        false
+
+      ^user_id ->
+        true
+
+      _other ->
+        false
+    end
+  end
+
+  def check_permission(
+        request = %Request{user_id: user_id},
         %FunConfig{permission_callback: nil, check_permission: {:arg, arg_name}}
       )
       when is_binary(user_id) and byte_size(user_id) > 0 do
@@ -250,6 +277,17 @@ defmodule PhoenixGenApi.Permission do
 
     # Fall back to check_permission mode if callback is invalid
     check_permission(%Request{}, %FunConfig{fun_config | permission_callback: nil})
+  end
+
+  @doc false
+  @spec find_in_map_args(map(), String.t()) :: any()
+  defp find_in_map_args(args, arg_name) do
+    args
+    |> Map.values()
+    |> Enum.find_value(fn
+      value when is_map(value) -> Map.get(value, arg_name)
+      _ -> nil
+    end)
   end
 
   @spec execute_permission_callback(module(), atom(), list()) :: boolean()
