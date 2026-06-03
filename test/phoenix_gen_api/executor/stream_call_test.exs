@@ -1,5 +1,5 @@
 defmodule PhoenixGenApi.StreamCallTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias PhoenixGenApi.StreamCall
   alias PhoenixGenApi.Structs.{Request, FunConfig}
@@ -7,17 +7,19 @@ defmodule PhoenixGenApi.StreamCallTest do
   # ConfigDb is already started by the application
 
   setup do
+    unique = System.unique_integer([:positive])
+
     request = %Request{
-      request_id: "stream_request_id",
-      request_type: "test_stream",
+      request_id: "stream_request_id_#{unique}",
+      request_type: "test_stream_#{unique}",
       user_id: "user_123",
       device_id: "device_456",
       args: %{"query" => "test"}
     }
 
     config = %FunConfig{
-      request_type: "test_stream",
-      service: "test_service",
+      request_type: "test_stream_#{unique}",
+      service: "test_service_#{unique}",
       nodes: :local,
       choose_node_mode: :random,
       timeout: 5000,
@@ -29,7 +31,7 @@ defmodule PhoenixGenApi.StreamCallTest do
       request_info: true
     }
 
-    {:ok, request: request, config: config}
+    {:ok, request: request, config: config, unique: unique}
   end
 
   describe "start_link/1" do

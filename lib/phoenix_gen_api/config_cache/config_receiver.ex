@@ -283,35 +283,41 @@ defmodule PhoenixGenApi.ConfigReceiver do
   end
 
   defp prepare_fun_configs(%PushConfig{service: service, fun_configs: fun_configs}) do
-    prepared =
-      Enum.flat_map(fun_configs, fn
-        %FunConfig{} = config ->
+    {prepared, errors} =
+      Enum.flat_map_reduce(fun_configs, [], fn
+        %FunConfig{} = config, acc_errors ->
           config =
             config
             |> PhoenixGenApi.Helpers.Shared.enforce_service_name(service)
             |> PhoenixGenApi.Helpers.Shared.ensure_version()
 
           if FunConfig.valid?(config) do
-            [config]
+            {[config], acc_errors}
           else
-            Logger.error(
-              "[ConfigReceiver] invalid FunConfig: request_type=#{inspect(config.request_type)} service=#{inspect(service)}"
-            )
+            error_msg =
+              "invalid FunConfig: request_type=#{inspect(config.request_type)}, service=#{inspect(service)}, version=#{inspect(config.version)}, nodes: #{inspect(config.nodes)}, mfa: #{inspect(config.mfa)}, response_type: #{inspect(config.response_type)}, check_permission: #{inspect(config.check_permission)}"
 
-            []
+            Logger.error("[ConfigReceiver] #{error_msg}")
+            {[], [error_msg | acc_errors]}
           end
 
-        other ->
-          Logger.error("[ConfigReceiver] unexpected item in fun_configs: item=#{inspect(other)}")
-
-          []
+        other, acc_errors ->
+          error_msg = "unexpected item in fun_configs: item=#{inspect(other)}"
+          Logger.error("[ConfigReceiver] #{error_msg}")
+          {[], [error_msg | acc_errors]}
       end)
 
     if prepared == [] do
       Logger.error("[ConfigReceiver] no valid FunConfig items: service=#{inspect(service)}")
 
-      {:error, :no_valid_fun_configs}
+      {:error, {:all_invalid, Enum.reverse(errors)}}
     else
+      if errors != [] do
+        Logger.warning(
+          "[ConfigReceiver] partial push: #{length(prepared)} valid, #{length(errors)} invalid, service=#{inspect(service)}, errors: #{inspect(Enum.reverse(errors))}"
+        )
+      end
+
       {:ok, prepared}
     end
   end

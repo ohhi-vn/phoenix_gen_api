@@ -790,6 +790,12 @@ defmodule PhoenixGenApi do
       end
 
       @doc false
+      def handle_info({:stream_started, request_id, pid}, socket) do
+        Process.put({:phoenix_gen_api, :stream_call_pid, request_id}, pid)
+        {:noreply, socket}
+      end
+
+      @doc false
       @impl true
       def handle_info({:push, result}, socket) do
         Logger.debug(fn ->

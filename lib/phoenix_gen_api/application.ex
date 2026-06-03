@@ -24,18 +24,15 @@ defmodule PhoenixGenApi.Application do
           # Configuration receiver for remote node push
           PhoenixGenApi.ConfigReceiver,
           # Registry for relay group membership (pid dispatch)
-          {Registry, keys: :duplicate, name: PhoenixGenApi.RelayRegistry}
+          {Registry, keys: :duplicate, name: PhoenixGenApi.RelayRegistry},
+          # Relay group GenServer — serializes all ETS operations
+          PhoenixGenApi.RelayServer
         ]
       end
 
     Logger.info(
       "[Application] starting, client_mode: #{inspect(client_mode)}, children: #{length(children)}"
     )
-
-    # Create ETS table for relay group metadata (owned by this process)
-    if not client_mode do
-      :ets.new(PhoenixGenApi.Relay.table(), [:set, :public, :named_table])
-    end
 
     opts = [strategy: :rest_for_one, name: PhoenixGenApi.Supervisor]
     Supervisor.start_link(children, opts)

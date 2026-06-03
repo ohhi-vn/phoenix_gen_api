@@ -111,7 +111,10 @@ defmodule PhoenixGenApi.ConfigDb do
             version = FunConfig.version(config)
             [{{config.service, config.request_type, version}, config}]
           else
-            Logger.error("[ConfigDb] batch_add: invalid config=#{inspect(config)}, skipping")
+            Logger.error(
+              "[ConfigDb] batch_add: invalid config, request_type=#{inspect(config.request_type)}, service=#{inspect(config.service)}, version=#{inspect(FunConfig.version(config))}, skipping"
+            )
+
             []
           end
 
@@ -348,6 +351,8 @@ defmodule PhoenixGenApi.ConfigDb do
   Retrieves the latest version of a function configuration from the cache.
 
   This operation is atomic and uses ETS read concurrency for optimal performance.
+  Uses `Version.compare/2` for proper semantic versioning (not lexicographic),
+  so "10.0.0" is correctly considered newer than "9.0.0".
 
   ## Parameters
 

@@ -424,25 +424,25 @@ defmodule PhoenixGenApi.TelemetryTest do
       assert metadata.async == false
     end
 
-    test "emits exception event when execution fails with exception" do
+    test "emits stop event with success false when permission is denied" do
       test_pid = self()
 
       :telemetry.attach(
-        "test-exec-exception",
-        [:phoenix_gen_api, :executor, :request, :exception],
+        "test-exec-perm-denied",
+        [:phoenix_gen_api, :executor, :request, :stop],
         fn _event, measurements, metadata, _config ->
-          send(test_pid, {:req_exception, measurements, metadata})
+          send(test_pid, {:req_stop, measurements, metadata})
         end,
         %{}
       )
 
       on_exit(fn ->
-        :telemetry.detach("test-exec-exception")
+        :telemetry.detach("test-exec-perm-denied")
       end)
 
-      # Create a config that will cause a PermissionDenied exception
+      # Create a config that will cause a PermissionDenied
       # Using {:arg, "user_id"} which checks if request.user_id matches request.args["user_id"]
-      # When they don't match, PermissionDenied is raised before sync_call's rescue block
+      # When they don't match, PermissionDenied is caught and an error response is returned
       config =
         valid_config(%{
           service: "ExceptionTest",
@@ -462,17 +462,16 @@ defmodule PhoenixGenApi.TelemetryTest do
         args: %{"user_id" => "user_b"}
       }
 
-      # This should raise a PermissionDenied exception, which is caught by execute!/1's rescue block
-      # and re-raised after emitting the :exception telemetry event
-      assert_raise PhoenixGenApi.Permission.PermissionDenied, fn ->
-        Executor.execute!(request)
-      end
+      # PermissionDenied is now caught internally and returned as an error response
+      result = Executor.execute!(request)
+      assert result.success == false
+      assert result.error == "Permission denied"
 
-      assert_receive {:req_exception, %{duration_us: duration_us}, metadata}, 1000
+      assert_receive {:req_stop, %{duration_us: duration_us}, metadata}, 1000
       assert is_integer(duration_us)
       assert metadata.request_id == "exception_req"
-      assert metadata.kind == :error
-      assert is_binary(metadata.reason)
+      assert metadata.success == false
+      assert metadata.async == false
     end
   end
 

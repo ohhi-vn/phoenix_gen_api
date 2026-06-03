@@ -228,7 +228,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
       {:error, errors} ->
         Logger.error(
-          "[FunConfig] validation failed, errors: #{inspect(errors)}, request_type: #{inspect(config.request_type)}, service: #{inspect(config.service)}"
+          "[FunConfig] validation failed, errors: #{inspect(errors)}, request_type: #{inspect(config.request_type)}, service: #{inspect(config.service)}, nodes: #{inspect(config.nodes)}, mfa: #{inspect(config.mfa)}, response_type: #{inspect(config.response_type)}, check_permission: #{inspect(config.check_permission)}, retry: #{inspect(config.retry)}, version: #{inspect(config.version)}"
         )
 
         false

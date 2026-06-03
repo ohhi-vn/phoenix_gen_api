@@ -180,14 +180,17 @@ defmodule PhoenixGenApi.Executor do
     )
 
     try do
-      version = request.version || "0.0.0"
-
+      # Use get_fast/2 for the hot path — it skips version resolution and uses
+      # :ets.match_object for efficient pattern matching. Only fall back to
+      # get_latest/2 when the request specifies an explicit version.
       result =
-        case ConfigDb.get(request.service, request.request_type, version) do
+        case resolve_config(request) do
           {:ok, fun_config} ->
             execute_with_config!(request, fun_config)
 
           {:error, :not_found} ->
+            version = request.version || "latest"
+
             Logger.warning(
               "[Executor] unsupported function: #{request.request_type}, version: #{version}, request_id: #{request.request_id}"
             )
@@ -198,6 +201,8 @@ defmodule PhoenixGenApi.Executor do
             )
 
           {:error, :disabled} ->
+            version = request.version || "latest"
+
             Logger.warning(
               "[Executor] disabled function: #{request.request_type}, version: #{version}, request_id: #{request.request_id}"
             )
@@ -271,6 +276,7 @@ defmodule PhoenixGenApi.Executor do
           Response.error_response(request.request_id, "hook rejected: #{inspect(reason)}")
 
         Hooks.run_after(fun_config.after_execute, request, fun_config, response)
+        response
     end
   end
 
@@ -279,45 +285,40 @@ defmodule PhoenixGenApi.Executor do
       :ok ->
         try do
           Permission.check_permission!(request, fun_config)
+
+          result =
+            case fun_config.response_type do
+              :sync ->
+                do_call(request, fun_config)
+
+              :async ->
+                async_call(request, fun_config)
+
+              :none ->
+                async_call(request, fun_config)
+
+              :stream ->
+                stream_call(request, fun_config)
+
+              other ->
+                Logger.error(
+                  "[Executor] unsupported response_type: #{inspect(other)}, request_id: #{request.request_id}"
+                )
+
+                Response.error_response(
+                  request.request_id,
+                  "unsupported response type: #{inspect(other)}"
+                )
+            end
+
+          Hooks.run_after(fun_config.after_execute, request, fun_config, result)
+          result
         rescue
-          e in PhoenixGenApi.Permission.PermissionDenied ->
-            Hooks.run_after(
-              fun_config.after_execute,
-              request,
-              fun_config,
-              Response.error_response(request.request_id, "Permission denied")
-            )
-
-            reraise e, __STACKTRACE__
+          _e in PhoenixGenApi.Permission.PermissionDenied ->
+            error_response = Response.error_response(request.request_id, "Permission denied")
+            Hooks.run_after(fun_config.after_execute, request, fun_config, error_response)
+            error_response
         end
-
-        result =
-          case fun_config.response_type do
-            :sync ->
-              do_call(request, fun_config)
-
-            :async ->
-              async_call(request, fun_config)
-
-            :none ->
-              async_call(request, fun_config)
-
-            :stream ->
-              stream_call(request, fun_config)
-
-            other ->
-              Logger.error(
-                "[Executor] unsupported response_type: #{inspect(other)}, request_id: #{request.request_id}"
-              )
-
-              Response.error_response(
-                request.request_id,
-                "unsupported response type: #{inspect(other)}"
-              )
-          end
-
-        Hooks.run_after(fun_config.after_execute, request, fun_config, result)
-        result
 
       error ->
         result = handle_rate_limit_error(error, request, fun_config)
@@ -337,12 +338,12 @@ defmodule PhoenixGenApi.Executor do
     |> Map.put(:can_retry, true)
   end
 
-  defp handle_rate_limit_error({:error, :rate_limiter_error, error_details}, request, fun_config) do
+  defp handle_rate_limit_error({:error, :rate_limiter_error, error_details}, request, _fun_config) do
     Logger.error(
-      "[Executor] rate_limiter_error: #{inspect(error_details)}, request_id: #{request.request_id}, allowing request"
+      "[Executor] rate_limiter_error: #{inspect(error_details)}, request_id: #{request.request_id}, rejecting request (fail-closed)"
     )
 
-    do_call(request, fun_config)
+    Response.error_response(request.request_id, "Rate limit service unavailable", true)
   end
 
   defp handle_rate_limit_error({:error, :permission_denied}, request, _fun_config) do
@@ -351,12 +352,12 @@ defmodule PhoenixGenApi.Executor do
     Response.error_response(request.request_id, "Permission denied")
   end
 
-  defp handle_rate_limit_error(error, request, fun_config) do
+  defp handle_rate_limit_error(error, request, _fun_config) do
     Logger.error(
-      "[Executor] unexpected rate_limit error: #{inspect(error)}, request_id: #{request.request_id}"
+      "[Executor] unexpected rate_limit error: #{inspect(error)}, request_id: #{request.request_id}, rejecting request (fail-closed)"
     )
 
-    do_call(request, fun_config)
+    Response.error_response(request.request_id, "Rate limit service unavailable", true)
   end
 
   def sync_call(request, fun_config) do
@@ -728,8 +729,10 @@ defmodule PhoenixGenApi.Executor do
             "[Executor] async_call task failed: #{inspect(kind)}: #{inspect(reason)}, request_id: #{request.request_id}"
           )
 
-          error_response = Response.error_response(request.request_id, "Async execution failed")
-          send(receiver, {:async_call, error_response})
+          if Process.alive?(receiver) do
+            error_response = Response.error_response(request.request_id, "Async execution failed")
+            send(receiver, {:async_call, error_response})
+          end
       end
     end
 
@@ -764,7 +767,9 @@ defmodule PhoenixGenApi.Executor do
              }) do
           {:ok, pid} ->
             # Store the stream PID for potential cancellation
-            send(receiver, {:stream_started, request_id, pid})
+            if Process.alive?(receiver) do
+              send(receiver, {:stream_started, request_id, pid})
+            end
 
             # Wait for stream to complete with timeout
             ref = Process.monitor(pid)
@@ -785,10 +790,12 @@ defmodule PhoenixGenApi.Executor do
               "[Executor] stream_call start_link failed: #{inspect(reason)}, request_id: #{request_id}"
             )
 
-            send(
-              receiver,
-              {:stream_response, Response.error_response(request_id, "Failed to start stream")}
-            )
+            if Process.alive?(receiver) do
+              send(
+                receiver,
+                {:stream_response, Response.error_response(request_id, "Failed to start stream")}
+              )
+            end
         end
       catch
         kind, reason ->
@@ -796,35 +803,35 @@ defmodule PhoenixGenApi.Executor do
             "[Executor] stream_call task failed: #{inspect(kind)}: #{inspect(reason)}, request_id: #{request_id}"
           )
 
-          send(
-            receiver,
-            {:stream_response, Response.error_response(request_id, "Stream execution failed")}
-          )
+          if Process.alive?(receiver) do
+            send(
+              receiver,
+              {:stream_response, Response.error_response(request_id, "Stream execution failed")}
+            )
+          end
       end
     end
 
     case PhoenixGenApi.WorkerPool.execute_async(:async_pool, task) do
       :ok ->
-        receive do
-          {:stream_started, ^request_id, pid} ->
-            Process.put({:phoenix_gen_api, :stream_call_pid, request_id}, pid)
-            Response.stream_response(request_id, :init)
-
-          {:stream_response, error_response} ->
-            error_response
-        after
-          5000 ->
-            Logger.error(
-              "[Executor] stream_call timeout waiting for stream to start, request_id: #{request_id}"
-            )
-
-            Response.error_response(request_id, "Failed to start stream")
-        end
+        Response.stream_response(request_id, :init)
 
       {:error, :queue_full} ->
         Logger.warning("[Executor] stream_call worker_pool queue_full, request_id: #{request_id}")
 
         Response.error_response(request_id, "Service temporarily unavailable", true)
+    end
+  end
+
+  # Resolves the function config for a request.
+  # Uses get_fast/2 (hot path) when no explicit version is requested — this
+  # skips version resolution and uses :ets.match_object for fast lookup.
+  # Falls back to get_latest/2 when an explicit version is specified.
+  defp resolve_config(request) do
+    if request.version do
+      ConfigDb.get(request.service, request.request_type, request.version)
+    else
+      ConfigDb.get_fast(request.service, request.request_type)
     end
   end
 

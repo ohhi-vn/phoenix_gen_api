@@ -24,6 +24,10 @@ defmodule PhoenixGenApi.Relay do
 
   ## Architecture
 
+  - **RelayServer** (`PhoenixGenApi.RelayServer`) is a GenServer that owns the
+    ETS table and serializes all group operations to prevent race conditions.
+    All public API functions in this module delegate to the GenServer.
+
   - **ETS table** (`:phoenix_gen_api_relay_groups`) stores group metadata:
     `{group_id, group_type, members_map}` where `members_map` is
     `%{user_id => %{roles: MapSet, status: atom, joined_at: DateTime}}`.
@@ -40,6 +44,11 @@ defmodule PhoenixGenApi.Relay do
   @table :phoenix_gen_api_relay_groups
   @registry PhoenixGenApi.RelayRegistry
 
+  # Threshold below which sequential dispatch is used (avoids Task overhead for small groups).
+  @relay_dispatch_threshold 32
+  # Max concurrent Task.async_stream workers for large group dispatch.
+  @relay_max_concurrency 16
+
   @type group_type :: :public | :private | :strict_private
   @type member_status :: :active | :pending | :muted
   @type member_info :: %{
@@ -48,7 +57,7 @@ defmodule PhoenixGenApi.Relay do
           joined_at: DateTime.t()
         }
 
-  # ── ETS table access (used by Application to create the table) ──
+  # ── ETS table access (used by RelayServer to create the table) ──
 
   @doc "Returns the ETS table name for group metadata storage."
   @spec table :: atom()
@@ -66,6 +75,127 @@ defmodule PhoenixGenApi.Relay do
   def create_group(group_id, group_type, creator_user_id, channel_pid)
       when is_binary(group_id) and group_type in [:public, :private, :strict_private] and
              is_binary(creator_user_id) and is_pid(channel_pid) do
+    PhoenixGenApi.RelayServer.create_group(group_id, group_type, creator_user_id, channel_pid)
+  end
+
+  @doc """
+  Deletes a group from ETS. Registry entries are cleaned up when channel
+  processes terminate.
+
+  Returns `:ok` or `{:error, :not_found}`.
+  """
+  @spec delete_group(String.t()) :: :ok | {:error, :not_found}
+  def delete_group(group_id) when is_binary(group_id) do
+    PhoenixGenApi.RelayServer.delete_group(group_id)
+  end
+
+  @doc """
+  Returns group info including type and members map.
+  """
+  @spec get_group_info(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def get_group_info(group_id) when is_binary(group_id) do
+    PhoenixGenApi.RelayServer.get_group_info(group_id)
+  end
+
+  # ── Membership ─────────────────────────────────────────────────
+
+  @doc """
+  Joins a user to a group.
+
+  - **public**: user becomes `:active` immediately.
+  - **private** / **strict_private**: user becomes `:pending`, needs acceptance.
+
+  Returns `{:ok, :active}` or `{:ok, :pending}` depending on group type,
+  or `{:error, reason}`.
+  """
+  @spec join_group(String.t(), String.t(), pid()) ::
+          {:ok, :active | :pending} | {:error, :not_found | :already_member}
+  def join_group(group_id, user_id, channel_pid)
+      when is_binary(group_id) and is_binary(user_id) and is_pid(channel_pid) do
+    PhoenixGenApi.RelayServer.join_group(group_id, user_id, channel_pid)
+  end
+
+  @doc """
+  Removes a user from a group and unregisters them from the Registry.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec leave_group(String.t(), String.t()) :: :ok | {:error, :not_found | :user_not_in_group}
+  def leave_group(group_id, user_id)
+      when is_binary(group_id) and is_binary(user_id) do
+    PhoenixGenApi.RelayServer.leave_group(group_id, user_id)
+  end
+
+  # ── Accept / Mute / Unmute ─────────────────────────────────────
+
+  @doc """
+  Accepts a pending member into a group.
+
+  - **private**: any active member can accept.
+  - **strict_private**: only admin can accept.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec accept_member(String.t(), String.t(), String.t()) ::
+          :ok | {:error, :not_found | :user_not_in_group | :not_admin | :user_not_pending}
+  def accept_member(group_id, actor_user_id, target_user_id)
+      when is_binary(group_id) and is_binary(actor_user_id) and is_binary(target_user_id) do
+    PhoenixGenApi.RelayServer.accept_member(group_id, actor_user_id, target_user_id)
+  end
+
+  @doc """
+  Mutes a member in a strict_private group. Only admins can mute.
+  Muted members can receive but cannot send messages.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec mute_member(String.t(), String.t(), String.t()) ::
+          :ok
+          | {:error,
+             :not_found | :not_strict_private | :user_not_in_group | :not_admin | :cannot_mute}
+  def mute_member(group_id, actor_user_id, target_user_id)
+      when is_binary(group_id) and is_binary(actor_user_id) and is_binary(target_user_id) do
+    PhoenixGenApi.RelayServer.mute_member(group_id, actor_user_id, target_user_id)
+  end
+
+  @doc """
+  Unmutes a member in a strict_private group. Only admins can unmute.
+
+  Returns `:ok` or `{:error, reason}`.
+  """
+  @spec unmute_member(String.t(), String.t(), String.t()) ::
+          :ok
+          | {:error,
+             :not_found | :not_strict_private | :user_not_in_group | :not_admin | :not_muted}
+  def unmute_member(group_id, actor_user_id, target_user_id)
+      when is_binary(group_id) and is_binary(actor_user_id) and is_binary(target_user_id) do
+    PhoenixGenApi.RelayServer.unmute_member(group_id, actor_user_id, target_user_id)
+  end
+
+  # ── Relay Message (MFA target) ────────────────────────────────
+
+  @doc """
+  Handles a relay message request. This is the MFA target configured in
+  `FunConfig` for `request_type: "relay_msg"`.
+
+  Extracts `group_id` and `message` from `request.args`, validates the
+  sender's membership and permissions, then sends `{:relay_message, response}`
+  to all group members' channel pids via the Registry.
+
+  Returns a `Response` with relay status.
+  """
+  @spec handle_relay(PhoenixGenApi.Structs.Request.t(), PhoenixGenApi.Structs.FunConfig.t()) ::
+          PhoenixGenApi.Structs.Response.t()
+  def handle_relay(request, fun_config) do
+    PhoenixGenApi.RelayServer.handle_relay(request, fun_config)
+  end
+
+  # ── Private Implementation (called by RelayServer) ─────────────
+
+  @doc false
+  @spec do_create_group(String.t(), group_type(), String.t(), pid()) ::
+          :ok | {:error, :already_exists}
+  def do_create_group(group_id, group_type, creator_user_id, channel_pid) do
     case :ets.lookup(@table, group_id) do
       [{^group_id, _, _}] ->
         {:error, :already_exists}
@@ -84,14 +214,9 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  @doc """
-  Deletes a group from ETS. Registry entries are cleaned up when channel
-  processes terminate.
-
-  Returns `:ok` or `{:error, :not_found}`.
-  """
-  @spec delete_group(String.t()) :: :ok | {:error, :not_found}
-  def delete_group(group_id) when is_binary(group_id) do
+  @doc false
+  @spec do_delete_group(String.t()) :: :ok | {:error, :not_found}
+  def do_delete_group(group_id) do
     case :ets.lookup(@table, group_id) do
       [] ->
         {:error, :not_found}
@@ -103,11 +228,9 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  @doc """
-  Returns group info including type and members map.
-  """
-  @spec get_group_info(String.t()) :: {:ok, map()} | {:error, :not_found}
-  def get_group_info(group_id) when is_binary(group_id) do
+  @doc false
+  @spec do_get_group_info(String.t()) :: {:ok, map()} | {:error, :not_found}
+  def do_get_group_info(group_id) do
     case :ets.lookup(@table, group_id) do
       [] ->
         {:error, :not_found}
@@ -117,21 +240,10 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  # ── Membership ─────────────────────────────────────────────────
-
-  @doc """
-  Joins a user to a group.
-
-  - **public**: user becomes `:active` immediately.
-  - **private** / **strict_private**: user becomes `:pending`, needs acceptance.
-
-  Returns `{:ok, :active}` or `{:ok, :pending}` depending on group type,
-  or `{:error, reason}`.
-  """
-  @spec join_group(String.t(), String.t(), pid()) ::
+  @doc false
+  @spec do_join_group(String.t(), String.t(), pid()) ::
           {:ok, :active | :pending} | {:error, :not_found | :already_member}
-  def join_group(group_id, user_id, channel_pid)
-      when is_binary(group_id) and is_binary(user_id) and is_pid(channel_pid) do
+  def do_join_group(group_id, user_id, channel_pid) do
     case :ets.lookup(@table, group_id) do
       [] ->
         {:error, :not_found}
@@ -148,7 +260,6 @@ defmodule PhoenixGenApi.Relay do
             {:error, :already_member}
 
           %{status: _old_status} ->
-            # Re-join with updated status — unregister old entries first to avoid duplicates
             Registry.unregister_match(@registry, group_id, {user_id, :_})
             member = new_member([:member], :active)
             :ets.insert(@table, {group_id, :public, Map.put(members, user_id, member)})
@@ -172,7 +283,6 @@ defmodule PhoenixGenApi.Relay do
             {:error, :already_member}
 
           %{status: :muted} ->
-            # Re-join muted user as pending — unregister old entries first to avoid duplicates
             Registry.unregister_match(@registry, group_id, {user_id, :_})
             member = new_member([:member], :pending)
             :ets.insert(@table, {group_id, group_type, Map.put(members, user_id, member)})
@@ -182,14 +292,9 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  @doc """
-  Removes a user from a group and unregisters them from the Registry.
-
-  Returns `:ok` or `{:error, reason}`.
-  """
-  @spec leave_group(String.t(), String.t()) :: :ok | {:error, :not_found | :user_not_in_group}
-  def leave_group(group_id, user_id)
-      when is_binary(group_id) and is_binary(user_id) do
+  @doc false
+  @spec do_leave_group(String.t(), String.t()) :: :ok | {:error, :not_found | :user_not_in_group}
+  def do_leave_group(group_id, user_id) do
     case :ets.lookup(@table, group_id) do
       [] ->
         {:error, :not_found}
@@ -197,9 +302,6 @@ defmodule PhoenixGenApi.Relay do
       [{^group_id, group_type, members}] ->
         if Map.has_key?(members, user_id) do
           :ets.insert(@table, {group_id, group_type, Map.delete(members, user_id)})
-          # Unregister only this user's channel entries for the group.
-          # Registry.unregister/2 would remove ALL entries for the key,
-          # so we use unregister_match to target the specific {user_id, _} value.
           Registry.unregister_match(@registry, group_id, {user_id, :_})
           :ok
         else
@@ -208,20 +310,10 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  # ── Accept / Mute / Unmute ─────────────────────────────────────
-
-  @doc """
-  Accepts a pending member into a group.
-
-  - **private**: any active member can accept.
-  - **strict_private**: only admin can accept.
-
-  Returns `:ok` or `{:error, reason}`.
-  """
-  @spec accept_member(String.t(), String.t(), String.t()) ::
+  @doc false
+  @spec do_accept_member(String.t(), String.t(), String.t()) ::
           :ok | {:error, :not_found | :user_not_in_group | :not_admin | :user_not_pending}
-  def accept_member(group_id, actor_user_id, target_user_id)
-      when is_binary(group_id) and is_binary(actor_user_id) and is_binary(target_user_id) do
+  def do_accept_member(group_id, actor_user_id, target_user_id) do
     case :ets.lookup(@table, group_id) do
       [] ->
         {:error, :not_found}
@@ -237,18 +329,12 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  @doc """
-  Mutes a member in a strict_private group. Only admins can mute.
-  Muted members can receive but cannot send messages.
-
-  Returns `:ok` or `{:error, reason}`.
-  """
-  @spec mute_member(String.t(), String.t(), String.t()) ::
+  @doc false
+  @spec do_mute_member(String.t(), String.t(), String.t()) ::
           :ok
           | {:error,
              :not_found | :not_strict_private | :user_not_in_group | :not_admin | :cannot_mute}
-  def mute_member(group_id, actor_user_id, target_user_id)
-      when is_binary(group_id) and is_binary(actor_user_id) and is_binary(target_user_id) do
+  def do_mute_member(group_id, actor_user_id, target_user_id) do
     case :ets.lookup(@table, group_id) do
       [] ->
         {:error, :not_found}
@@ -267,17 +353,12 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  @doc """
-  Unmutes a member in a strict_private group. Only admins can unmute.
-
-  Returns `:ok` or `{:error, reason}`.
-  """
-  @spec unmute_member(String.t(), String.t(), String.t()) ::
+  @doc false
+  @spec do_unmute_member(String.t(), String.t(), String.t()) ::
           :ok
           | {:error,
              :not_found | :not_strict_private | :user_not_in_group | :not_admin | :not_muted}
-  def unmute_member(group_id, actor_user_id, target_user_id)
-      when is_binary(group_id) and is_binary(actor_user_id) and is_binary(target_user_id) do
+  def do_unmute_member(group_id, actor_user_id, target_user_id) do
     case :ets.lookup(@table, group_id) do
       [] ->
         {:error, :not_found}
@@ -296,21 +377,10 @@ defmodule PhoenixGenApi.Relay do
     end
   end
 
-  # ── Relay Message (MFA target) ────────────────────────────────
-
-  @doc """
-  Handles a relay message request. This is the MFA target configured in
-  `FunConfig` for `request_type: "relay_msg"`.
-
-  Extracts `group_id` and `message` from `request.args`, validates the
-  sender's membership and permissions, then sends `{:relay_message, response}`
-  to all group members' channel pids via the Registry.
-
-  Returns a `Response` with relay status.
-  """
-  @spec handle_relay(PhoenixGenApi.Structs.Request.t(), PhoenixGenApi.Structs.FunConfig.t()) ::
+  @doc false
+  @spec do_handle_relay(PhoenixGenApi.Structs.Request.t(), PhoenixGenApi.Structs.FunConfig.t()) ::
           PhoenixGenApi.Structs.Response.t()
-  def handle_relay(request, _fun_config) do
+  def do_handle_relay(request, _fun_config) do
     group_id = Map.get(request.args, "group_id")
     message = Map.get(request.args, "message")
     user_id = request.user_id
@@ -435,11 +505,27 @@ defmodule PhoenixGenApi.Relay do
   defp send_to_group(group_id, request_id, relay_payload) do
     relay_response = Response.sync_response(request_id, relay_payload)
 
-    Registry.select(@registry, [
-      {{:"$1", :"$2", :"$3"}, [{:==, :"$1", group_id}], [{{:"$2", :"$3"}}]}
-    ])
-    |> Enum.each(fn {_key, {_user_id, channel_pid}} ->
-      send(channel_pid, {:relay_message, relay_response})
-    end)
+    members =
+      Registry.select(@registry, [
+        {{:"$1", :"$2", :"$3"}, [{:==, :"$1", group_id}], [{{:"$2", :"$3"}}]}
+      ])
+
+    # For small groups, use sequential dispatch (lower overhead).
+    # For large groups, use Task.async_stream to parallelize sends with back-pressure.
+    if length(members) <= @relay_dispatch_threshold do
+      Enum.each(members, fn {_key, {_user_id, channel_pid}} ->
+        send(channel_pid, {:relay_message, relay_response})
+      end)
+    else
+      Task.async_stream(
+        members,
+        fn {_key, {_user_id, channel_pid}} ->
+          send(channel_pid, {:relay_message, relay_response})
+        end,
+        max_concurrency: @relay_max_concurrency,
+        ordered: false
+      )
+      |> Stream.run()
+    end
   end
 end

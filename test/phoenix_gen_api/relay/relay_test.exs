@@ -7,12 +7,16 @@ defmodule PhoenixGenApi.RelayTest do
   @moduletag :capture_log
 
   setup do
-    case :ets.whereis(:phoenix_gen_api_relay_groups) do
-      :undefined ->
-        :ets.new(:phoenix_gen_api_relay_groups, [:set, :public, :named_table])
-      _tid ->
-        :ets.delete_all_objects(:phoenix_gen_api_relay_groups)
+    # Ensure RelayServer is running (it owns the ETS table).
+    # start_supervised is idempotent for named processes — if already
+    # running it returns {:error, {:already_started, pid}} which we ignore.
+    case start_supervised(PhoenixGenApi.RelayServer) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
     end
+
+    # Clean slate for each test
+    :ets.delete_all_objects(:phoenix_gen_api_relay_groups)
 
     :ok
   end

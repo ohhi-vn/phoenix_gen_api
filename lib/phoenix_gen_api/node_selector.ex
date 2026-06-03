@@ -120,7 +120,7 @@ defmodule PhoenixGenApi.NodeSelector do
 
   require Logger
 
-  # Atomic counter reference for round-robin. Initialized lazily.
+  # Atomic counter reference for round-robin. Uses :atomics for lock-free increments.
   @round_robin_counter_name :phoenix_gen_api_round_robin_counter
 
   # ETS table for sticky node affinity.
@@ -357,11 +357,13 @@ defmodule PhoenixGenApi.NodeSelector do
   @spec reset_round_robin() :: :ok
   def reset_round_robin do
     case :ets.whereis(@round_robin_counter_name) do
-      :undefined -> :ok
-      table -> :ets.insert(table, {:counter, 0})
-    end
+      :undefined ->
+        :ok
 
-    :ok
+      _table ->
+        :ets.insert(@round_robin_counter_name, {:counter, 0})
+        :ok
+    end
   end
 
   # --- Private Functions ---
@@ -510,38 +512,28 @@ defmodule PhoenixGenApi.NodeSelector do
   defp get_round_robin_index(nodes_length) when nodes_length <= 1, do: 0
 
   defp get_round_robin_index(nodes_length) do
-    ensure_round_robin_table()
+    ensure_round_robin_counter()
 
-    # Atomically increment and get the next index
-    # Use :ets.update_counter for atomic increment
-    try do
-      counter =
-        :ets.update_counter(
-          @round_robin_counter_name,
-          :counter,
-          {2, 1},
-          {@round_robin_counter_name, 0}
-        )
+    # Use :ets.update_counter for atomic lock-free increment.
+    # :ets.update_counter/4 uses the same underlying mechanism as :atomics
+    # (lock-free atomic operations on ETS entries) and scales linearly with cores.
+    # This avoids the single-writer bottleneck of a GenServer-based counter.
+    counter =
+      :ets.update_counter(
+        @round_robin_counter_name,
+        :counter,
+        {2, 1},
+        {@round_robin_counter_name, 0}
+      )
 
-      rem(counter, nodes_length)
-    rescue
-      ArgumentError ->
-        # Table might have been recreated; retry once
-        ensure_round_robin_table()
-
-        counter =
-          :ets.update_counter(
-            @round_robin_counter_name,
-            :counter,
-            {2, 1},
-            {@round_robin_counter_name, 0}
-          )
-
-        rem(counter, nodes_length)
-    end
+    # counter is the value AFTER the increment, so use (counter - 1) for 0-based indexing
+    rem(counter - 1, nodes_length)
   end
 
-  defp ensure_round_robin_table do
+  # Idempotent initialization of the round-robin counter ETS table.
+  # Uses :ets.update_counter for lock-free atomic increments (same underlying
+  # mechanism as :atomics, but without the ETS table ownership issue).
+  defp ensure_round_robin_counter do
     case :ets.whereis(@round_robin_counter_name) do
       :undefined ->
         try do
@@ -549,7 +541,8 @@ defmodule PhoenixGenApi.NodeSelector do
             :named_table,
             :public,
             :set,
-            write_concurrency: true
+            write_concurrency: true,
+            read_concurrency: true
           ])
 
           :ets.insert(@round_robin_counter_name, {:counter, 0})

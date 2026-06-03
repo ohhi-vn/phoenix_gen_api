@@ -641,7 +641,7 @@ defmodule PhoenixGenApi.ConfigPuller do
                 [config]
               else
                 Logger.warning(
-                  "[ConfigPuller] invalid config: request_type=#{inspect(config.request_type)}, skipping"
+                  "[ConfigPuller] invalid config: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, skipping"
                 )
 
                 []
@@ -649,14 +649,16 @@ defmodule PhoenixGenApi.ConfigPuller do
 
             {:error, reason} ->
               Logger.error(
-                "[ConfigPuller] unsafe MFA: request_type=#{inspect(config.request_type)} reason=#{inspect(reason)}, skipping"
+                "[ConfigPuller] unsafe MFA: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, reason=#{inspect(reason)}, skipping"
               )
 
               []
           end
 
         other ->
-          Logger.error("[ConfigPuller] unexpected item in fun_list: item=#{inspect(other)}")
+          Logger.error(
+            "[ConfigPuller] unexpected item in fun_list: service=#{inspect(service_name)}, node=#{inspect(node)}, item=#{inspect(other)}"
+          )
 
           []
       end)

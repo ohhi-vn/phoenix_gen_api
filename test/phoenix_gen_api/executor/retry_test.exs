@@ -1,5 +1,5 @@
 defmodule PhoenixGenApi.ExecutorRetryTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias PhoenixGenApi.Executor
   alias PhoenixGenApi.Structs.{Request, FunConfig}
@@ -8,6 +8,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
   # Helper module to track call counts for retry testing
   # Uses an Agent to coordinate state across multiple process calls
   setup do
+    unique = System.unique_integer([:positive])
     {:ok, counter} = Agent.start_link(fn -> 0 end)
     {:ok, fail_counter} = Agent.start_link(fn -> 0 end)
     {:ok, config_tracker} = Agent.start_link(fn -> [] end)
@@ -32,17 +33,19 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       if Process.alive?(config_tracker), do: Agent.stop(config_tracker)
     end)
 
-    {:ok, counter: counter, fail_counter: fail_counter, config_tracker: config_tracker}
+    {:ok,
+     counter: counter, fail_counter: fail_counter, config_tracker: config_tracker, unique: unique}
   end
 
   describe "retry with local execution" do
     test "no retry when retry is nil and execution fails", %{
       counter: counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       config = %FunConfig{
-        request_type: "test_no_retry",
-        service: "test_service",
+        request_type: "test_no_retry_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -58,9 +61,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_no_retry_req",
-        request_type: "test_no_retry",
-        service: "test_service",
+        request_id: "test_no_retry_req_#{unique}",
+        request_type: "test_no_retry_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -75,12 +78,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
     test "retries local execution on failure with number (equivalent to {:all_nodes, n})", %{
       counter: counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Function fails first 2 times, succeeds on 3rd
       config = %FunConfig{
-        request_type: "test_retry_number",
-        service: "test_service",
+        request_type: "test_retry_number_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -96,9 +100,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_retry_number_req",
-        request_type: "test_retry_number",
-        service: "test_service",
+        request_id: "test_retry_number_req_#{unique}",
+        request_type: "test_retry_number_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -113,12 +117,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
     test "retries local execution with {:same_node, n}", %{
       counter: counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Function fails first time, succeeds on 2nd
       config = %FunConfig{
-        request_type: "test_retry_same_node",
-        service: "test_service",
+        request_type: "test_retry_same_node_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -134,9 +139,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_retry_same_node_req",
-        request_type: "test_retry_same_node",
-        service: "test_service",
+        request_id: "test_retry_same_node_req_#{unique}",
+        request_type: "test_retry_same_node_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -151,12 +156,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
     test "retries local execution with {:all_nodes, n}", %{
       counter: counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Function fails first 2 times, succeeds on 3rd
       config = %FunConfig{
-        request_type: "test_retry_all_nodes",
-        service: "test_service",
+        request_type: "test_retry_all_nodes_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -172,9 +178,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_retry_all_nodes_req",
-        request_type: "test_retry_all_nodes",
-        service: "test_service",
+        request_id: "test_retry_all_nodes_req_#{unique}",
+        request_type: "test_retry_all_nodes_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -189,12 +195,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
     test "returns error when all retries exhausted", %{
       counter: counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Function always fails, retry 2 times
       config = %FunConfig{
-        request_type: "test_retry_exhausted",
-        service: "test_service",
+        request_type: "test_retry_exhausted_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -210,9 +217,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_retry_exhausted_req",
-        request_type: "test_retry_exhausted",
-        service: "test_service",
+        request_id: "test_retry_exhausted_req_#{unique}",
+        request_type: "test_retry_exhausted_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -227,11 +234,12 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
     test "no retry when execution succeeds on first try", %{
       counter: counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       config = %FunConfig{
-        request_type: "test_no_retry_needed",
-        service: "test_service",
+        request_type: "test_no_retry_needed_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -247,9 +255,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_no_retry_needed_req",
-        request_type: "test_no_retry_needed",
-        service: "test_service",
+        request_id: "test_no_retry_needed_req_#{unique}",
+        request_type: "test_no_retry_needed_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -264,12 +272,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
     test "retry with {:same_node, 1} retries exactly once", %{
       counter: counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Function fails first time, succeeds on 2nd
       config = %FunConfig{
-        request_type: "test_retry_once",
-        service: "test_service",
+        request_type: "test_retry_once_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -285,9 +294,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_retry_once_req",
-        request_type: "test_retry_once",
-        service: "test_service",
+        request_id: "test_retry_once_req_#{unique}",
+        request_type: "test_retry_once_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -300,11 +309,12 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
     end
 
     test "retry with {:same_node, 0} is invalid config and function is unsupported", %{
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       config = %FunConfig{
-        request_type: "test_retry_zero",
-        service: "test_service",
+        request_type: "test_retry_zero_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -321,9 +331,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_retry_zero_req",
-        request_type: "test_retry_zero",
-        service: "test_service",
+        request_id: "test_retry_zero_req_#{unique}",
+        request_type: "test_retry_zero_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -339,12 +349,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
   describe "retry with remote execution" do
     test "no retry when retry is nil and remote execution fails", %{
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Use a non-existent node to simulate remote failure
       config = %FunConfig{
-        request_type: "test_remote_no_retry",
-        service: "test_service",
+        request_type: "test_remote_no_retry_#{unique}",
+        service: "test_service_#{unique}",
         nodes: [:nonexistent_node@localhost],
         choose_node_mode: :random,
         timeout: 1000,
@@ -360,9 +371,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_remote_no_retry_req",
-        request_type: "test_remote_no_retry",
-        service: "test_service",
+        request_id: "test_remote_no_retry_req_#{unique}",
+        request_type: "test_remote_no_retry_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -375,12 +386,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
     test "retries remote execution with {:same_node, n} on badrpc", %{
       fail_counter: fail_counter,
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Use a non-existent node - RPC will fail with badrpc
       config = %FunConfig{
-        request_type: "test_remote_retry_same_node",
-        service: "test_service",
+        request_type: "test_remote_retry_same_node_#{unique}",
+        service: "test_service_#{unique}",
         nodes: [:nonexistent_node@localhost],
         choose_node_mode: :random,
         timeout: 500,
@@ -396,9 +408,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_remote_retry_same_node_req",
-        request_type: "test_remote_retry_same_node",
-        service: "test_service",
+        request_id: "test_remote_retry_same_node_req_#{unique}",
+        request_type: "test_remote_retry_same_node_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -412,12 +424,13 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
     end
 
     test "retries remote execution with {:all_nodes, n} on badrpc", %{
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       # Use non-existent nodes - RPC will fail with badrpc
       config = %FunConfig{
-        request_type: "test_remote_retry_all_nodes",
-        service: "test_service",
+        request_type: "test_remote_retry_all_nodes_#{unique}",
+        service: "test_service_#{unique}",
         nodes: [:nonexistent_node1@localhost, :nonexistent_node2@localhost],
         choose_node_mode: :random,
         timeout: 500,
@@ -433,9 +446,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_remote_retry_all_nodes_req",
-        request_type: "test_remote_retry_all_nodes",
-        service: "test_service",
+        request_id: "test_remote_retry_all_nodes_req_#{unique}",
+        request_type: "test_remote_retry_all_nodes_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -448,11 +461,12 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
     end
 
     test "retries with number format (equivalent to {:all_nodes, n})", %{
-      config_tracker: config_tracker
+      config_tracker: config_tracker,
+      unique: unique
     } do
       config = %FunConfig{
-        request_type: "test_remote_retry_number",
-        service: "test_service",
+        request_type: "test_remote_retry_number_#{unique}",
+        service: "test_service_#{unique}",
         nodes: [:nonexistent_node@localhost],
         choose_node_mode: :random,
         timeout: 500,
@@ -468,9 +482,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_remote_retry_number_req",
-        request_type: "test_remote_retry_number",
-        service: "test_service",
+        request_id: "test_remote_retry_number_req_#{unique}",
+        request_type: "test_remote_retry_number_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -483,12 +497,17 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
   end
 
   describe "retry telemetry" do
-    test "emits retry telemetry events", %{counter: counter, config_tracker: config_tracker} do
+    test "emits retry telemetry events", %{
+      counter: counter,
+      config_tracker: config_tracker,
+      unique: unique
+    } do
       # Attach a telemetry handler to capture retry events
       test_pid = self()
+      handler_id = "test-retry-handler-#{unique}"
 
       :telemetry.attach(
-        "test-retry-handler",
+        handler_id,
         [:phoenix_gen_api, :executor, :retry],
         fn _event, measurements, metadata, _config ->
           send(test_pid, {:retry_event, measurements, metadata})
@@ -497,12 +516,12 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       )
 
       on_exit(fn ->
-        :telemetry.detach("test-retry-handler")
+        :telemetry.detach(handler_id)
       end)
 
       config = %FunConfig{
-        request_type: "test_retry_telemetry",
-        service: "test_service",
+        request_type: "test_retry_telemetry_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -518,9 +537,9 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_retry_telemetry_req",
-        request_type: "test_retry_telemetry",
-        service: "test_service",
+        request_id: "test_retry_telemetry_req_#{unique}",
+        request_type: "test_retry_telemetry_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -530,8 +549,6 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
       # Should receive at least one retry event
       assert_received {:retry_event, %{attempt: _n}, %{mode: :same_node, type: :local}}
-    after
-      :telemetry.detach("test-retry-handler")
     end
   end
 

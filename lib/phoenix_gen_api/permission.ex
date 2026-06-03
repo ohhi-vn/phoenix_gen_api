@@ -24,6 +24,9 @@ defmodule PhoenixGenApi.Permission do
   For example, with `{:arg, "user_id"}`, a request from user "123" will only be
   allowed if `request.args["user_id"] == "123"`.
 
+  When `arg_orders: :map`, the argument is first looked up at the top level of
+  `request.args`, then searched one level deep inside map values.
+
   ### Role-Based Permissions (`{:role, allowed_roles}`)
   When `check_permission: {:role, allowed_roles}` is configured, the system verifies
   that the user has one of the allowed roles. Roles are checked against the
@@ -33,7 +36,7 @@ defmodule PhoenixGenApi.Permission do
   are allowed access.
 
   ### Custom Callback (`permission_callback`)
-  When `permission_callback: {module, function, args}` (or `{module, function}`) is set,
+  When `permission_callback: {module, function, args}` is set,
   the callback takes precedence over `check_permission`. Called as
   `apply(module, function, [request | args])`. Must return `true` or `false`.
   Any other return value is treated as `false`. Exceptions are caught and treated
@@ -147,18 +150,26 @@ defmodule PhoenixGenApi.Permission do
     end
   end
 
-  # Custom permission callback takes precedence over check_permission.
-  # The callback is an MFA tuple {module, function, args} that will be called
-  # as apply(module, function, [request | args]). It must return `true` or `false`.
+  # ──────────────────────────────────────────────
+  # Custom permission callback (highest precedence)
+  # ──────────────────────────────────────────────
+
   def check_permission(request, %FunConfig{permission_callback: {mod, fun, args}})
       when is_atom(mod) and is_atom(fun) and is_list(args) do
     execute_permission_callback(mod, fun, [request | args])
   end
 
-  # When permission_callback is nil, fall through to check_permission modes
+  # ──────────────────────────────────────────────
+  # Disabled — public endpoint
+  # ──────────────────────────────────────────────
+
   def check_permission(%Request{}, %FunConfig{permission_callback: nil, check_permission: false}) do
     true
   end
+
+  # ──────────────────────────────────────────────
+  # :any_authenticated
+  # ──────────────────────────────────────────────
 
   def check_permission(%Request{user_id: user_id}, %FunConfig{
         permission_callback: nil,
@@ -168,12 +179,17 @@ defmodule PhoenixGenApi.Permission do
     true
   end
 
-  def check_permission(%Request{}, %FunConfig{
+  def check_permission(%Request{user_id: user_id} = request, %FunConfig{
         permission_callback: nil,
         check_permission: :any_authenticated
       }) do
+    log_permission_denied(request, ":any_authenticated", "user_id is #{inspect(user_id)}")
     false
   end
+
+  # ──────────────────────────────────────────────
+  # {:arg, arg_name} with arg_orders: :map
+  # ──────────────────────────────────────────────
 
   def check_permission(
         request = %Request{user_id: user_id},
@@ -185,50 +201,33 @@ defmodule PhoenixGenApi.Permission do
       )
       when is_binary(user_id) and byte_size(user_id) > 0 do
     arg_value = Map.get(request.args, arg_name) || find_in_map_args(request.args, arg_name)
-
-    case arg_value do
-      nil ->
-        Logger.warning(
-          "[Permission] check_permission: missing argument #{inspect(arg_name)}, request_id: #{inspect(request.request_id)}, user_id: #{inspect(request.user_id)}"
-        )
-
-        false
-
-      ^user_id ->
-        true
-
-      _other ->
-        false
-    end
+    do_check_arg(request, arg_name, arg_value, user_id)
   end
+
+  # ──────────────────────────────────────────────
+  # {:arg, arg_name} standard (non-map)
+  # ──────────────────────────────────────────────
 
   def check_permission(
         request = %Request{user_id: user_id},
         %FunConfig{permission_callback: nil, check_permission: {:arg, arg_name}}
       )
       when is_binary(user_id) and byte_size(user_id) > 0 do
-    case Map.get(request.args, arg_name) do
-      nil ->
-        Logger.warning(
-          "[Permission] check_permission: missing argument #{inspect(arg_name)}, request_id: #{inspect(request.request_id)}, user_id: #{inspect(request.user_id)}"
-        )
-
-        false
-
-      ^user_id ->
-        true
-
-      _other ->
-        false
-    end
+    arg_value = Map.get(request.args, arg_name)
+    do_check_arg(request, arg_name, arg_value, user_id)
   end
 
+  # Fallback for {:arg, ...} when user_id is nil or empty
   def check_permission(%Request{}, %FunConfig{
         permission_callback: nil,
         check_permission: {:arg, _arg_name}
       }) do
     false
   end
+
+  # ──────────────────────────────────────────────
+  # {:role, allowed_roles}
+  # ──────────────────────────────────────────────
 
   def check_permission(
         %Request{user_roles: user_roles} = request,
@@ -240,8 +239,10 @@ defmodule PhoenixGenApi.Permission do
 
     case MapSet.intersection(user_roles_set, allowed_roles_set) |> MapSet.size() do
       0 ->
-        Logger.warning(
-          "[Permission] check_permission: user #{inspect(request.user_id)} lacks required roles (required: #{inspect(allowed_roles)}, has: #{inspect(user_roles)}), request_id: #{inspect(request.request_id)}"
+        log_permission_denied(
+          request,
+          "role check",
+          "user lacks required roles (required: #{inspect(allowed_roles)}, has: #{inspect(user_roles)})"
         )
 
         false
@@ -251,6 +252,7 @@ defmodule PhoenixGenApi.Permission do
     end
   end
 
+  # Fallback for {:role, ...} when user_roles is not a list
   def check_permission(
         %Request{},
         %FunConfig{
@@ -261,27 +263,73 @@ defmodule PhoenixGenApi.Permission do
     false
   end
 
+  # ──────────────────────────────────────────────
+  # Invalid check_permission mode (catch-all)
+  # NOTE: This clause must remain BELOW the invalid permission_callback catch-all
+  # so that invalid callbacks are handled first (they fall back to this via recursion).
+  # ──────────────────────────────────────────────
+
   def check_permission(%Request{}, fun_config = %FunConfig{permission_callback: nil}) do
     Logger.error(
-      "[Permission] check_permission: invalid permission mode #{inspect(fun_config.check_permission)}"
+      "[Permission] invalid check_permission mode: #{inspect(fun_config.check_permission)}, request_type: #{inspect(fun_config.request_type)}"
     )
 
     false
   end
 
-  # Catch-all for any FunConfig with an unrecognized permission_callback format
-  def check_permission(%Request{}, fun_config = %FunConfig{permission_callback: other}) do
+  # ──────────────────────────────────────────────
+  # Invalid permission_callback format (catch-all)
+  # Falls back to check_permission mode after logging the invalid callback.
+  # ──────────────────────────────────────────────
+
+  def check_permission(request = %Request{}, fun_config = %FunConfig{permission_callback: other}) do
     Logger.error(
-      "[Permission] check_permission: invalid permission_callback #{inspect(other)}, falling back to check_permission: #{inspect(fun_config.check_permission)}"
+      "[Permission] invalid permission_callback: #{inspect(other)}, falling back to check_permission: #{inspect(fun_config.check_permission)}"
     )
 
-    # Fall back to check_permission mode if callback is invalid
-    check_permission(%Request{}, %FunConfig{fun_config | permission_callback: nil})
+    check_permission(request, %FunConfig{fun_config | permission_callback: nil})
   end
 
+  # ──────────────────────────────────────────────
+  # Shared arg-checking logic (eliminates duplication between :map and standard)
+  # ──────────────────────────────────────────────
+
   @doc false
-  @spec find_in_map_args(map(), String.t()) :: any()
-  defp find_in_map_args(args, arg_name) do
+  @spec do_check_arg(Request.t(), String.t(), any(), String.t()) :: boolean()
+  defp do_check_arg(request, arg_name, arg_value, user_id) do
+    case arg_value do
+      nil ->
+        log_permission_denied(
+          request,
+          "arg check",
+          "missing argument #{inspect(arg_name)}"
+        )
+
+        false
+
+      ^user_id ->
+        true
+
+      _other ->
+        log_permission_denied(
+          request,
+          "arg check",
+          "mismatch for #{inspect(arg_name)} (expected: #{inspect(user_id)}, got: #{inspect(arg_value)})"
+        )
+
+        false
+    end
+  end
+
+  # ──────────────────────────────────────────────
+  # find_in_map_args — searches one level deep in map values
+  # ──────────────────────────────────────────────
+
+  @doc false
+  @spec find_in_map_args(map() | nil, String.t()) :: any()
+  defp find_in_map_args(nil, _arg_name), do: nil
+
+  defp find_in_map_args(args, arg_name) when is_map(args) do
     args
     |> Map.values()
     |> Enum.find_value(fn
@@ -289,6 +337,10 @@ defmodule PhoenixGenApi.Permission do
       _ -> nil
     end)
   end
+
+  # ──────────────────────────────────────────────
+  # execute_permission_callback — runs the MFA callback with error handling
+  # ──────────────────────────────────────────────
 
   @spec execute_permission_callback(module(), atom(), list()) :: boolean()
   defp execute_permission_callback(mod, fun, args) do
@@ -299,14 +351,14 @@ defmodule PhoenixGenApi.Permission do
 
         false ->
           Logger.warning(
-            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false for request"
+            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false"
           )
 
           false
 
         other ->
           Logger.warning(
-            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value #{inspect(other)}, treating as denied"
+            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value: #{inspect(other)}"
           )
 
           false
@@ -314,19 +366,23 @@ defmodule PhoenixGenApi.Permission do
     rescue
       e ->
         Logger.error(
-          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} raised exception: #{Exception.message(e)}, denying for safety"
+          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} raised: #{Exception.message(e)}"
         )
 
         false
     catch
       kind, reason ->
         Logger.error(
-          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} caught #{inspect(kind)}: #{inspect(reason)}, denying for safety"
+          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} caught #{inspect(kind)}: #{inspect(reason)}"
         )
 
         false
     end
   end
+
+  # ──────────────────────────────────────────────
+  # check_permission! — raising version
+  # ──────────────────────────────────────────────
 
   @doc """
   Checks permission and raises an exception if the check fails.
@@ -371,7 +427,7 @@ defmodule PhoenixGenApi.Permission do
       permission_mode = determine_permission_mode(fun_config)
 
       Logger.warning(
-        "[Permission] check_permission!: denied, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, permission_mode: #{inspect(permission_mode)}"
+        "[Permission] denied: user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, mode: #{inspect(permission_mode)}"
       )
 
       raise PermissionDenied,
@@ -384,10 +440,20 @@ defmodule PhoenixGenApi.Permission do
     nil
   end
 
+  # ──────────────────────────────────────────────
+  # Private helpers
+  # ──────────────────────────────────────────────
+
   defp determine_permission_mode(%FunConfig{permission_callback: {mod, fun, args}})
        when is_atom(mod) and is_atom(fun) and is_list(args) do
     {:callback, {mod, fun, args}}
   end
 
   defp determine_permission_mode(%FunConfig{check_permission: mode}), do: mode
+
+  defp log_permission_denied(request, check_type, reason) do
+    Logger.warning(
+      "[Permission] #{check_type} denied: #{reason}, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}"
+    )
+  end
 end

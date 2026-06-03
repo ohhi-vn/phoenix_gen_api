@@ -218,7 +218,8 @@ defmodule PhoenixGenApi.RateLimiter do
 
         %{
           id: name,
-          start: {GenServer, :start_link, [__MODULE__, opts, [name: name]]},
+          start:
+            {GenServer, :start_link, [__MODULE__, [{:instance_index, i} | opts], [name: name]]},
           restart: :permanent
         }
       end
@@ -639,7 +640,9 @@ defmodule PhoenixGenApi.RateLimiter do
   ### Callbacks
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
+    instance_index = Keyword.get(opts, :instance_index, 0)
+
     # Create ETS tables for rate limiting (only if they don't exist)
     # Multiple instances will share these tables
     case :ets.whereis(:rate_limiter_global) do
@@ -671,13 +674,14 @@ defmodule PhoenixGenApi.RateLimiter do
     end
 
     state = %{
+      instance_index: instance_index,
       global_limits: load_global_limits(),
       api_limits: load_api_limits(),
       cleanup_interval: cleanup_interval()
     }
 
     Logger.info(
-      "[RateLimiter] instance initialized, global_limits: #{length(state.global_limits)}, api_limits: #{length(state.api_limits)}, cleanup_interval: #{state.cleanup_interval}ms"
+      "[RateLimiter] instance #{instance_index} initialized, global_limits: #{length(state.global_limits)}, api_limits: #{length(state.api_limits)}, cleanup_interval: #{state.cleanup_interval}ms"
     )
 
     schedule_cleanup()
@@ -759,7 +763,7 @@ defmodule PhoenixGenApi.RateLimiter do
   @impl true
   def handle_info(:cleanup, state) do
     start_time = System.monotonic_time(:microsecond)
-    cleaned_count = perform_cleanup()
+    cleaned_count = perform_cleanup(state.instance_index)
     duration = System.monotonic_time(:microsecond) - start_time
 
     :telemetry.execute(
@@ -1014,41 +1018,54 @@ defmodule PhoenixGenApi.RateLimiter do
     end
   end
 
-  defp perform_cleanup() do
+  # Sharded cleanup: each instance only cleans keys that hash to its shard.
+  # This avoids N instances each doing a full table scan, reducing total work
+  # from O(N * keys) to O(keys) across the cluster.
+  defp perform_cleanup(instance_index) do
     now = System.monotonic_time(:millisecond)
+    total_instances = get_instance_count()
 
-    # Clean global table
-    global_cleaned = cleanup_table(:rate_limiter_global, now)
-    # Clean API table
-    api_cleaned = cleanup_table(:rate_limiter_api, now)
+    # Clean global table (sharded)
+    global_cleaned =
+      cleanup_table_sharded(:rate_limiter_global, now, instance_index, total_instances)
+
+    # Clean API table (sharded)
+    api_cleaned = cleanup_table_sharded(:rate_limiter_api, now, instance_index, total_instances)
 
     Logger.debug(
-      "[RateLimiter] cleanup completed, removed: #{global_cleaned + api_cleaned} entries (global: #{global_cleaned}, api: #{api_cleaned})"
+      "[RateLimiter] cleanup completed (shard #{instance_index}/#{total_instances}), removed: #{global_cleaned + api_cleaned} entries (global: #{global_cleaned}, api: #{api_cleaned})"
     )
 
     global_cleaned + api_cleaned
   end
 
-  defp cleanup_table(table, now) do
+  # Sharded cleanup: only processes keys where phash2(key) rem total_instances == shard_index.
+  # This distributes cleanup work evenly across instances without coordination.
+  defp cleanup_table_sharded(table, now, shard_index, total_instances) do
     max_window = get_max_window_for_table(table)
     cutoff = now - max_window
 
     :ets.foldl(
       fn {key, timestamps}, acc ->
-        # Use split_with for single-pass partitioning
-        {valid_timestamps, expired} = Enum.split_with(timestamps, fn ts -> ts > cutoff end)
+        # Only clean this key if it belongs to our shard
+        if rem(:erlang.phash2(key), total_instances) == shard_index do
+          # Use split_with for single-pass partitioning
+          {valid_timestamps, expired} = Enum.split_with(timestamps, fn ts -> ts > cutoff end)
 
-        if expired == [] do
-          # No expired entries, skip update
-          acc
-        else
-          if valid_timestamps == [] do
-            :ets.delete(table, key)
+          if expired == [] do
+            # No expired entries, skip update
+            acc
           else
-            :ets.insert(table, {key, valid_timestamps})
-          end
+            if valid_timestamps == [] do
+              :ets.delete(table, key)
+            else
+              :ets.insert(table, {key, valid_timestamps})
+            end
 
-          acc + length(expired)
+            acc + length(expired)
+          end
+        else
+          acc
         end
       end,
       0,

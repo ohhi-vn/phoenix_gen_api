@@ -1,5 +1,5 @@
 defmodule PhoenixGenApi.ExecutorTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias PhoenixGenApi.Executor
   alias PhoenixGenApi.Structs.{Request, FunConfig}
@@ -8,22 +8,30 @@ defmodule PhoenixGenApi.ExecutorTest do
   # ConfigDb is already started by the application
 
   setup do
+    unique = System.unique_integer([:positive])
+
     request = %Request{
-      request_id: "test_request_id",
-      request_type: "test_sync",
+      request_id: "test_request_id_#{unique}",
+      request_type: "test_sync_#{unique}",
       user_id: "user_123",
       device_id: "device_456",
       args: %{"name" => "Alice", "age" => 30}
     }
 
-    {:ok, request: request}
+    on_exit(fn ->
+      ConfigDb.delete("test_service", "test_sync_#{unique}")
+    end)
+
+    {:ok, request: request, unique: unique}
   end
 
   describe "execute!/1" do
     test "returns error when function config not found" do
+      unique = System.unique_integer([:positive])
+
       request = %Request{
-        request_id: "test_request_id",
-        request_type: "test_no_function",
+        request_id: "test_no_function_req_#{unique}",
+        request_type: "test_no_function_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Alice", "age" => 30}
@@ -36,9 +44,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "returns error when requesting unsupported version" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_versioned",
-        service: "test_service",
+        request_type: "test_versioned_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -53,11 +63,15 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_versioned_#{unique}")
+      end)
+
       # Request with a different version that doesn't exist
       request = %Request{
-        request_id: "test_version_req",
-        request_type: "test_versioned",
-        service: "test_service",
+        request_id: "test_version_req_#{unique}",
+        request_type: "test_versioned_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Alice", "age" => 30},
@@ -72,9 +86,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "executes successfully with matching version" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_versioned_match",
-        service: "test_service",
+        request_type: "test_versioned_match_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -89,10 +105,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_versioned_match_#{unique}")
+      end)
+
       request = %Request{
-        request_id: "test_version_match_req",
-        request_type: "test_versioned_match",
-        service: "test_service",
+        request_id: "test_version_match_req_#{unique}",
+        request_type: "test_versioned_match_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Bob", "age" => 25},
@@ -106,9 +126,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "returns error when function is disabled" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_disabled",
-        service: "test_service",
+        request_type: "test_disabled_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -123,13 +145,17 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_disabled_#{unique}")
+      end)
+
       # Disable the function
-      assert :ok = ConfigDb.disable("test_service", "test_disabled", "1.0.0")
+      assert :ok = ConfigDb.disable("test_service_#{unique}", "test_disabled_#{unique}", "1.0.0")
 
       request = %Request{
-        request_id: "test_disabled_req",
-        request_type: "test_disabled",
-        service: "test_service",
+        request_id: "test_disabled_req_#{unique}",
+        request_type: "test_disabled_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Charlie", "age" => 30},
@@ -144,9 +170,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "can execute after re-enabling disabled function" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_reenable",
-        service: "test_service",
+        request_type: "test_reenable_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -161,14 +189,18 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_reenable_#{unique}")
+      end)
+
       # Disable then re-enable
-      assert :ok = ConfigDb.disable("test_service", "test_reenable", "1.0.0")
-      assert :ok = ConfigDb.enable("test_service", "test_reenable", "1.0.0")
+      assert :ok = ConfigDb.disable("test_service_#{unique}", "test_reenable_#{unique}", "1.0.0")
+      assert :ok = ConfigDb.enable("test_service_#{unique}", "test_reenable_#{unique}", "1.0.0")
 
       request = %Request{
-        request_id: "test_reenable_req",
-        request_type: "test_reenable",
-        service: "test_service",
+        request_id: "test_reenable_req_#{unique}",
+        request_type: "test_reenable_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Dave", "age" => 28},
@@ -182,9 +214,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "disabling one version does not affect other versions" do
+      unique = System.unique_integer([:positive])
+
       config_v1 = %FunConfig{
-        request_type: "test_multi_version",
-        service: "test_service",
+        request_type: "test_multi_version_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -198,8 +232,8 @@ defmodule PhoenixGenApi.ExecutorTest do
       }
 
       config_v2 = %FunConfig{
-        request_type: "test_multi_version",
-        service: "test_service",
+        request_type: "test_multi_version_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -215,14 +249,19 @@ defmodule PhoenixGenApi.ExecutorTest do
       ConfigDb.add(config_v1)
       ConfigDb.add(config_v2)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_multi_version_#{unique}")
+      end)
+
       # Disable version 1.0.0
-      assert :ok = ConfigDb.disable("test_service", "test_multi_version", "1.0.0")
+      assert :ok =
+               ConfigDb.disable("test_service_#{unique}", "test_multi_version_#{unique}", "1.0.0")
 
       # Version 1.0.0 should be disabled
       request_v1 = %Request{
-        request_id: "test_v1_req",
-        request_type: "test_multi_version",
-        service: "test_service",
+        request_id: "test_v1_req_#{unique}",
+        request_type: "test_multi_version_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Eve", "age" => 22},
@@ -235,9 +274,9 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       # Version 2.0.0 should still work
       request_v2 = %Request{
-        request_id: "test_v2_req",
-        request_type: "test_multi_version",
-        service: "test_service",
+        request_id: "test_v2_req_#{unique}",
+        request_type: "test_multi_version_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Frank", "age" => 35},
@@ -250,9 +289,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "defaults to version 0.0.0 when version is nil in request" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_default_version",
-        service: "test_service",
+        request_type: "test_default_version_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -267,11 +308,15 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_default_version_#{unique}")
+      end)
+
       # Request without version (nil) should default to "0.0.0"
       request = %Request{
-        request_id: "test_default_version_req",
-        request_type: "test_default_version",
-        service: "test_service",
+        request_id: "test_default_version_req_#{unique}",
+        request_type: "test_default_version_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Grace", "age" => 40},
@@ -285,9 +330,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "executes sync call successfully" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_sync",
-        service: "test_service",
+        request_type: "test_sync_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -301,10 +348,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_sync_#{unique}")
+      end)
+
       request = %Request{
-        request_id: "test_sync_req",
-        request_type: "test_sync",
-        service: "test_service",
+        request_id: "test_sync_req_#{unique}",
+        request_type: "test_sync_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Alice", "age" => 30}
@@ -317,9 +368,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "executes sync call with request_info" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_sync_with_info",
-        service: "test_service",
+        request_type: "test_sync_with_info_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -333,10 +386,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_sync_with_info_#{unique}")
+      end)
+
       request = %Request{
-        request_id: "test_sync_req_info",
-        request_type: "test_sync_with_info",
-        service: "test_service",
+        request_id: "test_sync_req_info_#{unique}",
+        request_type: "test_sync_with_info_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Bob"}
@@ -350,9 +407,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "handles error result from function" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_error",
-        service: "test_service",
+        request_type: "test_error_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -366,10 +425,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_error_#{unique}")
+      end)
+
       request = %Request{
-        request_id: "test_error_req",
-        request_type: "test_error",
-        service: "test_service",
+        request_id: "test_error_req_#{unique}",
+        request_type: "test_error_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{}
@@ -382,9 +445,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "executes async call" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_async",
-        service: "test_service",
+        request_type: "test_async_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -398,10 +463,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_async_#{unique}")
+      end)
+
       request = %Request{
-        request_id: "test_async_req",
-        request_type: "test_async",
-        service: "test_service",
+        request_id: "test_async_req_#{unique}",
+        request_type: "test_async_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Charlie", "age" => 25}
@@ -414,9 +483,11 @@ defmodule PhoenixGenApi.ExecutorTest do
     end
 
     test "executes none response type (fire and forget)" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_none",
-        service: "test_service",
+        request_type: "test_none_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -430,10 +501,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_none_#{unique}")
+      end)
+
       request = %Request{
-        request_id: "test_none_req",
-        request_type: "test_none",
-        service: "test_service",
+        request_id: "test_none_req_#{unique}",
+        request_type: "test_none_#{unique}",
+        service: "test_service_#{unique}",
         user_id: "user_123",
         device_id: "device_456",
         args: %{"name" => "Dave", "age" => 35}
@@ -447,9 +522,11 @@ defmodule PhoenixGenApi.ExecutorTest do
 
   describe "execute_params!/1" do
     test "executes from params map" do
+      unique = System.unique_integer([:positive])
+
       config = %FunConfig{
-        request_type: "test_params",
-        service: "test_service",
+        request_type: "test_params_#{unique}",
+        service: "test_service_#{unique}",
         nodes: :local,
         choose_node_mode: :random,
         timeout: 5000,
@@ -463,10 +540,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
       ConfigDb.add(config)
 
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_params_#{unique}")
+      end)
+
       params = %{
-        "request_id" => "test_params_req",
-        "request_type" => "test_params",
-        "service" => "test_service",
+        "request_id" => "test_params_req_#{unique}",
+        "request_type" => "test_params_#{unique}",
+        "service" => "test_service_#{unique}",
         "user_id" => "user_123",
         "device_id" => "device_456",
         "args" => %{"name" => "Eve", "age" => 28}
@@ -480,9 +561,11 @@ defmodule PhoenixGenApi.ExecutorTest do
   end
 
   test "executes sync call with list string" do
+    unique = System.unique_integer([:positive])
+
     config = %FunConfig{
-      request_type: "test_sync",
-      service: "test_service",
+      request_type: "test_sync_list_#{unique}",
+      service: "test_service_#{unique}",
       nodes: :local,
       choose_node_mode: :random,
       timeout: 5000,
@@ -496,10 +579,14 @@ defmodule PhoenixGenApi.ExecutorTest do
 
     ConfigDb.add(config)
 
+    on_exit(fn ->
+      ConfigDb.delete("test_service_#{unique}", "test_sync_list_#{unique}")
+    end)
+
     request = %Request{
-      request_id: "test_sync_req",
-      request_type: "test_sync",
-      service: "test_service",
+      request_id: "test_sync_list_req_#{unique}",
+      request_type: "test_sync_list_#{unique}",
+      service: "test_service_#{unique}",
       user_id: "user_123",
       device_id: "device_456",
       args: %{"list" => ["Charlie", "David"]}
@@ -507,7 +594,7 @@ defmodule PhoenixGenApi.ExecutorTest do
 
     result = Executor.execute!(request)
 
-    assert result.request_id == "test_sync_req"
+    assert result.request_id == "test_sync_list_req_#{unique}"
     assert result.async == false
     assert result.success == true
     assert result.result == 2
