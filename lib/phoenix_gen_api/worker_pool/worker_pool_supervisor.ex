@@ -13,7 +13,15 @@ defmodule PhoenixGenApi.WorkerPool.WorkerPoolSupervisor do
       config :phoenix_gen_api, :worker_pool,
         async_pool_size: 100,
         stream_pool_size: 50,
-        max_queue_size: 1000
+        max_queue_size: 1000,
+        circuit_breaker_threshold: 10,
+        circuit_breaker_cooldown: 60_000
+
+  ## Circuit Breaker
+
+  The `circuit_breaker_threshold` and `circuit_breaker_cooldown` options
+  control the circuit breaker behavior for both the pool and individual
+  workers. See `WorkerPool` and `Worker` for details.
 
   ## Pool Types
 

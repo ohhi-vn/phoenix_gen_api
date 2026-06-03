@@ -239,6 +239,45 @@ Manage groups programmatically outside of WebSocket requests:
 :ok = PhoenixGenApi.Relay.delete_group("room_1")
 ```
 
+## Process Monitoring and Auto-Cleanup
+
+`RelayServer` monitors channel processes to prevent dead PIDs from accumulating in the Registry.
+
+### How It Works
+
+1. **On join**: When a user successfully joins a group, `RelayServer` calls `Process.monitor(channel_pid)` and stores the monitor reference in its state map keyed by `{group_id, user_id}`.
+
+2. **On process death**: When a monitored channel process dies (crash, client disconnect, or normal exit), `RelayServer` receives a `{:DOWN, ref, :process, pid, reason}` message. It looks up the `{group_id, user_id}` by monitor reference, logs the event, and automatically calls `Relay.do_leave_group/2` to clean up both the ETS entry and the Registry entry.
+
+3. **On explicit leave**: When a user explicitly leaves a group, the monitor is demonitored via `Process.demonitor(ref, [:flush])` and the reference is removed from the state map.
+
+### Scenarios
+
+| Scenario | Behavior |
+|---|---|
+| Client WebSocket disconnects | Channel process terminates → `:DOWN` received → auto-cleanup |
+| Channel process crashes | `:DOWN` received with crash reason → auto-cleanup |
+| User explicitly leaves | `leave_group/2` called → demonitor + cleanup |
+| User joins, leaves, joins again | Old demonitor on leave, new monitor on re-join |
+| Gateway node crashes | All monitors lost — ETS and Registry are rebuilt on restart |
+
+### Example
+
+```elixir
+# User joins a group — monitor is created
+{:ok, :active} = Relay.join_group("room_1", "user_1", channel_pid)
+
+# Channel process dies (e.g. client disconnect)
+Process.exit(channel_pid, :shutdown)
+
+# RelayServer automatically receives {:DOWN, ...} and cleans up
+# No manual intervention needed
+
+# Verify cleanup
+{:ok, info} = Relay.get_group_info("room_1")
+assert not Map.has_key?(info.members, "user_1")
+```
+
 ## Error Handling
 
 | Condition | Error Response |
@@ -319,3 +358,5 @@ channel.on("chat", (payload) => {
 - **Muted members**: Muted members are in the recipient list (they receive) but cannot send.
 - **Registry cleanup on leave**: `leave_group/2` uses `Registry.unregister_match/3` to remove only the leaving user's entries (not all group members), since the Registry uses `:duplicate` keys.
 - **Re-join deduplication**: When a user re-joins (e.g. from `:muted` to `:pending`), `Registry.unregister_match/3` is called first to prevent duplicate Registry entries.
+- **Process monitoring**: `RelayServer` calls `Process.monitor(channel_pid)` on every successful join. When a monitored channel process dies (crash, client disconnect, normal exit), the `handle_info({:DOWN, ...})` callback automatically calls `Relay.do_leave_group/2` to clean up both the ETS entry and the Registry entry. This prevents dead PIDs from accumulating in the Registry.
+- **Monitor cleanup**: On explicit `leave_group`, the monitor reference is demonitored and removed from the `RelayServer` state map via `Process.demonitor(ref, [:flush])`.

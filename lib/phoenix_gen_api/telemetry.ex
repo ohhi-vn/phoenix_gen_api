@@ -15,6 +15,7 @@ defmodule PhoenixGenApi.Telemetry do
   | `[:phoenix_gen_api, :executor, :request, :stop]` | `%{duration_us: integer()}` | `%{request_id: String.t(), request_type: String.t(), service: String.t(), user_id: String.t(), success: boolean(), async: boolean()}` |
   | `[:phoenix_gen_api, :executor, :request, :exception]` | `%{duration_us: integer()}` | `%{request_id: String.t(), request_type: String.t(), service: String.t(), user_id: String.t(), kind: atom(), reason: String.t(), stacktrace: Exception.stacktrace()}` |
   | `[:phoenix_gen_api, :executor, :retry]` | `%{attempt: non_neg_integer()}` | `%{mode: :same_node or :all_nodes, type: :local or :remote}` + optional `nodes: list()` for remote retries |
+  | `[:phoenix_gen_api, :executor, :retry, :exhausted]` | `%{}` | `%{request_id: String.t(), mode: term(), last_error: String.t()}` |
 
   ### Rate Limiter
 
@@ -82,7 +83,8 @@ defmodule PhoenixGenApi.Telemetry do
     [:phoenix_gen_api, :executor, :request, :start],
     [:phoenix_gen_api, :executor, :request, :stop],
     [:phoenix_gen_api, :executor, :request, :exception],
-    [:phoenix_gen_api, :executor, :retry]
+    [:phoenix_gen_api, :executor, :retry],
+    [:phoenix_gen_api, :executor, :retry, :exhausted]
   ]
 
   @rate_limiter_events [

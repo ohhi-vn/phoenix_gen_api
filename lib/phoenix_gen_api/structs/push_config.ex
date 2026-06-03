@@ -58,7 +58,8 @@ defmodule PhoenixGenApi.Structs.PushConfig do
           args: list(),
           version_module: module() | nil,
           version_function: atom() | nil,
-          version_args: list()
+          version_args: list(),
+          push_token: String.t() | nil
         }
 
   @derive Nestru.Decoder
@@ -83,7 +84,11 @@ defmodule PhoenixGenApi.Structs.PushConfig do
     # Arguments passed to the pull function.
     args: [],
     # Arguments passed to the version check function.
-    version_args: []
+    version_args: [],
+    # Push token for authenticating push requests to the gateway (optional).
+    # When configured on the gateway via `:push_token`, push requests must
+    # include a matching token.
+    push_token: nil
   ]
 
   @doc """

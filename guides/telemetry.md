@@ -88,10 +88,10 @@ telemetry events. It provides:
 |----------|-------------|
 | `list_events/0` | Returns all 28 event names as a list |
 | `attach_all/3` | Attach a handler to all events |
-| `attach_executor/3` | Attach to 4 executor events |
+| `attach_executor/3` | Attach to 5 executor events (including retry exhausted) |
 | `attach_rate_limiter/3` | Attach to 4 rate limiter events |
 | `attach_hooks/3` | Attach to 6 hook events |
-| `attach_worker_pool/3` | Attach to 5 worker pool events |
+| `attach_worker_pool/3` | Attach to 6 worker pool events |
 | `attach_config/3` | Attach to 9 config cache events |
 | `attach_many/4` | Attach to a custom list of events |
 | `detach_all/1` | Detach all handlers for a handler ID |
@@ -114,12 +114,25 @@ The handler function signature is:
 
 ## Event Reference
 
-PhoenixGenApi emits **30 telemetry events** across 5 categories. All event names are
+PhoenixGenApi emits **31 telemetry events** across 5 categories. All event names are
 prefixed with `:phoenix_gen_api`.
 
 ### Executor Events
 
 Emitted during the request execution lifecycle in `PhoenixGenApi.Executor`.
+
+#### `[:phoenix_gen_api, :executor, :retry, :exhausted]`
+
+Emitted when all retry attempts have been exhausted for both local and remote retries. The `mode` metadata contains the original retry configuration (before decrementing).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| **Measurements** | | |
+| *(empty)* | `%{}` | |
+| **Metadata** | | |
+| `request_id` | `String.t()` | Unique request identifier |
+| `mode` | `{:same_node, n} \| {:all_nodes, n}` | Original retry configuration |
+| `last_error` | `String.t()` | Inspected final error |
 
 #### `[:phoenix_gen_api, :executor, :request, :start]`
 
@@ -298,9 +311,9 @@ Emitted when a before-hook callback raises an exception.
 | `module` | `module()` | Hook module |
 | `function` | `atom()` | Hook function name |
 | `type` | `:before` | Hook type |
-| `kind` | `:error` | Exception kind |
-| `reason` | `String.t()` | Exception message |
-| `stacktrace` | `Exception.stacktrace()` | Stack trace |
+| `kind` | `:error \| :timeout` | Error kind or timeout |
+| `reason` | `String.t()` | Exception message or timeout description |
+| `stacktrace` | `Exception.stacktrace() \| nil` | Stack trace (nil for timeouts) |
 
 #### `[:phoenix_gen_api, :hook, :after, :start]`
 
@@ -330,7 +343,7 @@ Emitted after an after-hook callback completes successfully.
 
 #### `[:phoenix_gen_api, :hook, :after, :exception]`
 
-Emitted when an after-hook callback raises an exception.
+Emitted when an after-hook callback raises an exception or times out.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -340,9 +353,9 @@ Emitted when an after-hook callback raises an exception.
 | `module` | `module()` | Hook module |
 | `function` | `atom()` | Hook function name |
 | `type` | `:after` | Hook type |
-| `kind` | `:error` | Exception kind |
-| `reason` | `String.t()` | Exception message |
-| `stacktrace` | `Exception.stacktrace()` | Stack trace |
+| `kind` | `:error \| :timeout` | Error kind or timeout |
+| `reason` | `String.t()` | Exception message or timeout description |
+| `stacktrace` | `Exception.stacktrace() \| nil` | Stack trace (nil for timeouts) |
 
 ### Worker Pool Events
 
@@ -1042,6 +1055,7 @@ iex> PhoenixGenApi.Telemetry.list_events()
   [:phoenix_gen_api, :executor, :request, :stop],
   [:phoenix_gen_api, :executor, :request, :exception],
   [:phoenix_gen_api, :executor, :retry],
+  [:phoenix_gen_api, :executor, :retry, :exhausted],
   [:phoenix_gen_api, :rate_limiter, :check],
   [:phoenix_gen_api, :rate_limiter, :exceeded],
   [:phoenix_gen_api, :rate_limiter, :reset],

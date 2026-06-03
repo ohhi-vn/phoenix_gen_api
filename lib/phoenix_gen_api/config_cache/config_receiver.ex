@@ -17,7 +17,8 @@ defmodule PhoenixGenApi.ConfigReceiver do
     4. If new or forced:
        - Validates all `FunConfig` items
        - Enforces the service name on each `FunConfig`
-       - Ensures each `FunConfig` has a version (defaults to `"0.0.0"`)
+       - Ensures each `FunConfig` has a version (defaults to `nil`)
+       - The value `"0.0.0"` is reserved as a sentinel and cannot be explicitly registered
        - Stores them in `ConfigDb` via `ConfigDb.batch_add/1`
        - Stores the `PushConfig` in state
        - If the `PushConfig` has `module`/`function` for auto-pull, registers
@@ -38,7 +39,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
   use GenServer, restart: :permanent
 
   alias PhoenixGenApi.Structs.{PushConfig, FunConfig, ServiceConfig}
-  alias PhoenixGenApi.{ConfigDb, ConfigPuller}
+  alias PhoenixGenApi.{ConfigDb, ConfigPuller, Security}
 
   require Logger
 
@@ -208,6 +209,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
   defp do_push(raw_config, force?, state) do
     with {:ok, config} <- decode_push_config(raw_config),
          :ok <- validate_push_config(config),
+         :ok <- validate_push_token(config),
          :ok <- maybe_skip_if_same_version(config, force?, state),
          {:ok, prepared_configs} <- prepare_fun_configs(config) do
       store_and_register(config, prepared_configs, state)
@@ -249,6 +251,18 @@ defmodule PhoenixGenApi.ConfigReceiver do
         Logger.error("[ConfigReceiver] PushConfig validation failed: errors=#{inspect(errors)}")
 
         {:error, {:validation_failed, errors}}
+    end
+  end
+
+  defp validate_push_token(%PushConfig{push_token: token}) do
+    if Security.valid_push_token?(token) do
+      :ok
+    else
+      Logger.warning(
+        "[ConfigReceiver] push token rejected: service=unknown token=#{inspect(token)}"
+      )
+
+      {:error, :invalid_push_token}
     end
   end
 

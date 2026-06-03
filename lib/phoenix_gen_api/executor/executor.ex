@@ -47,6 +47,12 @@ defmodule PhoenixGenApi.Executor do
   Retry attempts emit telemetry events at `[:phoenix_gen_api, :executor, :retry]`
   with measurements `%{attempt: n}` and metadata
   `%{mode: :same_node | :all_nodes, type: :local | :remote}`.
+
+  When all retry attempts are exhausted, the executor returns a
+  `%Response{success: false, error: "all retry attempts exhausted", can_retry: false}`
+  to the client. A telemetry event at
+  `[:phoenix_gen_api, :executor, :retry, :exhausted]` is also emitted with
+  metadata containing the `request_id`, retry `mode`, and the last error result.
   """
 
   alias PhoenixGenApi.Structs.{Request, FunConfig, Response}
@@ -281,49 +287,55 @@ defmodule PhoenixGenApi.Executor do
   end
 
   defp do_execute_with_config!(request, fun_config) do
-    case RateLimiter.check_rate_limit(request) do
-      :ok ->
-        try do
-          Permission.check_permission!(request, fun_config)
+    # Security: Permission check runs FIRST (cheap, no ETS writes).
+    # Unauthenticated requests are rejected before consuming rate limit resources.
+    # Execution order: Permission check → Rate limit check → Argument validation → Execution
+    try do
+      Permission.check_permission!(request, fun_config)
+    rescue
+      _e in PhoenixGenApi.Permission.PermissionDenied ->
+        error_response = Response.error_response(request.request_id, "Permission denied")
+        Hooks.run_after(fun_config.after_execute, request, fun_config, error_response)
+        error_response
+    else
+      _ ->
+        case RateLimiter.check_rate_limit(request) do
+          :ok ->
+            result = execute_request(request, fun_config)
+            Hooks.run_after(fun_config.after_execute, request, fun_config, result)
+            result
 
-          result =
-            case fun_config.response_type do
-              :sync ->
-                do_call(request, fun_config)
-
-              :async ->
-                async_call(request, fun_config)
-
-              :none ->
-                async_call(request, fun_config)
-
-              :stream ->
-                stream_call(request, fun_config)
-
-              other ->
-                Logger.error(
-                  "[Executor] unsupported response_type: #{inspect(other)}, request_id: #{request.request_id}"
-                )
-
-                Response.error_response(
-                  request.request_id,
-                  "unsupported response type: #{inspect(other)}"
-                )
-            end
-
-          Hooks.run_after(fun_config.after_execute, request, fun_config, result)
-          result
-        rescue
-          _e in PhoenixGenApi.Permission.PermissionDenied ->
-            error_response = Response.error_response(request.request_id, "Permission denied")
-            Hooks.run_after(fun_config.after_execute, request, fun_config, error_response)
-            error_response
+          error ->
+            result = handle_rate_limit_error(error, request, fun_config)
+            Hooks.run_after(fun_config.after_execute, request, fun_config, result)
+            result
         end
+    end
+  end
 
-      error ->
-        result = handle_rate_limit_error(error, request, fun_config)
-        Hooks.run_after(fun_config.after_execute, request, fun_config, result)
-        result
+  defp execute_request(request, fun_config) do
+    case fun_config.response_type do
+      :sync ->
+        do_call(request, fun_config)
+
+      :async ->
+        async_call(request, fun_config)
+
+      :none ->
+        async_call(request, fun_config)
+
+      :stream ->
+        stream_call(request, fun_config)
+
+      other ->
+        Logger.error(
+          "[Executor] unsupported response_type: #{inspect(other)}, request_id: #{request.request_id}"
+        )
+
+        Response.error_response(
+          request.request_id,
+          "unsupported response type: #{inspect(other)}"
+        )
     end
   end
 
@@ -344,12 +356,6 @@ defmodule PhoenixGenApi.Executor do
     )
 
     Response.error_response(request.request_id, "Rate limit service unavailable", true)
-  end
-
-  defp handle_rate_limit_error({:error, :permission_denied}, request, _fun_config) do
-    Logger.warning("[Executor] permission_denied for request_id: #{request.request_id}")
-
-    Response.error_response(request.request_id, "Permission denied")
   end
 
   defp handle_rate_limit_error(error, request, _fun_config) do
@@ -403,7 +409,14 @@ defmodule PhoenixGenApi.Executor do
 
     result =
       if FunConfig.local_service?(fun_config) do
-        execute_local_with_retry(mod, fun, final_args, fun_config.timeout, retry_config)
+        execute_local_with_retry(
+          mod,
+          fun,
+          final_args,
+          fun_config.timeout,
+          retry_config,
+          request.request_id
+        )
       else
         execute_remote_with_retry(mod, fun, final_args, fun_config, request, retry_config)
       end
@@ -430,12 +443,23 @@ defmodule PhoenixGenApi.Executor do
 
   # Retry helpers for local execution
 
-  defp execute_local_with_retry(mod, fun, args, timeout, retry_config) do
+  defp execute_local_with_retry(mod, fun, args, timeout, retry_config, request_id \\ nil) do
     result = execute_local(mod, fun, args, timeout)
-    apply_local_retry(result, mod, fun, args, timeout, retry_config)
+    apply_local_retry(result, mod, fun, args, timeout, retry_config, request_id)
   end
 
-  defp apply_local_retry(result, mod, fun, args, timeout, retry_config) do
+  defp apply_local_retry(
+         result,
+         mod,
+         fun,
+         args,
+         timeout,
+         retry_config,
+         request_id \\ nil,
+         original_config \\ nil
+       ) do
+    effective_config = original_config || retry_config
+
     if retryable_error?(result) and has_retry_remaining?(retry_config) do
       {mode, n} = retry_config
 
@@ -454,8 +478,34 @@ defmodule PhoenixGenApi.Executor do
       )
 
       new_result = execute_local(mod, fun, args, timeout)
-      apply_local_retry(new_result, mod, fun, args, timeout, {mode, n - 1})
+
+      apply_local_retry(
+        new_result,
+        mod,
+        fun,
+        args,
+        timeout,
+        {mode, n - 1},
+        request_id,
+        effective_config
+      )
     else
+      if retryable_error?(result) and request_id do
+        Logger.warning(
+          "[Executor] all local retry attempts exhausted, mode: #{inspect(effective_config)}, request_id: #{request_id}"
+        )
+
+        :telemetry.execute(
+          [:phoenix_gen_api, :executor, :retry, :exhausted],
+          %{},
+          %{
+            request_id: request_id,
+            mode: effective_config,
+            last_error: inspect(result)
+          }
+        )
+      end
+
       result
     end
   end
@@ -579,7 +629,27 @@ defmodule PhoenixGenApi.Executor do
     end
   end
 
-  defp apply_remote_retry(state = %RetryState{}), do: state.result
+  defp apply_remote_retry(state = %RetryState{}) do
+    if retryable_error?(state.result) do
+      Logger.warning(
+        "[Executor] all retry attempts exhausted, mode: #{inspect(state.retry_config)}, request_id: #{state.request.request_id}"
+      )
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :executor, :retry, :exhausted],
+        %{},
+        %{
+          request_id: state.request.request_id,
+          mode: state.retry_config,
+          last_error: inspect(state.result)
+        }
+      )
+
+      {:error, :retry_exhausted}
+    else
+      state.result
+    end
+  end
 
   defp retryable_error?({:error, _}), do: true
   defp retryable_error?({:error, _, _}), do: true
@@ -826,9 +896,10 @@ defmodule PhoenixGenApi.Executor do
   # Resolves the function config for a request.
   # Uses get_fast/2 (hot path) when no explicit version is requested — this
   # skips version resolution and uses :ets.match_object for fast lookup.
-  # Falls back to get_latest/2 when an explicit version is specified.
+  # Falls back to get/3 when an explicit version is specified.
+  # The reserved sentinel "0.0.0" is treated as no version (uses get_fast).
   defp resolve_config(request) do
-    if request.version do
+    if request.version && request.version != "0.0.0" do
       ConfigDb.get(request.service, request.request_type, request.version)
     else
       ConfigDb.get_fast(request.service, request.request_type)

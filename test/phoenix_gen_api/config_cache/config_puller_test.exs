@@ -178,19 +178,19 @@ defmodule PhoenixGenApi.ConfigPullerTest do
       # Verify :version key is not present
       refute Map.has_key?(old_config, :version)
 
-      # Simulate what ConfigPuller.ensure_version/1 does: add default version
+      # Simulate what ConfigPuller.ensure_version/1 does: add default version (nil)
       config_with_version =
-        struct(PhoenixGenApi.Structs.FunConfig, Map.put(old_config, :version, "0.0.0"))
+        struct(PhoenixGenApi.Structs.FunConfig, Map.put(old_config, :version, nil))
 
-      # Verify version was added
-      assert config_with_version.version == "0.0.0"
+      # Verify version was set to nil (no version)
+      assert config_with_version.version == nil
       assert Map.has_key?(config_with_version, :version)
 
       # Verify it can be added to ConfigDb
       assert :ok = PhoenixGenApi.ConfigDb.add(config_with_version)
 
-      # Verify it can be retrieved with the default version
-      assert {:ok, retrieved} = PhoenixGenApi.ConfigDb.get("old_service", "test_old_api", "0.0.0")
+      # Verify it can be retrieved with nil version
+      assert {:ok, retrieved} = PhoenixGenApi.ConfigDb.get("old_service", "test_old_api", nil)
       assert retrieved.request_type == "test_old_api"
     end
 

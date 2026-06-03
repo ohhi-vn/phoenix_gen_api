@@ -37,6 +37,16 @@ defmodule PhoenixGenApi.Hooks do
     - `[:phoenix_gen_api, :hook, :after, :stop]`
     - `[:phoenix_gen_api, :hook, :after, :exception]`
 
+  ## Timeout
+
+  Each hook execution is wrapped in a `Task` with a per-hook timeout
+  (default: 5 seconds). If a hook does not complete within the timeout,
+  the task is shut down and an error is returned. This prevents a
+  misbehaving hook from blocking the request indefinitely.
+
+  Hook crashes (exceptions) are also caught via `Task.yield/2` returning
+  `{:exit, reason}`, and are reported the same way as before.
+
   ## Examples
 
       # In your FunConfig:
@@ -64,6 +74,8 @@ defmodule PhoenixGenApi.Hooks do
   alias PhoenixGenApi.Structs.{Request, FunConfig}
 
   require Logger
+
+  @default_hook_timeout 5_000
 
   @doc """
   Runs the before_execute hook if configured.
@@ -146,21 +158,65 @@ defmodule PhoenixGenApi.Hooks do
       %{module: mod, function: fun, type: type}
     )
 
-    try do
-      hook_result = apply(mod, fun, args)
-      duration = System.monotonic_time(:microsecond) - start_time
+    task = Task.async(fn ->
+      try do
+        apply(mod, fun, args)
+      rescue
+        e -> {:__hook_exception, Exception.message(e)}
+      catch
+        kind, value -> {:__hook_exception, {kind, value}}
+      end
+    end)
 
-      :telemetry.execute(
-        [:phoenix_gen_api, :hook, type, :stop],
-        %{duration_us: duration},
-        %{module: mod, function: fun, type: type}
-      )
+    result =
+      case Task.yield(task, @default_hook_timeout) do
+        {:ok, {:__hook_exception, reason}} ->
+          {:exit, reason}
 
-      {:ok, hook_result}
-    rescue
-      e ->
-        duration = System.monotonic_time(:microsecond) - start_time
+        {:ok, hook_result} ->
+          {:ok, hook_result}
 
+        nil ->
+          Task.shutdown(task, :brutal_kill)
+          {:timeout, "hook timed out after #{@default_hook_timeout}ms"}
+
+        {:exit, reason} ->
+          {:exit, reason}
+      end
+
+    duration = System.monotonic_time(:microsecond) - start_time
+
+    case result do
+      {:ok, hook_result} ->
+        :telemetry.execute(
+          [:phoenix_gen_api, :hook, type, :stop],
+          %{duration_us: duration},
+          %{module: mod, function: fun, type: type}
+        )
+
+        {:ok, hook_result}
+
+      {:timeout, reason} ->
+        :telemetry.execute(
+          [:phoenix_gen_api, :hook, type, :exception],
+          %{duration_us: duration},
+          %{
+            module: mod,
+            function: fun,
+            type: type,
+            kind: :timeout,
+            reason: reason,
+            stacktrace: nil
+          }
+        )
+
+        Logger.error(
+          "[Hooks] #{type} hook timed out after #{@default_hook_timeout}ms, module: #{inspect(mod)}, function: #{inspect(fun)}"
+        )
+
+        {:error, reason}
+
+      {:exit, reason} ->
         :telemetry.execute(
           [:phoenix_gen_api, :hook, type, :exception],
           %{duration_us: duration},
@@ -169,16 +225,16 @@ defmodule PhoenixGenApi.Hooks do
             function: fun,
             type: type,
             kind: :error,
-            reason: Exception.message(e),
-            stacktrace: __STACKTRACE__
+            reason: inspect(reason),
+            stacktrace: nil
           }
         )
 
         Logger.error(
-          "[Hooks] #{type} hook failed: #{Exception.message(e)}, module: #{inspect(mod)}, function: #{inspect(fun)}"
+          "[Hooks] #{type} hook crashed: #{inspect(reason)}, module: #{inspect(mod)}, function: #{inspect(fun)}"
         )
 
-        {:error, Exception.message(e)}
+        {:error, inspect(reason)}
     end
   end
 end

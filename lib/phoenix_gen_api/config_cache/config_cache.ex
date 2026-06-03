@@ -28,11 +28,17 @@ defmodule PhoenixGenApi.ConfigDb do
   - Configurations are validated before being added to the cache
   - Service names and request types are sanitized
   - Only valid `FunConfig` structs are accepted
+  - MFA tuples are validated against the configured `:mfa_allowlist` (if set)
+    via `PhoenixGenApi.Security.validate_mfa/1`, preventing registration of
+    dangerous modules (e.g. `:os`, `:file`, `:code`)
+  - A hardcoded denylist of dangerous modules (`:os`, `:file`, `:code`,
+    `:erlang`, `:net`, `:rpc`, `:global`, `:inet`) is always enforced
   """
 
   use GenServer, restart: :permanent
 
   alias PhoenixGenApi.Structs.FunConfig
+  alias PhoenixGenApi.Security
 
   require Logger
 
@@ -61,9 +67,11 @@ defmodule PhoenixGenApi.ConfigDb do
     - `:ok` - Configuration was added successfully
     - `{:error, :invalid_config}` - Configuration failed validation
   """
-  @spec add(FunConfig.t()) :: :ok | {:error, :invalid_config}
+  @spec add(FunConfig.t()) ::
+          :ok | {:error, :invalid_config} | {:error, {:mfa_not_allowed, term()}}
   def add(config = %FunConfig{}) do
-    if FunConfig.valid?(config) do
+    with :ok <- Security.validate_mfa(config.mfa),
+         true <- FunConfig.valid?(config) do
       version = FunConfig.version(config)
       :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
 
@@ -83,8 +91,13 @@ defmodule PhoenixGenApi.ConfigDb do
 
       :ok
     else
-      Logger.error("[ConfigDb] add failed: invalid config=#{inspect(config)}")
-      {:error, :invalid_config}
+      {:error, {:mfa_not_allowed, _}} = error ->
+        Logger.error("[ConfigDb] add failed: MFA not allowed, config=#{inspect(config)}")
+        error
+
+      false ->
+        Logger.error("[ConfigDb] add failed: invalid config=#{inspect(config)}")
+        {:error, :invalid_config}
     end
   end
 
@@ -107,15 +120,25 @@ defmodule PhoenixGenApi.ConfigDb do
     entries =
       Enum.flat_map(configs, fn
         config = %FunConfig{} ->
-          if FunConfig.valid?(config) do
-            version = FunConfig.version(config)
-            [{{config.service, config.request_type, version}, config}]
-          else
-            Logger.error(
-              "[ConfigDb] batch_add: invalid config, request_type=#{inspect(config.request_type)}, service=#{inspect(config.service)}, version=#{inspect(FunConfig.version(config))}, skipping"
-            )
+          case Security.validate_mfa(config.mfa) do
+            :ok ->
+              if FunConfig.valid?(config) do
+                version = FunConfig.version(config)
+                [{{config.service, config.request_type, version}, config}]
+              else
+                Logger.error(
+                  "[ConfigDb] batch_add: invalid config, request_type=#{inspect(config.request_type)}, service=#{inspect(config.service)}, version=#{inspect(FunConfig.version(config))}, skipping"
+                )
 
-            []
+                []
+              end
+
+            {:error, {:mfa_not_allowed, mfa}} ->
+              Logger.error(
+                "[ConfigDb] batch_add: MFA not allowed, mfa=#{inspect(mfa)}, service=#{inspect(config.service)}, skipping"
+              )
+
+              []
           end
 
         other ->
@@ -149,15 +172,15 @@ defmodule PhoenixGenApi.ConfigDb do
 
     - `service` - The service name (string or atom)
     - `request_type` - The request type (string)
-    - `version` - The version to disable (string, defaults to "0.0.0")
+    - `version` - The version to disable (string, defaults to `nil`)
 
   ## Returns
 
     - `:ok` - Configuration was disabled successfully
     - `{:error, :not_found}` - Configuration does not exist
   """
-  @spec disable(String.t() | atom(), String.t(), String.t()) :: :ok | {:error, :not_found}
-  def disable(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+  @spec disable(String.t() | atom(), String.t(), String.t() | nil) :: :ok | {:error, :not_found}
+  def disable(service, request_type, version \\ nil) when is_binary(request_type) do
     GenServer.call(__MODULE__, {:disable, {service, request_type, version}})
   end
 
@@ -168,15 +191,15 @@ defmodule PhoenixGenApi.ConfigDb do
 
     - `service` - The service name (string or atom)
     - `request_type` - The request type (string)
-    - `version` - The version to enable (string, defaults to "0.0.0")
+    - `version` - The version to enable (string, defaults to `nil`)
 
   ## Returns
 
     - `:ok` - Configuration was enabled successfully
     - `{:error, :not_found}` - Configuration does not exist
   """
-  @spec enable(String.t() | atom(), String.t(), String.t()) :: :ok | {:error, :not_found}
-  def enable(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+  @spec enable(String.t() | atom(), String.t(), String.t() | nil) :: :ok | {:error, :not_found}
+  def enable(service, request_type, version \\ nil) when is_binary(request_type) do
     GenServer.call(__MODULE__, {:enable, {service, request_type, version}})
   end
 
@@ -227,14 +250,14 @@ defmodule PhoenixGenApi.ConfigDb do
 
     - `service` - The service name (string or atom)
     - `request_type` - The request type (string)
-    - `version` - The version to delete (string, defaults to "0.0.0")
+    - `version` - The version to delete (string, defaults to `nil`)
 
   ## Returns
 
     - `:ok` - Configuration was deleted (or didn't exist)
   """
-  @spec delete(String.t() | atom(), String.t(), String.t()) :: :ok
-  def delete(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+  @spec delete(String.t() | atom(), String.t(), String.t() | nil) :: :ok
+  def delete(service, request_type, version \\ nil) when is_binary(request_type) do
     :telemetry.execute(
       [:phoenix_gen_api, :config, :delete],
       %{},
@@ -257,7 +280,7 @@ defmodule PhoenixGenApi.ConfigDb do
 
     - `service` - The service name (string or atom)
     - `request_type` - The request type (string)
-    - `version` - The version to retrieve (string, defaults to "0.0.0")
+    - `version` - The version to retrieve (string, defaults to `nil`)
 
   ## Returns
 
@@ -265,9 +288,9 @@ defmodule PhoenixGenApi.ConfigDb do
     - `{:error, :not_found}` - Configuration does not exist
     - `{:error, :disabled}` - Configuration exists but is disabled
   """
-  @spec get(String.t() | atom(), String.t(), String.t()) ::
+  @spec get(String.t() | atom(), String.t(), String.t() | nil) ::
           {:ok, FunConfig.t()} | {:error, :not_found} | {:error, :disabled}
-  def get(service, request_type, version \\ "0.0.0") when is_binary(request_type) do
+  def get(service, request_type, version \\ nil) when is_binary(request_type) do
     try do
       case :ets.lookup_element(__MODULE__, {service, request_type, version}, 2) do
         config when is_map(config) ->
@@ -326,7 +349,9 @@ defmodule PhoenixGenApi.ConfigDb do
         {:error, :not_found}
 
       results when is_list(results) ->
-        # Multiple versions found, return the latest enabled one
+        # Multiple versions found, return the latest enabled one.
+        # Configs with nil version (no version) are excluded from "latest"
+        # resolution — they are only returned when they are the sole match.
         enabled_configs =
           Enum.filter(results, fn {_key, config} ->
             not Map.get(config, :disabled, false)
@@ -336,13 +361,31 @@ defmodule PhoenixGenApi.ConfigDb do
           [] ->
             {:error, :not_found}
 
+          [{{_s, _r, nil}, config}] ->
+            # Single result with nil version — return it directly
+            {:ok, config}
+
           configs ->
-            {_key, latest} =
-              Enum.max_by(configs, fn {{_s, _r, version}, _config} ->
-                Version.parse!(version)
+            # Filter out nil-version configs from "latest" resolution
+            versioned_configs =
+              Enum.filter(configs, fn {{_s, _r, version}, _config} ->
+                is_binary(version) and byte_size(version) > 0
               end)
 
-            {:ok, latest}
+            case versioned_configs do
+              [] ->
+                # All enabled configs have nil version — return the first one
+                {_key, first} = hd(configs)
+                {:ok, first}
+
+              versioned ->
+                {_key, latest} =
+                  Enum.max_by(versioned, fn {{_s, _r, version}, _config} ->
+                    Version.parse!(version)
+                  end)
+
+                {:ok, latest}
+            end
         end
     end
   end
@@ -370,19 +413,27 @@ defmodule PhoenixGenApi.ConfigDb do
       :ets.foldl(
         fn {{svc, req_type, _version}, config}, acc ->
           if svc == service and req_type == request_type and not Map.get(config, :disabled, false) do
-            case acc do
-              {:ok, existing_config} ->
-                existing_version = FunConfig.version(existing_config)
-                new_version = FunConfig.version(config)
+            new_version = FunConfig.version(config)
 
-                if Version.compare(new_version, existing_version) == :gt do
+            # Skip configs with nil version — they are unversioned fallbacks
+            # and should not be considered for "latest" resolution.
+            if is_nil(new_version) do
+              acc
+            else
+              case acc do
+                {:ok, existing_config} ->
+                  existing_version = FunConfig.version(existing_config)
+
+                  # existing_version is guaranteed non-nil by the guard above
+                  if Version.compare(new_version, existing_version) == :gt do
+                    {:ok, config}
+                  else
+                    acc
+                  end
+
+                :not_found ->
                   {:ok, config}
-                else
-                  acc
-                end
-
-              :not_found ->
-                {:ok, config}
+              end
             end
           else
             acc

@@ -17,7 +17,7 @@ defmodule PhoenixGenApi.ConfigDbTest do
       response_type: :sync,
       check_permission: false,
       request_info: false,
-      version: "0.0.0"
+      version: nil
     }
 
     struct(FunConfig, Map.merge(defaults, overrides))
@@ -33,7 +33,7 @@ defmodule PhoenixGenApi.ConfigDbTest do
   test "add/1 and get/2" do
     config = valid_config()
     assert :ok = ConfigDb.add(config)
-    assert {:ok, ^config} = ConfigDb.get("Test", "test_request", "0.0.0")
+    assert {:ok, ^config} = ConfigDb.get("Test", "test_request", nil)
   end
 
   test "add/1 and get/2 with custom version" do
@@ -50,15 +50,15 @@ defmodule PhoenixGenApi.ConfigDbTest do
     updated_config = valid_config(%{service: "new_service"})
     assert :ok = ConfigDb.update(updated_config)
 
-    assert {:ok, ^updated_config} = ConfigDb.get("new_service", "test_request", "0.0.0")
+    assert {:ok, ^updated_config} = ConfigDb.get("new_service", "test_request", nil)
   end
 
   test "delete/2" do
     config = valid_config()
     assert :ok = ConfigDb.add(config)
 
-    assert :ok = ConfigDb.delete("Test", "test_request", "0.0.0")
-    assert {:error, :not_found} = ConfigDb.get("Test", "test_request", "0.0.0")
+    assert :ok = ConfigDb.delete("Test", "test_request", nil)
+    assert {:error, :not_found} = ConfigDb.get("Test", "test_request", nil)
   end
 
   test "delete/2 with custom version" do
@@ -77,7 +77,7 @@ defmodule PhoenixGenApi.ConfigDbTest do
 
     assert :ok = ConfigDb.add(config1)
 
-    assert %{"Test1" => %{"test_request_1" => ["0.0.0"]}} == ConfigDb.get_all_functions()
+    assert %{"Test1" => %{"test_request_1" => [nil]}} == ConfigDb.get_all_functions()
   end
 
   test "get_all_functions/0 with multiple versions" do
@@ -111,20 +111,20 @@ defmodule PhoenixGenApi.ConfigDbTest do
     assert :ok = ConfigDb.add(config)
 
     # Test disable
-    assert :ok = ConfigDb.disable("Test", "test_request", "0.0.0")
-    assert {:error, :disabled} = ConfigDb.get("Test", "test_request", "0.0.0")
+    assert :ok = ConfigDb.disable("Test", "test_request", nil)
+    assert {:error, :disabled} = ConfigDb.get("Test", "test_request", nil)
 
     # Test enable
-    assert :ok = ConfigDb.enable("Test", "test_request", "0.0.0")
-    assert {:ok, ^config} = ConfigDb.get("Test", "test_request", "0.0.0")
+    assert :ok = ConfigDb.enable("Test", "test_request", nil)
+    assert {:ok, ^config} = ConfigDb.get("Test", "test_request", nil)
   end
 
   test "disable/3 returns error for non-existent config" do
-    assert {:error, :not_found} = ConfigDb.disable("Test", "nonexistent", "0.0.0")
+    assert {:error, :not_found} = ConfigDb.disable("Test", "nonexistent", nil)
   end
 
   test "enable/3 returns error for non-existent config" do
-    assert {:error, :not_found} = ConfigDb.enable("Test", "nonexistent", "0.0.0")
+    assert {:error, :not_found} = ConfigDb.enable("Test", "nonexistent", nil)
   end
 
   test "get_latest/2 returns latest version" do
@@ -165,12 +165,75 @@ defmodule PhoenixGenApi.ConfigDbTest do
     assert {:error, :not_found} = ConfigDb.get("Test", "test_request", "99.99.99")
   end
 
-  test "get/2 with empty version string defaults to 0.0.0" do
-    config = valid_config(%{version: "0.0.0"})
+  test "get/2 with nil version retrieves unversioned config" do
+    config = valid_config(%{version: nil})
     assert :ok = ConfigDb.add(config)
 
-    # Empty version should default to "0.0.0"
-    assert {:ok, ^config} = ConfigDb.get("Test", "test_request", "0.0.0")
+    # nil version should retrieve the unversioned config
+    assert {:ok, ^config} = ConfigDb.get("Test", "test_request", nil)
+  end
+
+  test "get_fast/2 returns nil-version config when sole match" do
+    config = valid_config(%{version: nil})
+    assert :ok = ConfigDb.add(config)
+
+    assert {:ok, ^config} = ConfigDb.get_fast("Test", "test_request")
+  end
+
+  test "get_fast/2 returns latest versioned config when multiple versions exist" do
+    config_v1 = valid_config(%{version: "1.0.0", timeout: 1000})
+    config_v2 = valid_config(%{version: "2.0.0", timeout: 2000})
+    assert :ok = ConfigDb.add(config_v1)
+    assert :ok = ConfigDb.add(config_v2)
+
+    {:ok, result} = ConfigDb.get_fast("Test", "test_request")
+    assert result.version == "2.0.0"
+  end
+
+  test "get_fast/2 prefers versioned over nil-version when both exist" do
+    config_nil = valid_config(%{version: nil, timeout: 500})
+    config_v1 = valid_config(%{version: "1.0.0", timeout: 1000})
+    assert :ok = ConfigDb.add(config_nil)
+    assert :ok = ConfigDb.add(config_v1)
+
+    {:ok, result} = ConfigDb.get_fast("Test", "test_request")
+    assert result.version == "1.0.0"
+  end
+
+  test "get_fast/2 returns nil-version when only nil-version configs exist" do
+    config_nil = valid_config(%{version: nil})
+    assert :ok = ConfigDb.add(config_nil)
+
+    {:ok, result} = ConfigDb.get_fast("Test", "test_request")
+    assert is_nil(result.version)
+  end
+
+  test "get_latest/2 skips nil-version configs" do
+    config_nil = valid_config(%{version: nil, timeout: 500})
+    config_v1 = valid_config(%{version: "1.0.0", timeout: 1000})
+    assert :ok = ConfigDb.add(config_nil)
+    assert :ok = ConfigDb.add(config_v1)
+
+    {:ok, result} = ConfigDb.get_latest("Test", "test_request")
+    assert result.version == "1.0.0"
+  end
+
+  test "get_latest/2 returns not_found when only nil-version configs exist" do
+    config_nil = valid_config(%{version: nil})
+    assert :ok = ConfigDb.add(config_nil)
+
+    assert {:error, :not_found} = ConfigDb.get_latest("Test", "test_request")
+  end
+
+  test "get_latest/2 returns not_found when all versioned configs are disabled" do
+    config_nil = valid_config(%{version: nil, timeout: 500})
+    config_v1 = valid_config(%{version: "1.0.0", timeout: 1000})
+    assert :ok = ConfigDb.add(config_nil)
+    assert :ok = ConfigDb.add(config_v1)
+    assert :ok = ConfigDb.disable("Test", "test_request", "1.0.0")
+
+    # get_latest should skip both the disabled versioned config and the nil-version config
+    assert {:error, :not_found} = ConfigDb.get_latest("Test", "test_request")
   end
 
   test "multiple versions coexist independently" do
@@ -319,9 +382,13 @@ defmodule PhoenixGenApi.ConfigDbTest do
     invalid_config = valid_config(%{version: ""})
     assert FunConfig.valid?(invalid_config) == false
 
-    # nil version should be invalid
-    invalid_config_nil = valid_config(%{version: nil})
-    assert FunConfig.valid?(invalid_config_nil) == false
+    # nil version is valid (means no version)
+    valid_config_nil = valid_config(%{version: nil})
+    assert FunConfig.valid?(valid_config_nil) == true
+
+    # "0.0.0" is reserved and invalid
+    invalid_config_sentinel = valid_config(%{version: "0.0.0"})
+    assert FunConfig.valid?(invalid_config_sentinel) == false
   end
 
   test "disabled field defaults to false" do
@@ -364,7 +431,7 @@ defmodule PhoenixGenApi.ConfigDbTest do
     end
   end
 
-    describe("telemetry") do
+  describe("telemetry") do
     test "emits config add telemetry event" do
       test_pid = self()
 
@@ -384,7 +451,7 @@ defmodule PhoenixGenApi.ConfigDbTest do
       config = valid_config(%{service: "TelemetryTest", request_type: "telemetry_req"})
       assert :ok = ConfigDb.add(config)
 
-      assert_receive {:config_add, "TelemetryTest", "telemetry_req", "0.0.0"}, 1000
+      assert_receive {:config_add, "TelemetryTest", "telemetry_req", nil}, 1000
     end
 
     test "emits config batch_add telemetry event" do

@@ -78,7 +78,7 @@ defmodule PhoenixGenApi.RelayServer do
     ])
 
     Logger.info("[RelayServer] initialized ETS table with read/write concurrency")
-    {:ok, %{}}
+    {:ok, %{monitors: %{}}}
   end
 
   @impl true
@@ -103,12 +103,38 @@ defmodule PhoenixGenApi.RelayServer do
 
   def handle_call({:join_group, group_id, user_id, channel_pid}, _from, state) do
     result = Relay.do_join_group(group_id, user_id, channel_pid)
-    {:reply, result, state}
+
+    case result do
+      {:ok, _} ->
+        ref = Process.monitor(channel_pid)
+        new_monitors = Map.put(state.monitors, {group_id, user_id}, ref)
+        {:reply, result, %{state | monitors: new_monitors}}
+
+      _ ->
+        {:reply, result, state}
+    end
   end
 
   def handle_call({:leave_group, group_id, user_id}, _from, state) do
     result = Relay.do_leave_group(group_id, user_id)
-    {:reply, result, state}
+
+    case result do
+      :ok ->
+        new_monitors =
+          case Map.pop(state.monitors, {group_id, user_id}) do
+            {nil, monitors} ->
+              monitors
+
+            {ref, monitors} ->
+              Process.demonitor(ref, [:flush])
+              monitors
+          end
+
+        {:reply, result, %{state | monitors: new_monitors}}
+
+      _ ->
+        {:reply, result, state}
+    end
   end
 
   def handle_call({:accept_member, group_id, actor_user_id, target_user_id}, _from, state) do
@@ -129,5 +155,22 @@ defmodule PhoenixGenApi.RelayServer do
   def handle_call({:handle_relay, request, fun_config}, _from, state) do
     result = Relay.do_handle_relay(request, fun_config)
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Enum.find(state.monitors, fn {_key, v} -> v == ref end) do
+      nil ->
+        {:noreply, state}
+
+      {{group_id, user_id}, _ref} ->
+        Logger.info(
+          "[RelayServer] channel process down, cleaning up membership, group_id: #{group_id}, user_id: #{user_id}, reason: #{inspect(reason)}"
+        )
+
+        Relay.do_leave_group(group_id, user_id)
+        new_monitors = Map.delete(state.monitors, {group_id, user_id})
+        {:noreply, %{state | monitors: new_monitors}}
+    end
   end
 end

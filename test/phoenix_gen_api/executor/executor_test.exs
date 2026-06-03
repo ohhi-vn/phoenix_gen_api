@@ -288,7 +288,7 @@ defmodule PhoenixGenApi.ExecutorTest do
       assert result_v2.result == "Hello Frank, age 35"
     end
 
-    test "defaults to version 0.0.0 when version is nil in request" do
+    test "defaults to nil version when version is nil in request" do
       unique = System.unique_integer([:positive])
 
       config = %FunConfig{
@@ -303,7 +303,7 @@ defmodule PhoenixGenApi.ExecutorTest do
         response_type: :sync,
         check_permission: false,
         request_info: false,
-        version: "0.0.0"
+        version: nil
       }
 
       ConfigDb.add(config)
@@ -312,7 +312,7 @@ defmodule PhoenixGenApi.ExecutorTest do
         ConfigDb.delete("test_service_#{unique}", "test_default_version_#{unique}")
       end)
 
-      # Request without version (nil) should default to "0.0.0"
+      # Request without version (nil) should use get_fast to find the unversioned config
       request = %Request{
         request_id: "test_default_version_req_#{unique}",
         request_type: "test_default_version_#{unique}",

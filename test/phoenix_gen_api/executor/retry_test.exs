@@ -502,7 +502,6 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       config_tracker: config_tracker,
       unique: unique
     } do
-      # Attach a telemetry handler to capture retry events
       test_pid = self()
       handler_id = "test-retry-handler-#{unique}"
 
@@ -549,6 +548,119 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
 
       # Should receive at least one retry event
       assert_received {:retry_event, %{attempt: _n}, %{mode: :same_node, type: :local}}
+    end
+
+    test "emits retry exhausted telemetry when all retries fail", %{
+      counter: counter,
+      config_tracker: config_tracker,
+      unique: unique
+    } do
+      test_pid = self()
+      handler_id = "test-retry-exhausted-handler-#{unique}"
+
+      :telemetry.attach(
+        handler_id,
+        [:phoenix_gen_api, :executor, :retry, :exhausted],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:retry_exhausted, metadata})
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach(handler_id)
+      end)
+
+      config = %FunConfig{
+        request_type: "test_retry_exhausted_tele_#{unique}",
+        service: "test_service_#{unique}",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {__MODULE__, :always_fail, [counter]},
+        arg_types: nil,
+        arg_orders: [],
+        response_type: :sync,
+        check_permission: false,
+        request_info: false,
+        retry: {:same_node, 2}
+      }
+
+      track_config(config_tracker, config)
+
+      request = %Request{
+        request_id: "test_retry_exhausted_tele_req_#{unique}",
+        request_type: "test_retry_exhausted_tele_#{unique}",
+        service: "test_service_#{unique}",
+        user_id: "user_123",
+        device_id: "device_456",
+        args: %{}
+      }
+
+      result = Executor.execute!(request)
+
+      assert result.success == false
+
+      # Should receive the exhausted event
+      assert_received {:retry_exhausted, metadata}
+      assert metadata.request_id == "test_retry_exhausted_tele_req_#{unique}"
+      # Mode reflects the original configured retry value
+      assert metadata.mode == {:same_node, 2}
+    end
+
+    test "does not emit retry exhausted when retries succeed", %{
+      counter: counter,
+      config_tracker: config_tracker,
+      unique: unique
+    } do
+      test_pid = self()
+      handler_id = "test-retry-no-exhausted-#{unique}"
+
+      :telemetry.attach(
+        handler_id,
+        [:phoenix_gen_api, :executor, :retry, :exhausted],
+        fn _event, _measurements, _metadata, _config ->
+          send(test_pid, :retry_exhausted_received)
+        end,
+        %{}
+      )
+
+      on_exit(fn ->
+        :telemetry.detach(handler_id)
+      end)
+
+      config = %FunConfig{
+        request_type: "test_no_exhausted_#{unique}",
+        service: "test_service_#{unique}",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {__MODULE__, :fail_then_succeed, [counter, 1]},
+        arg_types: nil,
+        arg_orders: [],
+        response_type: :sync,
+        check_permission: false,
+        request_info: false,
+        retry: {:same_node, 3}
+      }
+
+      track_config(config_tracker, config)
+
+      request = %Request{
+        request_id: "test_no_exhausted_req_#{unique}",
+        request_type: "test_no_exhausted_#{unique}",
+        service: "test_service_#{unique}",
+        user_id: "user_123",
+        device_id: "device_456",
+        args: %{}
+      }
+
+      result = Executor.execute!(request)
+
+      assert result.success == true
+
+      # Should NOT receive the exhausted event since retries succeeded
+      refute_received :retry_exhausted_received
     end
   end
 

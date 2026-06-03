@@ -96,6 +96,26 @@ defmodule PhoenixGenApi do
       # StreamHelper.send_last_result(stream, final_data)
       # Or: StreamHelper.send_complete(stream)
 
+  ## Channel Options
+
+  When using `use PhoenixGenApi` in a channel, the following options are available:
+
+  - `:event` (default: `"phoenix_gen_api"`) — the event name to handle.
+  - `:override_user_id` (default: `true`) — when `true`, the `user_id` from
+    `socket.assigns` is injected into the request payload, but **only** when
+    `socket.assigns.user_id` is a verified non-empty binary. This prevents a
+    client-supplied `user_id` from overriding the server-side value. The
+    `user_id` in assigns must be set by a verified authentication step in
+    `Phoenix.Socket.connect/3`, never from client payload.
+  - `:require_verified_user_id` (default: `true`) — when `true`, requests are
+    rejected immediately with `"Authentication required"` if
+    `socket.assigns.user_id` is nil or empty. This prevents unauthenticated
+    requests from reaching permission checks or function execution. Set to
+    `false` for public endpoints that use `check_permission: false`.
+
+    **Security note**: Setting this to `false` disables the early rejection of
+    unauthenticated requests. Only do this for channels that serve public data.
+
   ## Configuration
 
   Add to your `config.exs`:
@@ -725,6 +745,7 @@ defmodule PhoenixGenApi do
         ]
 
       @phoenix_gen_api_override_user_id Keyword.get(opts, :override_user_id, true)
+      @phoenix_gen_api_require_verified_user_id Keyword.get(opts, :require_verified_user_id, true)
       @phoenix_gen_api_event Keyword.get(opts, :event, "phoenix_gen_api")
 
       require Logger
@@ -752,34 +773,33 @@ defmodule PhoenixGenApi do
             payload
           end
 
-        # Wrap decode and execute in try/rescue to prevent channel crashes
-        # from malformed payloads or unhandled exceptions (e.g., PermissionDenied).
+        # When require_verified_user_id is true, reject requests immediately
+        # if socket.assigns does not contain a verified non-empty user_id.
+        # This prevents unauthenticated requests from reaching permission checks
+        # or function execution. Set to false for public endpoints.
         {reply_result, push_response} =
-          try do
-            request = PhoenixGenApi.Structs.Request.decode!(payload)
+          if @phoenix_gen_api_require_verified_user_id do
+            case Map.get(socket.assigns, :user_id) do
+              user_id when is_binary(user_id) and byte_size(user_id) > 0 ->
+                do_handle_request(payload, socket)
 
-            case PhoenixGenApi.Executor.execute!(request) do
-              %PhoenixGenApi.Structs.Response{} = result ->
-                {{:ok, request.request_type}, result}
+              _ ->
+                request_id = Map.get(payload, "request_id", "unknown")
 
-              {:ok, :no_response} ->
-                {{:ok, request.request_type}, nil}
-            end
-          rescue
-            e ->
-              request_id = Map.get(payload, "request_id", "unknown")
-
-              Logger.error(
-                "[PhoenixGenApi] request processing failed, module: #{__MODULE__}, request_id: #{inspect(request_id)}, error: #{Exception.message(e)}"
-              )
-
-              error_response =
-                PhoenixGenApi.Structs.Response.error_response(
-                  request_id,
-                  "Request processing failed"
+                Logger.warning(
+                  "[PhoenixGenApi] rejected unauthenticated request, module: #{__MODULE__}, request_id: #{inspect(request_id)}"
                 )
 
-              {{:error, Exception.message(e)}, error_response}
+                error_response =
+                  PhoenixGenApi.Structs.Response.error_response(
+                    request_id,
+                    "Authentication required"
+                  )
+
+                {{:error, "Authentication required"}, error_response}
+            end
+          else
+            do_handle_request(payload, socket)
           end
 
         if push_response do
@@ -787,6 +807,50 @@ defmodule PhoenixGenApi do
         end
 
         {:reply, reply_result, socket}
+      end
+
+      defp do_handle_request(payload, _socket) do
+        try do
+          request = PhoenixGenApi.Structs.Request.decode!(payload)
+
+          case PhoenixGenApi.Executor.execute!(request) do
+            %PhoenixGenApi.Structs.Response{} = result ->
+              {{:ok, request.request_type}, result}
+
+            {:ok, :no_response} ->
+              {{:ok, request.request_type}, nil}
+          end
+        rescue
+          e in PhoenixGenApi.Errors.DecodeError ->
+            request_id = Map.get(payload, "request_id", "unknown")
+
+            Logger.warning(
+              "[PhoenixGenApi] decode error, module: #{__MODULE__}, request_id: #{inspect(request_id)}, code: #{inspect(e.code)}, error: #{e.message}"
+            )
+
+            error_response =
+              PhoenixGenApi.Structs.Response.error_response(
+                request_id,
+                "Invalid request: #{e.message}"
+              )
+
+            {{:error, e.message}, error_response}
+
+          e ->
+            request_id = Map.get(payload, "request_id", "unknown")
+
+            Logger.error(
+              "[PhoenixGenApi] request processing failed, module: #{__MODULE__}, request_id: #{inspect(request_id)}, error: #{Exception.message(e)}"
+            )
+
+            error_response =
+              PhoenixGenApi.Structs.Response.error_response(
+                request_id,
+                "Request processing failed"
+              )
+
+            {{:error, Exception.message(e)}, error_response}
+        end
       end
 
       @doc false

@@ -5,6 +5,13 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   This struct holds all the necessary information to route, validate, and execute
   a function call based on an incoming request.
 
+  ## Version
+
+  The `version` field is a string (e.g., "1.0.0"). The value `"0.0.0"` is reserved
+  as a sentinel and cannot be explicitly registered — it is used internally to
+  mean "no version specified". If a config has no version set, `version/1` returns
+  `nil` and the config is stored with a `nil` version key in the cache.
+
   ## Argument Types (arg_types)
 
   The `arg_types` field supports two formats:
@@ -136,8 +143,11 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           disabled: boolean,
           retry: {:same_node, number()} | {:all_nodes, number()} | number() | nil,
           before_execute: {module(), atom()} | {module(), atom(), args :: list()} | nil,
-          after_execute: {module(), atom()} | {module(), atom(), args :: list()} | nil
+          after_execute: {module(), atom()} | {module(), atom(), args :: list()} | nil,
+          hook_timeout: pos_integer()
         }
+
+  @no_version_sentinel "0.0.0"
 
   defstruct [
     :request_type,
@@ -152,25 +162,27 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     request_info: false,
     check_permission: false,
     permission_callback: nil,
-    version: "0.0.0",
+    version: nil,
     disabled: false,
     retry: nil,
     before_execute: nil,
-    after_execute: nil
+    after_execute: nil,
+    hook_timeout: 5000
   ]
 
   @doc """
   Returns the version of the function configuration.
-  If the version is not set or missing (for backward compatibility with old configs), returns "0.0.0" as default.
+  If the version is not set, is `"0.0.0"` (reserved sentinel), or is empty,
+  returns `nil` to indicate no version was specified.
   """
-  @spec version(t()) :: String.t()
+  @spec version(t()) :: String.t() | nil
   def version(config = %__MODULE__{}) do
     case Map.get(config, :version) do
-      version when is_binary(version) and byte_size(version) > 0 ->
+      version when is_binary(version) and byte_size(version) > 0 and version != "0.0.0" ->
         version
 
       _ ->
-        "0.0.0"
+        nil
     end
   end
 
@@ -265,7 +277,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       {valid_hook?(config.before_execute),
        "before_execute must be nil or a valid {module, function} or {module, function, args} tuple"},
       {valid_hook?(config.after_execute),
-       "after_execute must be nil or a valid {module, function} or {module, function, args} tuple"}
+       "after_execute must be nil or a valid {module, function} or {module, function, args} tuple"},
+      {valid_hook_timeout?(config.hook_timeout), "hook_timeout must be a positive integer"}
     ]
 
     errors =
@@ -461,6 +474,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_permission_callback?(_), do: false
 
   @doc false
+  defp valid_version?(nil), do: true
+  defp valid_version?(@no_version_sentinel), do: false
   defp valid_version?(version) when is_binary(version) and byte_size(version) > 0, do: true
   defp valid_version?(_), do: false
 
@@ -540,4 +555,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
        when is_atom(module) and is_atom(function) and is_list(args), do: true
 
   defp valid_hook?(_), do: false
+
+  defp valid_hook_timeout?(timeout) when is_integer(timeout) and timeout > 0, do: true
+  defp valid_hook_timeout?(_), do: false
 end

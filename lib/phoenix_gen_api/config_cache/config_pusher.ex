@@ -426,6 +426,8 @@ defmodule PhoenixGenApi.ConfigPusher do
     version_function = Keyword.get(opts, :version_function)
     version_args = Keyword.get(opts, :version_args, [])
 
+    push_token = Application.get_env(:phoenix_gen_api, :push_token)
+
     %PushConfig{
       service: service,
       nodes: nodes,
@@ -436,7 +438,8 @@ defmodule PhoenixGenApi.ConfigPusher do
       args: args,
       version_module: version_module,
       version_function: version_function,
-      version_args: version_args
+      version_args: version_args,
+      push_token: push_token
     }
   end
 end

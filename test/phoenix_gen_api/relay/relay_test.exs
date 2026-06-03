@@ -519,6 +519,116 @@ defmodule PhoenixGenApi.RelayTest do
     end
   end
 
+  # ── Process Monitoring / Auto-cleanup on Channel Death ──────────
+
+  describe "process monitoring auto-cleanup" do
+    test "channel process death removes user from public group" do
+      pid_c = spawn_channel()
+      pid_u = spawn_channel()
+      :ok = Relay.create_group("mon_pub", :public, "creator", pid_c)
+      {:ok, :active} = Relay.join_group("mon_pub", "user_1", pid_u)
+
+      # Verify user is in group
+      {:ok, info} = Relay.get_group_info("mon_pub")
+      assert Map.has_key?(info.members, "user_1")
+
+      # Kill the channel process
+      Process.exit(pid_u, :kill)
+      Process.sleep(100)
+
+      # User should be auto-removed
+      {:ok, info} = Relay.get_group_info("mon_pub")
+      assert not Map.has_key?(info.members, "user_1")
+    end
+
+    test "channel process death removes user from private group" do
+      pid_c = spawn_channel()
+      pid_u = spawn_channel()
+      :ok = Relay.create_group("mon_priv", :private, "creator", pid_c)
+      {:ok, :pending} = Relay.join_group("mon_priv", "user_1", pid_u)
+
+      {:ok, info} = Relay.get_group_info("mon_priv")
+      assert Map.has_key?(info.members, "user_1")
+
+      Process.exit(pid_u, :kill)
+      Process.sleep(100)
+
+      {:ok, info} = Relay.get_group_info("mon_priv")
+      assert not Map.has_key?(info.members, "user_1")
+    end
+
+    test "channel process death removes user from strict_private group" do
+      pid_a = spawn_channel()
+      pid_m = spawn_channel()
+      :ok = Relay.create_group("mon_strict", :strict_private, "admin", pid_a)
+      {:ok, :pending} = Relay.join_group("mon_strict", "member_1", pid_m)
+      :ok = Relay.accept_member("mon_strict", "admin", "member_1")
+
+      {:ok, info} = Relay.get_group_info("mon_strict")
+      assert info.members["member_1"].status == :active
+
+      Process.exit(pid_m, :kill)
+      Process.sleep(100)
+
+      {:ok, info} = Relay.get_group_info("mon_strict")
+      assert not Map.has_key?(info.members, "member_1")
+    end
+
+    test "multiple channel deaths clean up all members" do
+      pid_c = spawn_channel()
+      pid_a = spawn_channel()
+      pid_b = spawn_channel()
+      :ok = Relay.create_group("mon_multi", :public, "creator", pid_c)
+      {:ok, :active} = Relay.join_group("mon_multi", "user_a", pid_a)
+      {:ok, :active} = Relay.join_group("mon_multi", "user_b", pid_b)
+
+      {:ok, info} = Relay.get_group_info("mon_multi")
+      assert map_size(info.members) == 3
+
+      Process.exit(pid_a, :kill)
+      Process.sleep(100)
+
+      {:ok, info} = Relay.get_group_info("mon_multi")
+      assert not Map.has_key?(info.members, "user_a")
+      assert Map.has_key?(info.members, "user_b")
+      assert Map.has_key?(info.members, "creator")
+
+      Process.exit(pid_b, :kill)
+      Process.sleep(100)
+
+      {:ok, info} = Relay.get_group_info("mon_multi")
+      assert not Map.has_key?(info.members, "user_b")
+      assert Map.has_key?(info.members, "creator")
+    end
+
+    test "killing a process not in any group does not crash RelayServer" do
+      pid = spawn_channel()
+      Process.exit(pid, :kill)
+      Process.sleep(100)
+
+      # RelayServer should still be alive
+      assert Process.whereis(PhoenixGenApi.RelayServer) != nil
+    end
+
+    test "channel death with normal exit reason still cleans up" do
+      pid_c = spawn_channel()
+      pid_u = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      :ok = Relay.create_group("mon_normal", :public, "creator", pid_c)
+      {:ok, :active} = Relay.join_group("mon_normal", "user_1", pid_u)
+
+      {:ok, info} = Relay.get_group_info("mon_normal")
+      assert Map.has_key?(info.members, "user_1")
+
+      # Normal exit
+      send(pid_u, :stop)
+      Process.sleep(100)
+
+      {:ok, info} = Relay.get_group_info("mon_normal")
+      assert not Map.has_key?(info.members, "user_1")
+    end
+  end
+
   # ── Backward Compatibility ─────────────────────────────────────
 
   describe "backward compatibility" do

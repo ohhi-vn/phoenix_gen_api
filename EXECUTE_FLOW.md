@@ -12,14 +12,20 @@ handle_in("phoenix_gen_api", payload, socket)
   │
   ├─ 2. Decode payload → Request struct
   │     └─ Request.decode!(params) via Nestru
+  │     └─ Validates payload size (default 1MB limit)
+  │     └─ Validates required fields (request_type, request_id, service)
   │     └─ Validates user_roles (filters non-binary, empty strings)
+  │     └─ On failure: raises DecodeError with structured code
+  │        (:invalid_payload or :missing_field)
   │
   ├─ 3. Execute (wrapped in try/rescue)
+  │     │
+  │     ├─ DecodeError → warning log, "Invalid request: ..." response
+  │     ├─ Other exceptions → error log, "Request processing failed" response
   │     │
   │     ├─ Executor.execute!(request)
   │     │
   │     └─ On success: push(socket, event, response)
-  │     └─ On exception: log error, return generic error response
   │
   └─ 4. {:reply, reply_result, socket}
 ```
@@ -122,8 +128,9 @@ run_before({mod, fun}, request, fun_config)
   └─ execute_hook(:before, mod, fun, [request, fun_config])
        │
        ├─ Telemetry :start
-       ├─ apply(mod, fun, args) in try/rescue
-       ├─ Telemetry :stop or :exception
+       ├─ Task.async + Task.yield(hook_timeout) with try/rescue inside task
+       ├─ Timeout: Task.shutdown(:brutal_kill) → {:error, reason}
+       ├─ Telemetry :stop or :exception (kind: :error or :timeout)
        │
        ├─ Returns {:ok, {:ok, new_request, new_fun_config}} → proceed
        ├─ Returns {:ok, {:error, reason}} → abort
@@ -310,12 +317,13 @@ do_call(request, fun_config)
   │     │     │     │     └─ {:exit, reason} → {:error, "local execution failed"}
   │     │     │     └─ not exported → {:error, :function_not_found}
   │     │     │
-  │     │     └─ apply_local_retry(result, mod, fun, args, timeout, retry_config)
+  │     │     └─ apply_local_retry(result, mod, fun, args, timeout, retry_config, request_id)
   │     │           ├─ retryable_error? && has_retry_remaining?
   │     │           │     ├─ Calculate backoff
   │     │           │     ├─ Process.sleep(backoff_ms)
   │     │           │     ├─ Emit retry telemetry
   │     │           │     └─ Recurse with {mode, n-1}
+  │     │           ├─ retryable_error? && exhausted → emit :retry, :exhausted telemetry
   │     │           └─ otherwise → return result
   │     │
   │     └─ remote service  → execute_remote_with_retry(mod, fun, args, fun_config, request, retry)
@@ -580,7 +588,9 @@ Client WebSocket
 | Local execution timeout | `Task.yield` returns nil | `{:error, "local execution timed out"}` |
 | Local MFA not found | `function_exported?` returns false | `{:error, :function_not_found}` |
 | Remote RPC fails | Fallback to next node | Last error or `"no target nodes available"` |
-| All retries exhausted | `apply_*_retry` returns last result | Error tuple propagated |
+| All retries exhausted | `apply_*_retry` returns last result + emits `:retry, :exhausted` telemetry | Error tuple propagated |
+| Hook timeout | `Task.yield` returns nil, task killed | `{:error, "hook timed out after Nms"}` |
+| Hook crash | Caught inside task, converted to error | `{:error, reason}` |
 | Worker pool full | `execute_async` returns `{:error, :queue_full}` | `"Service temporarily unavailable"` + `can_retry: true` |
 | Stream start fails | Task sends error to receiver | `"Failed to start stream"` |
 | Unexpected exception | `execute!` rescue → telemetry + reraise | Caught by channel's try/rescue → generic error |

@@ -56,6 +56,17 @@ defmodule PhoenixGenApi.WorkerPool do
   exceeds the threshold, the pool enters a degraded state and rejects new tasks
   for a cooldown period.
 
+  ## Circuit Breaker Configuration
+
+  Configure circuit breaker behavior in your `config.exs`:
+
+      config :phoenix_gen_api, :worker_pool,
+        circuit_breaker_threshold: 10,
+        circuit_breaker_cooldown: 60_000
+
+  - `circuit_breaker_threshold` - Number of consecutive failures before the circuit opens (default: 10 for pool, 5 for worker).
+  - `circuit_breaker_cooldown` - Cooldown period in milliseconds before the circuit closes (default: 60000).
+
   ## Supervision
 
   Workers are supervised and automatically restarted on failure. Failed tasks
@@ -72,8 +83,6 @@ defmodule PhoenixGenApi.WorkerPool do
   @default_pool_size 10
   @default_max_queue_size 10_000
   @default_task_timeout 30_000
-  @circuit_breaker_threshold 10
-  @circuit_breaker_cooldown 60_000
 
   defmodule State do
     @moduledoc false
@@ -353,10 +362,18 @@ defmodule PhoenixGenApi.WorkerPool do
 
   ## Circuit Breaker Functions
 
+  defp circuit_breaker_threshold do
+    Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_threshold] || 10
+  end
+
+  defp circuit_breaker_cooldown do
+    Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_cooldown] || 60_000
+  end
+
   defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
     PhoenixGenApi.WorkerPool.CircuitBreaker.circuit_open?(
       circuit_open_at,
-      @circuit_breaker_cooldown
+      circuit_breaker_cooldown()
     )
   end
 
@@ -364,7 +381,7 @@ defmodule PhoenixGenApi.WorkerPool do
     new_failures = state.consecutive_failures + 1
     new_total_failed = state.total_tasks_failed + 1
 
-    if new_failures >= @circuit_breaker_threshold and state.circuit_open_at == nil do
+    if new_failures >= circuit_breaker_threshold() and state.circuit_open_at == nil do
       Logger.warning(
         "[WorkerPool] circuit breaker opened after #{new_failures} consecutive failures, pool: #{state.pool_name}"
       )

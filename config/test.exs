@@ -8,5 +8,12 @@ config :phoenix_gen_api,
 # Print only warnings and errors during test
 config :logger, level: :warn
 
+# Enable admin actions for tests
+config :phoenix_gen_api, :admin_actions, [
+  :change_detail_error,
+  :update_rate_limit_config,
+  :push_config
+]
+
 # for test encoding Response
 config :phoenix, :json_library, JSON

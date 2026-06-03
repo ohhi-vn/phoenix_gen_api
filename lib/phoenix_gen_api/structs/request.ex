@@ -48,9 +48,34 @@ defmodule PhoenixGenApi.Structs.Request do
 
   - args: map, field -> value, arguments for request.
     Arguments for request. Using for call function in system.
+
+  ## Payload Size Validation
+
+  `decode!/1` validates the payload size before deserialization to prevent
+  memory exhaustion from oversized requests. The limit is configurable via
+  application env:
+
+      config :phoenix_gen_api, :request,
+        max_payload_bytes: 1_000_000  # default: 1MB
+
+  Use `max_payload_bytes/0` to read the current configured limit at runtime.
+
+  ## Security Considerations
+
+  - Payload size is checked **before** deserialization to prevent memory
+    exhaustion attacks where a client sends an enormous map.
+  - The default limit is **1MB** and can be configured per application needs
+    via `config :phoenix_gen_api, :request, max_payload_bytes: N`.
+  - The check uses `:erlang.external_size/1` (when available) for accurate
+    measurement without allocating the full binary. Falls back to
+    `byte_size(:erlang.term_to_binary(params))` on older Erlang/OTP releases.
+  - If the payload exceeds the limit, `decode!/1` raises an error with the
+    configured maximum and the actual measured size.
   """
 
   alias __MODULE__
+
+  alias PhoenixGenApi.Errors.DecodeError
 
   @typedoc "Request struct for internal using, convert data map from websocket api."
 
@@ -85,16 +110,83 @@ defmodule PhoenixGenApi.Structs.Request do
     version: nil
   ]
 
+  @default_max_payload_bytes 1_000_000
+
+  @doc """
+  Returns the configured maximum payload size in bytes.
+
+  Reads from `config :phoenix_gen_api, :request, max_payload_bytes`.
+  Defaults to 1MB (`#{@default_max_payload_bytes}` bytes).
+  """
+  def max_payload_bytes do
+    Application.get_env(:phoenix_gen_api, :request, [])[:max_payload_bytes] ||
+      @default_max_payload_bytes
+  end
+
   @doc """
   Create Request from params for convert data map from websocket api.
+
+  Validates payload size before deserialization. Raises if the payload
+  exceeds the configured `max_payload_bytes` limit.
   """
   def decode!(params = %{}) do
-    request = Nestru.decode!(params, Request)
+    validate_payload_size!(params)
+
+    request =
+      try do
+        Nestru.decode!(params, Request)
+      rescue
+        e in DecodeError ->
+          raise e
+
+        e ->
+          raise DecodeError,
+                code: :invalid_payload,
+                message: "Malformed request payload: #{Exception.message(e)}",
+                details: e
+      end
 
     request = %{request | args: request.args || %{}}
     request = %{request | user_roles: validate_user_roles(request.user_roles)}
 
+    validate_required_fields!(request)
+
     request
+  end
+
+  defp validate_required_fields!(request) do
+    missing =
+      []
+      |> then(&if blank?(request.request_type), do: ["request_type" | &1], else: &1)
+      |> then(&if blank?(request.request_id), do: ["request_id" | &1], else: &1)
+      |> then(&if blank?(request.service), do: ["service" | &1], else: &1)
+
+    if missing != [] do
+      fields = Enum.reverse(missing) |> Enum.join(", ")
+      raise DecodeError, code: :missing_field, message: "Missing required fields: #{fields}"
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_), do: false
+
+  defp validate_payload_size!(params) do
+    max = max_payload_bytes()
+    actual = payload_size(params)
+
+    if actual > max do
+      msg = "Request payload exceeds maximum size of #{max} bytes (got #{actual} bytes)"
+      raise DecodeError, code: :invalid_payload, message: msg
+    end
+  end
+
+  defp payload_size(params) do
+    if function_exported?(:erlang, :external_size, 1) do
+      :erlang.external_size(params)
+    else
+      params |> :erlang.term_to_binary() |> byte_size()
+    end
   end
 
   defp validate_user_roles(nil), do: nil

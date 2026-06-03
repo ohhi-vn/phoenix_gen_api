@@ -878,6 +878,7 @@ defmodule PhoenixGenApi.TelemetryTest do
         valid_config(%{
           service: "HookExceptionTest",
           request_type: "hook_exception_api",
+          version: "1.0.0",
           before_execute: {__MODULE__, :before_hook_failing}
         })
 
@@ -1068,7 +1069,7 @@ defmodule PhoenixGenApi.TelemetryTest do
       response_type: :sync,
       check_permission: false,
       request_info: false,
-      version: "0.0.0"
+      version: nil
     }
 
     struct(FunConfig, Map.merge(defaults, overrides))

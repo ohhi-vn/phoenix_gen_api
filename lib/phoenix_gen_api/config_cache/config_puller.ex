@@ -53,6 +53,18 @@ defmodule PhoenixGenApi.ConfigPuller do
   - Exponential backoff on repeated failures (up to a maximum)
   - Version check failures fall back to full pull
 
+  ## Startup Behavior
+
+  On application start, the puller loads service configurations from the application
+  env and schedules an initial pull after 1 second. If the initial pull fails (e.g.,
+  service nodes are unreachable), the puller logs a warning and continues retrying
+  with exponential backoff (up to 300_000ms between attempts).
+
+  The puller does **not** block application startup — the gateway will start even if
+  service nodes are unreachable. APIs will be registered once the first successful
+  pull completes. A recovery log message is emitted when a pull succeeds after
+  previous failures.
+
   ## Security
 
   - Validates that remote configs match the expected service name
@@ -203,8 +215,17 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   @impl true
   def handle_continue(:load_initial_data, state) do
-    Logger.debug("[ConfigPuller] loading initial data")
+    Logger.info("[ConfigPuller] loading initial data")
     new_state = load_services_from_config(state)
+
+    if map_size(new_state.services) > 0 do
+      Logger.info(
+        "[ConfigPuller] starting initial pull, services: #{inspect(Map.keys(new_state.services))}"
+      )
+    else
+      Logger.warning("[ConfigPuller] no services configured, waiting for service registration")
+    end
+
     Process.send_after(self(), :pull, 1_000)
     # Schedule sticky table cleanup every hour
     Process.send_after(self(), :cleanup_sticky, 3_600_000)
@@ -300,6 +321,12 @@ defmodule PhoenixGenApi.ConfigPuller do
 
     new_state =
       if success? do
+        if state.failure_count > 0 do
+          Logger.info(
+            "[ConfigPuller] pull recovered after #{state.failure_count} consecutive failures"
+          )
+        end
+
         %{
           state
           | api_list: new_api_list,
@@ -309,7 +336,16 @@ defmodule PhoenixGenApi.ConfigPuller do
       else
         new_failure_count = state.failure_count + 1
 
-        Logger.warning("[ConfigPuller] pull failed: failure_count=#{new_failure_count}")
+        Logger.warning(
+          "[ConfigPuller] pull failed: failure_count=#{new_failure_count}, services=#{inspect(Map.keys(state.services))}"
+        )
+
+        if new_failure_count == 1 do
+          Logger.warning(
+            "[ConfigPuller] initial pull failed — will retry per pull_interval. " <>
+              "Check that service nodes are reachable and that the config function is available."
+          )
+        end
 
         %{
           state

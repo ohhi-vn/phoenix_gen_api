@@ -3,9 +3,19 @@
 
 # PhoenixGenApi
 
-Build dynamic API gateways on top of Phoenix Channels. Register APIs at runtime from any node in the cluster — no restarts, no redeploys.
+A framework for rapidly building backend APIs on top of Phoenix Channels and Erlang clustering. Define your business logic on any node — the framework handles routing, validation, permissions, retries, and observability. No HTTP endpoints to write, no routes to configure, no restarts to deploy.
 
-**Version**: 2.16.0 | **Elixir**: ~> 1.18 | **OTP**: ~> 27 | **License**: MPL-2.0
+**Version**: 2.18.0 | **Elixir**: ~> 1.18 | **OTP**: ~> 27 | **License**: MPL-2.0
+
+## Why PhoenixGenApi?
+
+Traditional Phoenix backends require you to: define routes, write controllers, serialize responses, handle errors, and restart to deploy changes. PhoenixGenApi eliminates all of that:
+
+- **No routes, no controllers** — Clients call functions by name over WebSocket. The framework routes requests to the right node automatically.
+- **No restarts to deploy** — Register new APIs at runtime from any cluster node. The gateway picks them up instantly (push) or on the next pull interval.
+- **Built-in cross-cutting concerns** — Permissions, rate limiting, retries, circuit breakers, hooks, and telemetry come standard. No plugs, no middleware.
+- **Multi-node by default** — Erlang distribution means your APIs run across the cluster. The framework handles node selection, RPC, and failover.
+- **Real-time ready** — Async responses, streaming, and relay messages (group chat) are first-class features, not afterthoughts.
 
 ## How It Works
 
@@ -30,10 +40,12 @@ Service nodes can register new APIs at any time — the gateway picks them up au
 - **Function Versioning** — Run multiple API versions side-by-side; enable/disable per version
 - **Rate Limiting** — Sliding-window rate limiter with global and per-API limits
 - **Permission System** — Authenticated-only, argument-based, or role-based access control
-- **Retry** — Configurable retry on the same node or across all nodes
-- **Hooks** — `before_execute` / `after_execute` callbacks for cross-cutting concerns
-- **Telemetry** — 28 events across 5 categories for observability
-- **Relay Messages** — Group-based message relaying with public, private, and strict_private group types
+- **Retry** — Configurable retry on the same node or across all nodes, with exhaustion telemetry
+- **Hooks** — `before_execute` / `after_execute` callbacks with per-hook timeout protection (default 5s)
+- **Telemetry** — 31 events across 5 categories for observability
+- **Relay Messages** — Group-based message relaying with automatic cleanup on channel disconnect
+- **Circuit Breaker** — Configurable pool-level and worker-level circuit breakers
+- **Structured Errors** — `Request.decode!/1` returns structured error codes (`:invalid_payload`, `:missing_field`)
 
 ## Installation
 
@@ -195,11 +207,12 @@ That's it — you have a working API gateway.
 | `check_permission` | `false \| :any_authenticated \| {:arg, name} \| {:role, roles}` | Permission mode |
 | `permission_callback` | `{m, f, a} \| nil` | Custom permission check |
 | `request_info` | `boolean()` | Pass the full `%Request{}` as first arg to the MFA (legacy field, currently unused in execution) |
-| `version` | `String.t()` | API version (default `"0.0.0"`) |
+| `version` | `String.t() \| nil` | API version (default `nil`). `"0.0.0"` is reserved as a sentinel and cannot be explicitly registered |
 | `disabled` | `boolean()` | Disable this version without removing it |
 | `retry` | `nil \| number \| {:same_node, n} \| {:all_nodes, n}` | Retry configuration |
 | `before_execute` | `{m, f} \| {m, f, a} \| nil` | Hook called before execution |
 | `after_execute` | `{m, f} \| {m, f, a} \| nil` | Hook called after execution |
+| `hook_timeout` | `positive_integer()` | Per-hook timeout in ms (default `5_000`). Prevents misbehaving hooks from blocking requests |
 
 ### Request
 
@@ -214,7 +227,17 @@ The client payload is decoded into a `%Request{}`:
 | `service` | `String.t()` | Target service |
 | `args` | `map()` | Request arguments |
 | `user_roles` | `[String.t()] \| nil` | User roles for RBAC |
-| `version` | `String.t() \| nil` | Requested API version |
+| `version` | `String.t() \| nil` | Requested API version (nil means no version specified) |
+
+`Request.decode!/1` validates the payload before deserialization:
+
+- **Payload size** is checked before deserialization (default limit: 1MB, configurable via `config :phoenix_gen_api, :request, max_payload_bytes: N`)
+- **Required fields** (`request_type`, `request_id`, `service`) must be present and non-empty
+- On failure, raises `PhoenixGenApi.Errors.DecodeError` with a structured `:code`:
+  - `:invalid_payload` — malformed data or oversized payload
+  - `:missing_field` — one or more required fields are missing
+
+The `use PhoenixGenApi` channel macro distinguishes these client errors from internal errors in its `rescue` block, returning `"Invalid request: ..."` for decode errors and `"Request processing failed"` for unexpected exceptions.
 
 ### Response
 
@@ -260,6 +283,8 @@ config :phoenix_gen_api, :gen_api,
 | `pull_interval` | `integer` | `30_000` | Interval in ms between automatic pulls |
 | `detail_error` | `boolean` | `false` | Include detailed error messages in responses |
 | `service_configs` | `[map()]` | `[]` | List of service configurations for pull mode |
+| `circuit_breaker_threshold` | `integer` | `10` | Pool-level consecutive failures before circuit opens (worker default: 5) |
+| `circuit_breaker_cooldown` | `integer` | `60_000` | Cooldown in ms before circuit closes |
 
 Each `service_config` map supports:
 
@@ -283,6 +308,8 @@ config :phoenix_gen_api, :client_mode, true
 ```
 
 When `client_mode: true`, the application starts with an empty supervision tree and no ETS tables. This is the standard setting for service/worker nodes that push configs to the gateway.
+
+**Pull startup behavior:** On application start, the `ConfigPuller` schedules an initial pull after 1 second. If the initial pull fails (service nodes unreachable), it logs a warning and retries with exponential backoff (up to 300s). The gateway starts even if service nodes are down — APIs register on first successful pull.
 
 Define a supporter module that returns `FunConfig` lists:
 
@@ -435,7 +462,7 @@ Clients request a specific version:
 }
 ```
 
-If no `version` is sent, `"0.0.0"` is used. Use `ConfigDb.get_latest/2` to resolve the highest enabled version.
+If no `version` is sent, `nil` is used. The value `"0.0.0"` is reserved as a sentinel meaning "no version specified" and cannot be explicitly registered as a version. Use `ConfigDb.get_latest/2` to resolve the highest enabled version.
 
 ### Managing Versions
 
@@ -465,9 +492,10 @@ ConfigDb.get_all_functions()
 
 - Disabled versions return `{:error, :disabled}`
 - Non-existent versions return `{:error, :not_found}`
-- `get_latest/2` returns the highest enabled version number (sorted lexicographically)
+- `get_latest/2` returns the highest enabled version number (sorted semantically via `Version.compare/2`). Nil-version configs are always skipped.
+- `get_fast/2` is an optimized lookup: returns the sole matching config directly, or the latest versioned config when multiple exist. Nil-version configs are returned when they are the sole match but excluded from "latest" resolution when versioned configs exist.
 - Disabling one version does not affect others
-- `get_fast/2` is an optimized lookup that returns the first matching config without version resolution
+- The value `"0.0.0"` is reserved — configs with this version are stored with a `nil` version key
 
 ---
 
@@ -608,7 +636,8 @@ Muted members in `:strict_private` groups can **receive** messages but cannot **
 ### Architecture
 
 - **ETS table** (`:phoenix_gen_api_relay_groups`) stores group metadata: type, members, roles, status.
-- **Registry** (`PhoenixGenApi.RelayRegistry`) with `:duplicate` keys maps `group_id` → `{user_id, channel_pid}` for dispatching messages to channel processes.
+- **Registry** (`PhoenixGenApi.RelayRegistry`) with `:duplicate` keys maps `group_id` to `{user_id, channel_pid}` for dispatching.
+- **Process monitoring** — `RelayServer` monitors channel processes on join. When a channel dies, membership is auto-cleaned.
 
 ### Example FunConfig Setup
 
@@ -740,11 +769,13 @@ For `nodes: :local`, both `:same_node` and `:all_nodes` retry locally.
 
 Retry attempts emit telemetry at `[:phoenix_gen_api, :executor, :retry]` with metadata including `mode` (`:same_node` or `:all_nodes`), `type` (`:local` or `:remote`), and the current `attempt` number in measurements.
 
+When all retry attempts are exhausted, a `[:phoenix_gen_api, :executor, :retry, :exhausted]` event is emitted with the original retry configuration and the final error. This event is emitted for both local and remote retries.
+
 ---
 
 ## Telemetry
 
-30 events across 5 categories:
+31 events across 5 categories:
 
 | Category | Events | Description |
 |---|---|---|
@@ -840,9 +871,15 @@ PhoenixGenApi.pushed_services_status()  # Pushed services status
 
 ## Related Packages
 
-- [EasyRpc](https://hex.pm/packages/easy_rpc) — Simplified RPC calls in an Elixir cluster
-- [ClusterHelper](https://hex.pm/packages/cluster_helper) — Cluster node discovery and management
-- [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) — Auto-generate FunConfig from Ash resources
+All packages in the PhoenixGenApi ecosystem:
+
+| Package | Description |
+|---|---|
+| [PhoenixGenApi](https://hex.pm/packages/phoenix_gen_api) | Core library — dynamic API gateway over Phoenix Channels |
+| [EasyRpc](https://hex.pm/packages/easy_rpc) | Wrap RPC calls from remote nodes so they can be used like local functions. Simplifies exposing remote functions as local APIs |
+| [ClusterHelper](https://hex.pm/packages/cluster_helper) | Dynamic cluster node discovery. Map nodes to roles or IDs and select nodes by role/ID |
+| [ToonEx](https://hex.pm/packages/toon_ex) | TOON encoder/decoder for Elixir — a compact binary protocol for Phoenix Channels. TOON-to-JSON converter for efficient WebSocket transport |
+| [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) | Ash extension that auto-generates `FunConfig` definitions from Ash resources |
 
 ## AI Agent Support
 

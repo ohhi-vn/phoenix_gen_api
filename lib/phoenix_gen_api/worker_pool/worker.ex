@@ -26,6 +26,17 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   the worker enters a "circuit open" state and rejects new tasks for a
   cooldown period. This prevents cascading failures when downstream
   services are unhealthy.
+
+  ## Circuit Breaker Configuration
+
+  Configure circuit breaker behavior in your `config.exs`:
+
+      config :phoenix_gen_api, :worker_pool,
+        circuit_breaker_threshold: 10,
+        circuit_breaker_cooldown: 60_000
+
+  - `circuit_breaker_threshold` - Number of consecutive failures before the circuit opens (default: 10 for pool, 5 for worker).
+  - `circuit_breaker_cooldown` - Cooldown period in milliseconds before the circuit closes (default: 60000).
   """
 
   use GenServer
@@ -33,8 +44,6 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   require Logger
 
   @default_task_timeout 30_000
-  @circuit_breaker_threshold 5
-  @circuit_breaker_cooldown 60_000
 
   defmodule State do
     @moduledoc false
@@ -315,17 +324,25 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
   ## Circuit Breaker Functions
 
+  defp circuit_breaker_threshold do
+    Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_threshold] || 5
+  end
+
+  defp circuit_breaker_cooldown do
+    Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_cooldown] || 60_000
+  end
+
   defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
     PhoenixGenApi.WorkerPool.CircuitBreaker.circuit_open?(
       circuit_open_at,
-      @circuit_breaker_cooldown
+      circuit_breaker_cooldown()
     )
   end
 
   defp record_failure(state) do
     new_failures = state.consecutive_failures + 1
 
-    if new_failures >= @circuit_breaker_threshold do
+    if new_failures >= circuit_breaker_threshold() do
       Logger.warning(
         "[Worker] circuit breaker opened after #{new_failures} consecutive failures, pool: #{inspect(state.pool_name)}"
       )

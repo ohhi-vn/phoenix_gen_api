@@ -622,9 +622,16 @@ defmodule PhoenixGenApi.RateLimiter do
         ]
       })
   """
-  @spec update_config(map()) :: :ok
+  @spec update_config(map()) :: :ok | {:error, :admin_action_denied}
   def update_config(config) when is_map(config) do
-    broadcast_to_all_instances({:update_config, config})
+    with true <- PhoenixGenApi.Security.admin_action_allowed?(:update_rate_limit_config),
+         true <-
+           !Map.has_key?(config, :detail_error) or
+             PhoenixGenApi.Security.admin_action_allowed?(:change_detail_error) do
+      broadcast_to_all_instances({:update_config, config})
+    else
+      false -> {:error, :admin_action_denied}
+    end
   end
 
   @doc """

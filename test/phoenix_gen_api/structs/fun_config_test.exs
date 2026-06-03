@@ -515,17 +515,17 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       assert FunConfig.version(config) == "1.0.0"
     end
 
-    test "returns default 0.0.0 when version is empty string" do
+    test "returns nil when version is empty string" do
       config = %FunConfig{version: ""}
-      assert FunConfig.version(config) == "0.0.0"
+      assert FunConfig.version(config) == nil
     end
 
-    test "returns default 0.0.0 when version is nil" do
+    test "returns nil when version is nil" do
       config = %FunConfig{version: nil}
-      assert FunConfig.version(config) == "0.0.0"
+      assert FunConfig.version(config) == nil
     end
 
-    test "returns default 0.0.0 for old configs without :version key" do
+    test "returns nil for old configs without :version key" do
       config =
         struct(FunConfig, %{
           request_type: "test",
@@ -543,7 +543,141 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
 
       config_without_version = Map.delete(config, :version)
       refute Map.has_key?(config_without_version, :version)
-      assert FunConfig.version(config_without_version) == "0.0.0"
+      assert FunConfig.version(config_without_version) == nil
+    end
+
+    test "returns nil for reserved sentinel version 0.0.0" do
+      config = %FunConfig{version: "0.0.0"}
+      assert FunConfig.version(config) == nil
+    end
+  end
+
+  describe "version sentinel 0.0.0" do
+    test "valid? rejects explicit 0.0.0 version" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        version: "0.0.0"
+      }
+
+      assert FunConfig.valid?(fun) == false
+    end
+
+    test "valid? accepts nil version" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        version: nil
+      }
+
+      assert FunConfig.valid?(fun) == true
+    end
+
+    test "valid? accepts proper semver version" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        version: "1.0.0"
+      }
+
+      assert FunConfig.valid?(fun) == true
+    end
+  end
+
+  describe "hook_timeout validation" do
+    test "valid hook_timeout as positive integer" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        hook_timeout: 5000
+      }
+
+      assert FunConfig.valid?(fun) == true
+    end
+
+    test "valid hook_timeout with custom value" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        hook_timeout: 10_000
+      }
+
+      assert FunConfig.valid?(fun) == true
+    end
+
+    test "invalid hook_timeout with zero" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        hook_timeout: 0
+      }
+
+      assert FunConfig.valid?(fun) == false
+    end
+
+    test "invalid hook_timeout with negative value" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        hook_timeout: -1
+      }
+
+      assert FunConfig.valid?(fun) == false
+    end
+
+    test "invalid hook_timeout with non-integer" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        response_type: :async,
+        hook_timeout: "fast"
+      }
+
+      assert FunConfig.valid?(fun) == false
+    end
+
+    test "default hook_timeout is 5000" do
+      fun = %FunConfig{}
+      assert fun.hook_timeout == 5000
     end
   end
 

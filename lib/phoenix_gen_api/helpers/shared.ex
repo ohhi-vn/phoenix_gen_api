@@ -80,9 +80,10 @@ defmodule PhoenixGenApi.Helpers.Shared do
   end
 
   @doc """
-  Ensures a FunConfig has a version string, defaulting to "0.0.0".
+  Ensures a FunConfig has a version string, defaulting to `nil`.
 
-  If the FunConfig's version is nil or empty, sets it to "0.0.0".
+  If the FunConfig's version is nil, empty, or the reserved sentinel `"0.0.0"`,
+  sets it to `nil` to indicate no version was specified.
 
   ## Parameters
 
@@ -90,19 +91,19 @@ defmodule PhoenixGenApi.Helpers.Shared do
 
   ## Returns
 
-  The FunConfig with a guaranteed version string.
+  The FunConfig with a valid version string or `nil`.
   """
   @spec ensure_version(FunConfig.t()) :: FunConfig.t()
   def ensure_version(config = %FunConfig{}) do
     if Map.has_key?(config, :version) and is_binary(config.version) and
-         byte_size(config.version) > 0 do
+         byte_size(config.version) > 0 and config.version != "0.0.0" do
       config
     else
       Logger.debug(
-        "[Shared] adding default version \"0.0.0\" to config, request_type: #{inspect(config.request_type)}"
+        "[Shared] no version set for config, request_type: #{inspect(config.request_type)}, using nil (no version)"
       )
 
-      %FunConfig{config | version: "0.0.0"}
+      %FunConfig{config | version: nil}
     end
   end
 

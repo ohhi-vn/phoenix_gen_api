@@ -111,6 +111,20 @@ defmodule PhoenixGenApi.Permission do
   - Permission checks happen before argument validation and function execution
   - All permission failures are logged for audit purposes
   - Use specific permission modes rather than `false` when possible
+
+  ### Securing `{:arg, arg_name}` Against user_id Override
+
+  When using `{:arg, arg_name}`, the `user_id` in `socket.assigns` **must** be set
+  by a verified authentication step in `Phoenix.Socket.connect/3` — never from
+  client payload. The `override_user_id` channel option (default `true`) only
+  applies when `socket.assigns.user_id` is a verified non-empty string; it will
+  **NOT** override with a client-supplied `user_id`.
+
+  Use `require_verified_user_id: true` (the default) in your channel to reject
+  unauthenticated requests **before** they reach permission checks. This prevents
+  requests with no verified `user_id` from ever entering the execution pipeline.
+  Set `require_verified_user_id: false` only for public endpoints that use
+  `check_permission: false`.
   """
 
   alias PhoenixGenApi.Structs.{FunConfig, Request}
@@ -218,10 +232,17 @@ defmodule PhoenixGenApi.Permission do
   end
 
   # Fallback for {:arg, ...} when user_id is nil or empty
-  def check_permission(%Request{}, %FunConfig{
+  def check_permission(%Request{user_id: user_id} = request, %FunConfig{
         permission_callback: nil,
-        check_permission: {:arg, _arg_name}
+        check_permission: {:arg, arg_name}
       }) do
+    Logger.warning(
+      "[Permission] {:arg, #{inspect(arg_name)}} check with nil/empty user_id - " <>
+        "this usually means the socket was not authenticated. " <>
+        "Consider using require_verified_user_id: true in your channel. " <>
+        "user_id: #{inspect(user_id)}, request_id: #{inspect(request.request_id)}"
+    )
+
     false
   end
 
