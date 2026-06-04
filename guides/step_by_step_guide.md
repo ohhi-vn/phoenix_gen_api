@@ -276,6 +276,7 @@ PhoenixGenApi validates every argument before calling your function. Two formats
 | `:list_string` | List of strings |
 | `:list_num` | List of numbers |
 | `:list_uuid` | List of UUIDs |
+| `:list_map` | List of maps |
 | `:map` | String-keyed map |
 | `:any` | Skip type checking |
 

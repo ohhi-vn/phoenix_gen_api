@@ -27,6 +27,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
         "age" => [type: :num, default_value: 18],
         "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100],
         "scores" => [type: :list_num, max_items: 50],
+        "gps_list" => [type: :list_map, max_items: 100],
         "metadata" => [type: :map, max_items: 200, required: ["name"], accept: ["name", "email", "age"]]
       }
 
@@ -53,6 +54,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   - **`:list`**: `max_items:` (default 1000)
   - **`:list_string`**: `max_items:` (default 1000), `max_item_bytes:` (default 3000)
   - **`:list_num`**: `max_items:` (default 1000)
+  - **`:list_map`**: `max_items:` (default 1000)
   - **`:map`**: `max_items:` (default 1000), `required:` (list of required key names), `accept:` (list of accepted key names — any key not in this list causes an error)
 
   ## Size Limits (Defaults)
@@ -166,6 +168,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
         :list -> [max_items: value]
         :list_string -> [max_items: value]
         :list_num -> [max_items: value]
+        :list_map -> [max_items: value]
         :map -> [max_items: value]
         _ -> []
       end
@@ -218,6 +221,11 @@ defmodule PhoenixGenApi.ArgumentHandler do
   defp build_type_with_params(:list_uuid, params) do
     max_items = Keyword.get(params, :max_items, list_max_items())
     {:list_uuid, [max_items: max_items]}
+  end
+
+  defp build_type_with_params(:list_map, params) do
+    max_items = Keyword.get(params, :max_items, list_max_items())
+    {:list_map, [max_items: max_items]}
   end
 
   defp build_type_with_params(type, _params), do: type
@@ -683,6 +691,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
     end)
   end
 
+  defp validate_simple_type!(:list_map, value, name, request) do
+    validate_list_size!(name, value, list_max_items(), request.request_type, request.request_id)
+
+    arg_list_validation!(value, fn item ->
+      is_map(item)
+    end)
+  end
+
   defp validate_complex_type!(:string, [max_bytes: max_bytes], value, name, _request) do
     validate_string_size!(value, name, max_bytes)
   end
@@ -716,6 +732,14 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
     arg_list_validation!(value, fn item ->
       is_binary(item) and Uniq.UUID.valid?(item)
+    end)
+  end
+
+  defp validate_complex_type!(:list_map, [max_items: max_items], value, name, request) do
+    validate_list_size!(name, value, max_items, request.request_type, request.request_id)
+
+    arg_list_validation!(value, fn item ->
+      is_map(item)
     end)
   end
 
@@ -1021,6 +1045,38 @@ defmodule PhoenixGenApi.ArgumentHandler do
         x
       else
         raise InvalidType, x
+      end
+    end)
+
+    arg
+  end
+
+  defp convert_arg!(arg, {:list_map, [max_items: max_items]}) when is_list(arg) do
+    if length(arg) > max_items do
+      raise ArgumentError, "list_map argument exceeds max items of #{max_items}"
+    end
+
+    Enum.each(arg, fn item ->
+      if is_map(item) do
+        item
+      else
+        raise InvalidType, item
+      end
+    end)
+
+    arg
+  end
+
+  defp convert_arg!(arg, :list_map) when is_list(arg) do
+    if length(arg) > list_max_items() do
+      raise ArgumentError, "list_map argument exceeds max items of #{list_max_items()}"
+    end
+
+    Enum.each(arg, fn item ->
+      if is_map(item) do
+        item
+      else
+        raise InvalidType, item
       end
     end)
 

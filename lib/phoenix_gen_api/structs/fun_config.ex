@@ -30,6 +30,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
         "user_id" => [type: :string, max_bytes: 255, allow_nil?: true],
         "age" => [type: :num, default_value: 18],
         "tags" => [type: :list_string, max_items: 10, max_item_bytes: 100],
+        "gps_list" => [type: :list_map, max_items: 100],
         "metadata" => [type: :map, max_items: 200, required: ["name"], accept: ["name", "email", "age"]]
       }
 
@@ -496,6 +497,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
       :list_string,
       :list_num,
       :list_uuid,
+      :list_map,
       :map,
       :any,
       :uuid
@@ -513,6 +515,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           :list_string,
           :list_num,
           :list_uuid,
+          :list_map,
           :map,
           :any,
           :uuid
@@ -534,6 +537,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
              :list_string,
              :list_num,
              :list_uuid,
+             :list_map,
              :map,
              :any,
              :uuid

@@ -216,6 +216,38 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       assert true == FunConfig.valid?(fun)
     end
 
+    test "valid with :list_map type in simple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"items" => :list_map},
+        arg_orders: ["items"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :list_map type with max_items" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"items" => [type: :list_map, max_items: 50]},
+        arg_orders: ["items"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
     test "valid with mixed uuid types" do
       fun = %FunConfig{
         request_type: "test",
@@ -1411,6 +1443,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
           "list_str" => [type: :list_string],
           "list_num" => [type: :list_num],
           "list_uuid" => [type: :list_uuid],
+          "list_map" => [type: :list_map],
           "uuid" => [type: :uuid],
           "map" => [type: :map],
           "any" => [type: :any]
@@ -1422,6 +1455,7 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
           "list_str",
           "list_num",
           "list_uuid",
+          "list_map",
           "uuid",
           "map",
           "any"
@@ -1446,7 +1480,9 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
           "simple_uuid" => :uuid,
           "ext_uuid" => [type: :uuid, allow_nil?: true],
           "simple_list" => :list_uuid,
-          "ext_list" => [type: :list_uuid, max_items: 50]
+          "ext_list" => [type: :list_uuid, max_items: 50],
+          "simple_map_list" => :list_map,
+          "ext_map_list" => [type: :list_map, max_items: 200]
         },
         arg_orders: [
           "simple_str",
@@ -1454,7 +1490,9 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
           "simple_uuid",
           "ext_uuid",
           "simple_list",
-          "ext_list"
+          "ext_list",
+          "simple_map_list",
+          "ext_map_list"
         ],
         response_type: :async
       }
