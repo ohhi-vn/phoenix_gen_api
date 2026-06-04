@@ -594,3 +594,11 @@ Client WebSocket
 | Worker pool full | `execute_async` returns `{:error, :queue_full}` | `"Service temporarily unavailable"` + `can_retry: true` |
 | Stream start fails | Task sends error to receiver | `"Failed to start stream"` |
 | Unexpected exception | `execute!` rescue → telemetry + reraise | Caught by channel's try/rescue → generic error |
+
+---
+
+## What's Next
+
+- **[Architecture Guide](./architecture.md)** — Deep dive into each subsystem referenced in this flow.
+- **[Step-by-Step Guide](./step_by_step_guide.md)** — Code examples for each feature.
+- **[README](../README.md)** — Full configuration reference.

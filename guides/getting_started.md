@@ -407,76 +407,6 @@ PhoenixGenApi.Executor.execute!(request)
 
 ---
 
-## Step 6 — Add Relay Messages
-
-Enable group-based chat where all members receive each other's messages.
-
-### Add the relay FunConfig
-
-```elixir
-# In your gateway's config or supporter module
-alias PhoenixGenApi.Structs.FunConfig
-
-relay_config = %FunConfig{
-  request_type: "send_message",
-  service: "chat_service",
-  nodes: :local,
-  mfa: {PhoenixGenApi.Relay, :handle_relay, []},
-  arg_types: %{"group_id" => :string, "message" => :string},
-  arg_orders: ["group_id", "message"],
-  response_type: :sync,
-  check_permission: :any_authenticated
-}
-
-PhoenixGenApi.ConfigDb.add(relay_config)
-```
-
-### Create a chat channel
-
-```elixir
-# my_gateway/lib/my_gateway_web/channels/chat_channel.ex
-defmodule MyGatewayWeb.ChatChannel do
-  use Phoenix.Channel
-  use PhoenixGenApi, event: "chat"
-
-  def join("chat:" <> group_id, _payload, socket) do
-    # Auto-join the relay group when joining the channel
-    PhoenixGenApi.Relay.join_group(group_id, socket.assigns.user_id, self())
-    {:ok, socket}
-  end
-
-  def handle_info({:relay_message, response}, socket) do
-    push(socket, "chat", response.result)
-    {:noreply, socket}
-  end
-end
-```
-
-### Test in IEx
-
-```elixir
-# Create a group
-PhoenixGenApi.Relay.create_group("room_1", :public, "admin", some_pid)
-
-# Send a relay message
-alias PhoenixGenApi.Structs.Request
-
-request = %Request{
-  request_id: "msg_1",
-  service: "chat_service",
-  request_type: "send_message",
-  user_id: "admin",
-  args: %{"group_id" => "room_1", "message" => "Hello!"}
-}
-
-PhoenixGenApi.Executor.execute!(request)
-# => %Response{success: true, result: %{"status" => "relayed", "recipients_count" => 1}}
-```
-
-See the [Relay Messages Guide](./relay_messages.md) for the full reference including group types (`:public`, `:private`, `:strict_private`), mute/unmute, and the permission matrix.
-
----
-
 ## What's Next
 
 - **Add permissions** — set `check_permission: :any_authenticated` on your `FunConfig` and pass `user_id` from the socket
@@ -489,4 +419,11 @@ See the [Relay Messages Guide](./relay_messages.md) for the full reference inclu
 - **Relay messages** — see the [Relay Messages Guide](./relay_messages.md) for group-based messaging
 - **Hooks** — add `before_execute` / `after_execute` callbacks for cross-cutting concerns
 
-See the [README](../README.md) for the full feature reference and the [Telemetry Guide](./telemetry.md) for observability.
+📖 **Continue learning:**
+- [Step-by-Step Guide](./step_by_step_guide.md) — every feature with code examples
+- [FunConfig Reference](./fun_config.md) — field-by-field reference for the central config struct
+- [Configuration](./configuration.md) — full application config reference
+- [Architecture Guide](./architecture.md) — deep dive into all subsystems
+- [Execute Flow](./execute_flow.md) — line-by-line request execution walkthrough
+- [Relay Messages Guide](./relay_messages.md) — group-based messaging reference
+- [Telemetry Guide](./telemetry.md) — complete event reference and integration patterns

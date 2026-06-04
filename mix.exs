@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.MixProject do
   def project do
     [
       app: :phoenix_gen_api,
-      version: "2.18.0",
+      version: "2.18.1",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -93,13 +93,21 @@ defmodule PhoenixGenApi.MixProject do
         |> Enum.map_join(" ", &String.capitalize/1)
         |> case do
           "F A Q" -> "FAQ"
+          "Execute Flow" -> "Execute Flow"
+          "Getting Started" -> "Getting Started"
+          "Step By Step Guide" -> "Step-by-Step Guide"
+          "Relay Messages" -> "Relay Messages"
+          "Telemetry" -> "Telemetry"
+          "Architecture" -> "Architecture"
+          "Configuration" -> "Configuration"
+          "Fun Config" -> "FunConfig Reference"
           no_change -> no_change
         end
 
       {String.to_atom(path),
        [
          title: title,
-         default: title == "Guide"
+         default: title == "Getting Started"
        ]}
     end)
   end

@@ -1083,3 +1083,11 @@ iex> PhoenixGenApi.Telemetry.list_events()
   [:phoenix_gen_api, :config, :enable]
 ]
 ```
+
+---
+
+## What's Next
+
+- **[Step-by-Step Guide](./step_by_step_guide.md)** — Telemetry setup with code examples (Section 14).
+- **[Architecture Guide](./architecture.md)** — Telemetry events emitted by each subsystem (Section 14).
+- **[README](../README.md)** — Telemetry quick start and event categories.

@@ -360,3 +360,12 @@ channel.on("chat", (payload) => {
 - **Re-join deduplication**: When a user re-joins (e.g. from `:muted` to `:pending`), `Registry.unregister_match/3` is called first to prevent duplicate Registry entries.
 - **Process monitoring**: `RelayServer` calls `Process.monitor(channel_pid)` on every successful join. When a monitored channel process dies (crash, client disconnect, normal exit), the `handle_info({:DOWN, ...})` callback automatically calls `Relay.do_leave_group/2` to clean up both the ETS entry and the Registry entry. This prevents dead PIDs from accumulating in the Registry.
 - **Monitor cleanup**: On explicit `leave_group`, the monitor reference is demonitored and removed from the `RelayServer` state map via `Process.demonitor(ref, [:flush])`.
+
+---
+
+## What's Next
+
+- **[Step-by-Step Guide](./step_by_step_guide.md)** — Relay setup with code examples (Section 12).
+- **[Architecture Guide](./architecture.md)** — Relay system architecture deep dive (Section 11).
+- **[Execute Flow](./execute_flow.md)** — How relay messages flow through the executor.
+- **[README](../README.md)** — Full feature reference.
