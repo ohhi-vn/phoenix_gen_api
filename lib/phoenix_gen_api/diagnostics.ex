@@ -884,10 +884,12 @@ defmodule PhoenixGenApi.Diagnostics do
   end
 
   defp node_check do
+    alive? = Node.alive?()
+
     %{
-      status: :ok,
+      status: if(alive?, do: :ok, else: :error),
       node: Node.self(),
-      alive?: Node.alive?(),
+      alive?: alive?,
       connected_nodes: Node.list()
     }
   end
@@ -908,7 +910,8 @@ defmodule PhoenixGenApi.Diagnostics do
         async_pool: process_check(:async_pool),
         stream_pool: process_check(:stream_pool),
         rate_limiter_supervisor: process_check(:rate_limiter_supervisor),
-        rate_limiter_instances: rate_limiter_health()
+        rate_limiter_instances: rate_limiter_health(),
+        supervision_tree: supervision_tree_check()
       }
 
       %{status: overall_status(checks), mode: :gateway, checks: checks}
@@ -989,31 +992,99 @@ defmodule PhoenixGenApi.Diagnostics do
   end
 
   defp rate_limiter_health do
-    if Process.whereis(:rate_limiter_supervisor) do
-      status = RateLimiter.status()
+    supervisor_name = :rate_limiter_supervisor
 
-      if status.instance_count > 0 do
-        %{status: :ok, instance_count: status.instance_count}
-      else
-        %{status: :error, instance_count: 0}
-      end
-    else
-      %{status: :error, reason: :not_started}
+    case Process.whereis(supervisor_name) do
+      nil ->
+        %{status: :error, reason: :not_registered}
+
+      _pid ->
+        instance_count = RateLimiter.instance_count()
+
+        if instance_count > 0 do
+          alive_instances =
+            0..(instance_count - 1)
+            |> Enum.filter(fn i ->
+              name = :"rate_limiter_instance_#{i}"
+              Process.whereis(name) != nil && Process.alive?(Process.whereis(name))
+            end)
+            |> length()
+
+          if alive_instances == instance_count do
+            %{status: :ok, instance_count: instance_count, alive_instances: alive_instances}
+          else
+            %{
+              status: :degraded,
+              instance_count: instance_count,
+              alive_instances: alive_instances,
+              reason: :partial_failure
+            }
+          end
+        else
+          %{status: :ok, instance_count: 0, reason: :no_limits_configured}
+        end
     end
   end
 
   defp process_check(name) do
     case Process.whereis(name) do
       nil ->
-        %{status: :error, registered_name: inspect(name), pid: nil}
+        %{status: :error, registered_name: inspect(name), pid: nil, reason: :not_registered}
 
       pid ->
-        %{
-          status: :ok,
-          registered_name: inspect(name),
-          pid: pid,
-          process: process_summary(pid, false)
-        }
+        case :erlang.process_info(pid, :status) do
+          :undefined ->
+            %{
+              status: :error,
+              registered_name: inspect(name),
+              pid: pid,
+              reason: :not_alive
+            }
+
+          _ ->
+            summary = process_summary(pid, false)
+
+            if summary do
+              %{
+                status: :ok,
+                registered_name: inspect(name),
+                pid: pid,
+                process: summary
+              }
+            else
+              %{
+                status: :error,
+                registered_name: inspect(name),
+                pid: pid,
+                reason: :not_alive
+              }
+            end
+        end
+    end
+  end
+
+  defp supervision_tree_check do
+    supervisor = PhoenixGenApi.Supervisor
+
+    case Process.whereis(supervisor) do
+      nil ->
+        %{status: :error, reason: :supervisor_not_found}
+
+      _pid ->
+        children = Supervisor.which_children(supervisor)
+        running = Enum.count(children, fn {_, pid, _, _} -> is_pid(pid) end)
+        total = length(children)
+
+        if running == total do
+          %{status: :ok, children_count: total}
+        else
+          %{
+            status: :degraded,
+            children_count: total,
+            running: running,
+            reason: :partial_failure
+          }
+        end
     end
   end
 

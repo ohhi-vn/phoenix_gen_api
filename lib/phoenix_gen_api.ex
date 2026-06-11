@@ -688,9 +688,27 @@ defmodule PhoenixGenApi do
         IO.puts("  Processes:")
 
         Enum.each(checks, fn {name, check} ->
-          icon = if check.status == :ok, do: "✅", else: "❌"
+          icon =
+            case check.status do
+              :ok -> "✅"
+              :degraded -> "⚠️ "
+              :error -> "❌"
+            end
+
           pid_str = if check[:pid], do: "#{inspect(check[:pid])}", else: "N/A"
-          extra = if check[:instance_count], do: "  instances=#{check[:instance_count]}", else: ""
+
+          extra =
+            cond do
+              Map.has_key?(check, :instance_count) and Map.has_key?(check, :alive_instances) ->
+                "  alive=#{check[:alive_instances]}/#{check[:instance_count]}"
+              Map.has_key?(check, :instance_count) ->
+                "  instances=#{check[:instance_count]}"
+              check[:reason] ->
+                "  reason=#{check[:reason]}"
+              true ->
+                ""
+            end
+
           IO.puts("    #{icon} #{name}  pid=#{pid_str}#{extra}")
         end)
 
