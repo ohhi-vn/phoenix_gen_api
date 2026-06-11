@@ -147,7 +147,8 @@ defmodule PhoenixGenApi.NodeSelectorTest do
         choose_node_mode: :random
       }
 
-      assert {:error, {:dynamic_node_resolution_failed, _}} = NodeSelector.get_node(config, request)
+      assert {:error, {:dynamic_node_resolution_failed, _}} =
+               NodeSelector.get_node(config, request)
     end
 
     test "returns error when nodes list is empty", %{request: request} do

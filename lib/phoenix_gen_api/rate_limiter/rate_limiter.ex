@@ -557,7 +557,16 @@ defmodule PhoenixGenApi.RateLimiter do
     :ok
   end
 
+  defp ets_table_info(table) do
+    case :ets.info(table) do
+      :undefined -> %{exists: false}
+      info when is_list(info) -> info |> Map.new() |> Map.put(:exists, true)
+      other -> %{exists: true, info: other}
+    end
+  end
+
   @doc """
+  Updates rate limit configuration at runtime.
   Adds a single global rate limit at runtime.
 
   If a limit with the same `:key` already exists, it will be replaced.
@@ -632,6 +641,26 @@ defmodule PhoenixGenApi.RateLimiter do
     else
       false -> {:error, :admin_action_denied}
     end
+  end
+
+  @doc """
+  Returns a status snapshot for all rate limiter instances.
+  """
+  @spec status() :: map()
+  def status() do
+    instance_count = instance_count()
+
+    statuses =
+      if instance_count > 0 do
+        for i <- 0..(instance_count - 1) do
+          instance = instance_name(i)
+          GenServer.call(instance, :status)
+        end
+      else
+        []
+      end
+
+    %{status: :ok, instance_count: instance_count, instances: statuses}
   end
 
   @doc """
@@ -755,6 +784,21 @@ defmodule PhoenixGenApi.RateLimiter do
     :ets.delete_all_objects(:rate_limiter_global)
     :ets.delete_all_objects(:rate_limiter_api)
     {:reply, :ok, state}
+  end
+
+  def handle_call(:status, _from, state) do
+    {:reply,
+     %{
+       status: :ok,
+       instance_index: state.instance_index,
+       global_limits: state.global_limits,
+       api_limits: state.api_limits,
+       cleanup_interval: state.cleanup_interval,
+       ets: %{
+         global: ets_table_info(:rate_limiter_global),
+         api: ets_table_info(:rate_limiter_api)
+       }
+     }, state}
   end
 
   def handle_call({:update_config, config}, _from, state) do

@@ -1,8 +1,8 @@
 defmodule PhoenixGenApi.ConfigPusherTest do
   use ExUnit.Case, async: false
 
-  alias PhoenixGenApi.Structs.PushConfig
   alias PhoenixGenApi.{ConfigPusher, ConfigReceiver}
+  alias PhoenixGenApi.Structs.PushConfig
 
   setup do
     # Clean ConfigDb

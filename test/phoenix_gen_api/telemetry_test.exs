@@ -1,11 +1,11 @@
 defmodule PhoenixGenApi.TelemetryTest do
   use ExUnit.Case, async: false
 
-  alias PhoenixGenApi.Telemetry
+  alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.Executor
   alias PhoenixGenApi.RateLimiter
-  alias PhoenixGenApi.ConfigDb
-  alias PhoenixGenApi.Structs.{Request, FunConfig}
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
+  alias PhoenixGenApi.Telemetry
 
   setup do
     # Clean ConfigDb before each test

@@ -136,6 +136,14 @@ defmodule PhoenixGenApi.ConfigPuller do
   end
 
   @doc """
+  Returns a status snapshot for the config puller.
+  """
+  @spec status() :: map()
+  def status() do
+    GenServer.call(__MODULE__, :status)
+  end
+
+  @doc """
   Deletes a list of services from the puller.
   The `services` argument must be a list of `%ServiceConfig{}` structs.
 
@@ -292,6 +300,17 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   def handle_call(:get_all_versions, _from, state) do
     {:reply, state.service_versions, state}
+  end
+
+  def handle_call(:status, _from, state) do
+    {:reply,
+     %{
+       status: :ok,
+       services: state.services,
+       api_list: state.api_list,
+       service_versions: state.service_versions,
+       failure_count: state.failure_count
+     }, state}
   end
 
   @impl true
@@ -680,6 +699,14 @@ defmodule PhoenixGenApi.ConfigPuller do
                   "[ConfigPuller] invalid config: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, skipping"
                 )
 
+                reasons =
+                  case FunConfig.validate_with_details(config) do
+                    {:error, errors} -> errors
+                    _ -> ["unknown validation error"]
+                  end
+
+                PhoenixGenApi.ConfigFailed.record(config, reasons, :pull, node)
+
                 []
               end
 
@@ -687,6 +714,8 @@ defmodule PhoenixGenApi.ConfigPuller do
               Logger.error(
                 "[ConfigPuller] unsafe MFA: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, reason=#{inspect(reason)}, skipping"
               )
+
+              PhoenixGenApi.ConfigFailed.record(config, to_string(reason), :pull, node)
 
               []
           end

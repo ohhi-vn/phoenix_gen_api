@@ -1,8 +1,8 @@
 defmodule PhoenixGenApi.Structs.RequestTest do
   use ExUnit.Case, async: true
 
-  alias PhoenixGenApi.Structs.Request
   alias PhoenixGenApi.Errors.DecodeError
+  alias PhoenixGenApi.Structs.Request
 
   describe "decode!/1" do
     test "decodes valid params map" do

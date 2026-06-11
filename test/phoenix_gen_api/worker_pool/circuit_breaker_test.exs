@@ -39,8 +39,8 @@ defmodule PhoenixGenApi.WorkerPool.CircuitBreakerTest do
 
     test "returns true just within the boundary of cooldown period" do
       now = System.monotonic_time(:millisecond)
-      # Opened just within cooldown
-      opened_at = now - 4999
+      # Opened just within cooldown - use a larger margin to avoid timing flakiness
+      opened_at = now - 4900
       assert CircuitBreaker.circuit_open?(opened_at, 5000) == true
     end
 

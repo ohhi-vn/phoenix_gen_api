@@ -103,12 +103,12 @@ defmodule PhoenixGenApi.ImplHelperTest do
   alias PhoenixGenApi.ImplHelperTest.TestEncoder
 
   alias PhoenixGenApi.ImplHelperTest.{
-    SimpleStruct,
-    OptsStruct,
     NoEncodeStruct,
+    OptsStruct,
+    SimpleStruct,
+    SingleImplStruct,
     UseStruct1,
-    UseStruct2,
-    SingleImplStruct
+    UseStruct2
   }
 
   describe "gen_impl/2" do

@@ -1,8 +1,8 @@
 defmodule PhoenixGenApi.ConfigReceiverTest do
   use ExUnit.Case, async: false
 
-  alias PhoenixGenApi.Structs.{PushConfig, FunConfig}
   alias PhoenixGenApi.{ConfigDb, ConfigReceiver}
+  alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
 
   require Logger
 

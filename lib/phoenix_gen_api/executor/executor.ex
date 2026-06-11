@@ -443,9 +443,9 @@ defmodule PhoenixGenApi.Executor do
 
   # Retry helpers for local execution
 
-  defp execute_local_with_retry(mod, fun, args, timeout, retry_config, request_id \\ nil) do
+  defp execute_local_with_retry(mod, fun, args, timeout, retry_config, request_id) do
     result = execute_local(mod, fun, args, timeout)
-    apply_local_retry(result, mod, fun, args, timeout, retry_config, request_id)
+    apply_local_retry(result, mod, fun, args, timeout, retry_config, request_id, retry_config)
   end
 
   defp apply_local_retry(
@@ -455,8 +455,8 @@ defmodule PhoenixGenApi.Executor do
          args,
          timeout,
          retry_config,
-         request_id \\ nil,
-         original_config \\ nil
+         request_id,
+         original_config
        ) do
     effective_config = original_config || retry_config
 

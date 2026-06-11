@@ -93,10 +93,26 @@ defmodule PhoenixGenApi.ConfigDb do
     else
       {:error, {:mfa_not_allowed, _}} = error ->
         Logger.error("[ConfigDb] add failed: MFA not allowed, config=#{inspect(config)}")
+
+        PhoenixGenApi.ConfigFailed.record(
+          config,
+          "MFA not allowed: #{inspect(config.mfa)}",
+          :pull,
+          nil
+        )
+
         error
 
       false ->
         Logger.error("[ConfigDb] add failed: invalid config=#{inspect(config)}")
+
+        reasons =
+          case FunConfig.validate_with_details(config) do
+            {:error, errors} -> errors
+            _ -> ["unknown validation error"]
+          end
+
+        PhoenixGenApi.ConfigFailed.record(config, reasons, :pull, nil)
         {:error, :invalid_config}
     end
   end
@@ -130,12 +146,27 @@ defmodule PhoenixGenApi.ConfigDb do
                   "[ConfigDb] batch_add: invalid config, request_type=#{inspect(config.request_type)}, service=#{inspect(config.service)}, version=#{inspect(FunConfig.version(config))}, skipping"
                 )
 
+                reasons =
+                  case FunConfig.validate_with_details(config) do
+                    {:error, errors} -> errors
+                    _ -> ["unknown validation error"]
+                  end
+
+                PhoenixGenApi.ConfigFailed.record(config, reasons, :pull, nil)
+
                 []
               end
 
             {:error, {:mfa_not_allowed, mfa}} ->
               Logger.error(
                 "[ConfigDb] batch_add: MFA not allowed, mfa=#{inspect(mfa)}, service=#{inspect(config.service)}, skipping"
+              )
+
+              PhoenixGenApi.ConfigFailed.record(
+                config,
+                "MFA not allowed: #{inspect(mfa)}",
+                :pull,
+                nil
               )
 
               []
@@ -269,6 +300,14 @@ defmodule PhoenixGenApi.ConfigDb do
     )
 
     GenServer.call(__MODULE__, {:delete, {service, request_type, version}})
+  end
+
+  @doc """
+  Returns a status snapshot for the config database.
+  """
+  @spec status() :: map()
+  def status() do
+    %{status: :ok, count: count(), services: get_all_services(), ets: ets_table_info()}
   end
 
   @doc """
@@ -548,6 +587,15 @@ defmodule PhoenixGenApi.ConfigDb do
     )
 
     GenServer.call(__MODULE__, :clear)
+  end
+
+  @doc false
+  def ets_table_info do
+    case :ets.info(__MODULE__) do
+      :undefined -> %{exists: false}
+      info when is_list(info) -> info |> Map.new() |> Map.put(:exists, true)
+      other -> %{exists: true, info: other}
+    end
   end
 
   ### Callbacks

@@ -18,6 +18,7 @@ defmodule PhoenixGenApi do
   - **Configuration Push**: Remote nodes can actively push their service and function configs to the gateway
   - **Rate Limiting**: Global and per-API rate limiting with sliding window algorithm
   - **Relay Messages**: Group-based message relaying with public, private, and strict_private group types
+  - **Diagnostics**: Runtime health checks, statistics, debug reports, and admin-gated tracing utilities
 
   ## Architecture
 
@@ -34,6 +35,7 @@ defmodule PhoenixGenApi do
   - `PhoenixGenApi.StreamCall` - Manages streaming function calls
   - `PhoenixGenApi.RateLimiter` - Rate limiting for global and per-API requests
   - `PhoenixGenApi.Relay` - Group-based message relaying (public, private, strict_private)
+  - `PhoenixGenApi.Diagnostics` - Runtime health, statistics, debug, and tracing utilities
 
   ## Usage Example
 
@@ -166,8 +168,9 @@ defmodule PhoenixGenApi do
   - `PhoenixGenApi.NodeSelector` - Node selection strategies
   """
 
-  alias PhoenixGenApi.StreamCall
   alias PhoenixGenApi.RateLimiter
+  alias PhoenixGenApi.StreamCall
+  alias PhoenixGenApi.Diagnostics
 
   @spec stop_stream(pid()) :: :ok
   @doc """
@@ -288,8 +291,7 @@ defmodule PhoenixGenApi do
           String.t(),
           :global | {String.t() | atom(), String.t()},
           atom() | String.t()
-        ) ::
-          list(map())
+        ) :: map()
   def get_rate_limit_status(key_value, scope, rate_limit_key) do
     RateLimiter.get_rate_limit_status(key_value, scope, rate_limit_key)
   end
@@ -639,6 +641,602 @@ defmodule PhoenixGenApi do
   end
 
   @doc """
+  [Shell Helper] Print a formatted health check summary to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.health_print()
+      iex> PhoenixGenApi.health_print(max_memory_bytes: 100_000_000)
+  """
+  def health_print(opts \\ []) do
+    report = Diagnostics.health_check(opts)
+
+    status_icon = fn
+      :ok -> "✅"
+      :degraded -> "⚠️ "
+      :error -> "❌"
+    end
+
+    IO.puts("\n=== PhoenixGenApi Health Check ===")
+    IO.puts("Node: #{report.node}")
+    IO.puts("Status: #{status_icon.(report.status)} #{report.status}")
+    IO.puts("Checked at: #{DateTime.from_unix!(report.checked_at_ms, :millisecond)}")
+
+    vm = report.checks.vm
+    IO.puts("\n--- VM ---")
+    IO.puts("  Status:      #{status_icon.(vm.status)} #{vm.status}")
+    IO.puts("  Processes:   #{vm.process_count} / #{vm.process_limit}")
+    IO.puts("  Schedulers:  #{vm.schedulers_online} / #{vm.schedulers}")
+    IO.puts("  Memory:      #{format_bytes(vm.memory[:total])} total")
+    IO.puts("    Processes: #{format_bytes(vm.memory[:processes])}")
+    IO.puts("    System:    #{format_bytes(vm.memory[:system])}")
+    IO.puts("  Uptime:      #{format_uptime(vm.uptime)}")
+
+    node = report.checks.node
+    IO.puts("\n--- Node ---")
+    IO.puts("  Self:        #{node.node}")
+    IO.puts("  Alive:       #{node.alive?}")
+    IO.puts("  Connected:   #{inspect(node.connected_nodes)}")
+
+    pga = report.checks.phoenix_gen_api
+    IO.puts("\n--- PhoenixGenApi ---")
+    IO.puts("  Status:      #{status_icon.(pga.status)} #{pga.status}")
+    IO.puts("  Mode:        #{pga.mode}")
+
+    case pga do
+      %{checks: checks} ->
+        IO.puts("  Processes:")
+
+        Enum.each(checks, fn {name, check} ->
+          icon = if check.status == :ok, do: "✅", else: "❌"
+          pid_str = if check[:pid], do: "#{inspect(check[:pid])}", else: "N/A"
+          extra = if check[:instance_count], do: "  instances=#{check[:instance_count]}", else: ""
+          IO.puts("    #{icon} #{name}  pid=#{pid_str}#{extra}")
+        end)
+
+      %{} ->
+        :ok
+    end
+
+    IO.puts("")
+    :ok
+  end
+
+  @doc """
+  [Shell Helper] Print formatted VM and PhoenixGenApi statistics to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.stats_print()
+  """
+  def stats_print() do
+    stats = Diagnostics.statistics()
+
+    IO.puts("\n=== PhoenixGenApi Statistics ===")
+    IO.puts("Node: #{stats.node}")
+    IO.puts("Collected at: #{DateTime.from_unix!(stats.collected_at_ms, :millisecond)}")
+
+    vm = stats.vm
+    IO.puts("\n--- VM ---")
+    IO.puts("  Processes:     #{vm.process_count} / #{vm.process_limit}")
+    IO.puts("  Ports:         #{vm.port_count}")
+    IO.puts("  ETS tables:    #{vm.ets_count}")
+    IO.puts("  Schedulers:    #{vm.schedulers_online} / #{vm.schedulers}")
+    IO.puts("  Memory:        #{format_bytes(vm.memory[:total])} total")
+
+    IO.puts(
+      "    Processes:   #{format_bytes(vm.memory[:processes])} (#{format_bytes(vm.memory[:processes_used])} used)"
+    )
+
+    IO.puts("    System:      #{format_bytes(vm.memory[:system])}")
+
+    IO.puts(
+      "    Atoms:       #{format_bytes(vm.memory[:atom])} (#{format_bytes(vm.memory[:atom_used])} used)"
+    )
+
+    IO.puts("    Binary:      #{format_bytes(vm.memory[:binary])}")
+    IO.puts("    Code:        #{format_bytes(vm.memory[:code])}")
+    IO.puts("    ETS:         #{format_bytes(vm.memory[:ets])}")
+
+    {red_total, red_since} = vm.reductions
+    IO.puts("  Reductions:    #{red_total} total, #{red_since} since last call")
+
+    {gc_count, gc_words, _} = vm.garbage_collection
+    IO.puts("  GC:            #{gc_count} collections, #{gc_words} words reclaimed")
+
+    {cs_count, _} = vm.context_switches
+    IO.puts("  Context sw:    #{cs_count}")
+    IO.puts("  Uptime:        #{format_uptime(vm.uptime)}")
+
+    if vm.scheduler_wall_time && vm.scheduler_wall_time != :undefined do
+      IO.puts("  Scheduler wall time:")
+
+      Enum.each(vm.scheduler_wall_time, fn {id, active, total} ->
+        pct = if total > 0, do: Float.round(active / total * 100, 1), else: 0.0
+        IO.puts("    Scheduler #{id}: #{pct}% active (#{active}ms / #{total}ms)")
+      end)
+    end
+
+    pga = stats.phoenix_gen_api
+    IO.puts("\n--- PhoenixGenApi ---")
+    IO.puts("  Client mode:   #{pga.client_mode}")
+    IO.puts("  Telemetry events: #{pga.telemetry_events}")
+
+    case pga do
+      %{config_db: db} ->
+        IO.puts("\n  ConfigDb:")
+        IO.puts("    Status:    #{db.status}")
+        IO.puts("    Count:     #{db.count}")
+        IO.puts("    Services:  #{inspect(db.services)}")
+
+      %{} ->
+        :ok
+    end
+
+    case pga do
+      %{rate_limiter: rl} ->
+        IO.puts("\n  Rate Limiter:")
+        IO.puts("    Status:    #{rl.status}")
+
+        if rl.data do
+          IO.puts("    Instances: #{length(rl.data.instances)}")
+        end
+
+      %{} ->
+        :ok
+    end
+
+    case pga do
+      %{worker_pool: worker_pool} ->
+        IO.puts("\n  Worker Pools:")
+
+        Enum.each(worker_pool, fn {name, pool} ->
+          IO.puts("    #{name}:")
+          IO.puts("      Status:   #{pool.status}")
+
+          if pool.data do
+            d = pool.data
+
+            IO.puts(
+              "      Idle: #{d.idle_workers}  Busy: #{d.busy_workers}  Queued: #{d.queued_tasks}"
+            )
+
+            IO.puts(
+              "      Circuit: #{d.circuit_open}  Executed: #{d.total_tasks_executed}  Failed: #{d.total_tasks_failed}"
+            )
+          end
+        end)
+
+      %{} ->
+        :ok
+    end
+
+    case pga do
+      %{relay: relay} ->
+        IO.puts("\n  Relay:")
+        IO.puts("    Status:  #{relay.status}")
+
+        if relay.data do
+          IO.puts("    Groups:  #{relay.data.group_count}")
+          IO.puts("    Monitored memberships: #{relay.data.monitored_memberships}")
+        end
+
+      %{} ->
+        :ok
+    end
+
+    IO.puts("")
+    :ok
+  end
+
+  @doc """
+  [Shell Helper] Print a formatted debug report to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.debug_print(process_limit: 10)
+  """
+  def debug_print(opts \\ []) do
+    report = Diagnostics.debug_report(opts)
+    limit = Keyword.get(opts, :process_limit, 20)
+
+    IO.puts("\n=== Debug Report ===")
+    IO.puts("Node: #{report.node}")
+    IO.puts("Collected at: #{DateTime.from_unix!(report.collected_at_ms, :millisecond)}")
+
+    IO.puts("\n--- Top #{limit} Processes by Memory ---")
+
+    IO.puts(
+      String.pad_trailing("PID", 15) <>
+        String.pad_trailing("Name", 30) <> String.pad_trailing("Memory", 12) <> "Status"
+    )
+
+    IO.puts(String.duplicate("-", 70))
+
+    Enum.each(report.processes, fn p ->
+      pid_str = String.pad_trailing(inspect(p.pid), 15)
+      name_str = String.pad_trailing(inspect(p.registered_name || :unnamed), 30)
+      mem_str = String.pad_trailing(format_bytes(p.memory), 12)
+      status_str = inspect(p.status)
+      IO.puts(pid_str <> name_str <> mem_str <> status_str)
+    end)
+
+    IO.puts("\n--- ETS Tables ---")
+
+    Enum.each(report.ets_tables, fn {name, info} ->
+      if info[:exists] do
+        size = Map.get(info, :size, "?")
+        mem_words = Map.get(info, :memory, "?")
+        IO.puts("  #{name}: size=#{size} memory=#{mem_words} words")
+      else
+        IO.puts("  #{name}: (not found)")
+      end
+    end)
+
+    IO.puts("\n--- Trace ---")
+    IO.puts("  Control word: #{report.trace.trace_control_word}")
+
+    IO.puts("")
+    :ok
+  end
+
+  @doc """
+  [Shell Helper] Print a formatted call flow trace to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.call_flow_print("user_service", "get_user")
+      iex> PhoenixGenApi.call_flow_print("user_service", "get_user", "1.0.0")
+  """
+  def call_flow_print(service, request_type, version \\ nil) do
+    flow = Diagnostics.call_flow(service, request_type, version)
+
+    IO.puts("\n=== Call Flow: #{service}/#{request_type} ===")
+
+    case flow do
+      %{error: error} ->
+        IO.puts("❌ Config not found: #{inspect(error)}")
+        IO.puts("")
+        :ok
+
+      %{service: service_name, request_type: request_type_name, version: version} ->
+        IO.puts("Service:      #{service_name}")
+        IO.puts("Request Type: #{request_type_name}")
+        IO.puts("Version:      #{inspect(version)}")
+        IO.puts("Response:     #{flow.response_type}")
+        IO.puts("Local:        #{flow.local?}")
+        IO.puts("Node Mode:    #{flow.choose_node_mode}")
+        IO.puts("Timeout:      #{flow.timeout}ms")
+        IO.puts("MFA:          #{inspect(flow.mfa)}")
+
+        IO.puts("\n--- Nodes ---")
+        IO.puts("  All:         #{inspect(flow.nodes)}")
+        IO.puts("  Reachable:   #{inspect(flow.reachable_nodes)}")
+
+        if flow.unreachable_nodes != [] do
+          IO.puts("  ❌ Unreachable: #{inspect(flow.unreachable_nodes)}")
+        end
+
+        IO.puts("\n--- Rate Limits ---")
+
+        if flow.rate_limit.global != [] do
+          IO.puts("  Global:")
+
+          Enum.each(flow.rate_limit.global, fn l ->
+            IO.puts("    #{l.key}: #{l.max_requests} req / #{l.window_ms}ms")
+          end)
+        else
+          IO.puts("  Global: (none)")
+        end
+
+        if flow.rate_limit.api != [] do
+          IO.puts("  API:")
+
+          Enum.each(flow.rate_limit.api, fn l ->
+            IO.puts("    #{l.key}: #{l.max_requests} req / #{l.window_ms}ms")
+          end)
+        else
+          IO.puts("  API: (none)")
+        end
+
+        IO.puts("\n--- Permission ---")
+        IO.puts("  #{flow.permission.description}")
+
+        IO.puts("\n--- Hooks ---")
+        IO.puts("  Before: #{flow.hooks.before_execute.description}")
+        IO.puts("  After:  #{flow.hooks.after_execute.description}")
+
+        IO.puts("\n--- Retry ---")
+        IO.puts("  #{flow.retry.description}")
+
+        IO.puts("\n--- Execution Steps ---")
+
+        Enum.with_index(flow.steps, 1)
+        |> Enum.each(fn {step, idx} ->
+          IO.puts("  #{idx}. [#{step.phase}] #{step.desc}")
+        end)
+
+        IO.puts("")
+        :ok
+    end
+  end
+
+  @doc """
+  [Shell Helper] Print a formatted cluster topology view to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.cluster_print()
+  """
+  def cluster_print() do
+    view = Diagnostics.cluster_view()
+
+    IO.puts("\n=== Cluster View ===")
+    IO.puts("Self: #{view.self}")
+    IO.puts("Connected nodes (#{view.connected_count}): #{inspect(view.connected)}")
+
+    IO.puts("\n--- Registered Processes ---")
+
+    Enum.each(view.registered_processes, fn {node, names} ->
+      IO.puts("  #{node}: #{length(names)} processes")
+
+      Enum.each(names, fn name ->
+        IO.puts("    - #{name}")
+      end)
+    end)
+
+    IO.puts("\n--- PhoenixGenApi Services by Node ---")
+
+    Enum.each(view.phoenix_gen_api_services, fn {node, services} ->
+      IO.puts("  #{node}: #{inspect(services)}")
+    end)
+
+    IO.puts("\n--- Node Selection Strategies ---")
+    IO.puts("  #{Enum.join(Enum.map(view.node_selection.strategies, &inspect/1), ", ")}")
+    IO.puts("  #{view.node_selection.description}")
+
+    IO.puts("")
+    :ok
+  end
+
+  @doc """
+  [Shell Helper] Print a formatted list of all registered call flows.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.flows_print()
+      iex> PhoenixGenApi.flows_print(include_disabled: true)
+  """
+  def flows_print(opts \\ []) do
+    flows = Diagnostics.list_call_flows(opts)
+
+    IO.puts("\n=== Registered Call Flows ===")
+    IO.puts("Total: #{length(flows)}")
+
+    if flows == [] do
+      IO.puts("  (no registered configs)")
+    else
+      header =
+        String.pad_trailing("Service", 25) <>
+          String.pad_trailing("Request Type", 25) <>
+          String.pad_trailing("Version", 12) <> String.pad_trailing("Local", 8) <> "Nodes"
+
+      IO.puts("\n" <> header)
+      IO.puts(String.duplicate("-", 90))
+
+      Enum.each(flows, fn flow ->
+        status = if flow.disabled, do: " [DISABLED]", else: ""
+        service = String.pad_trailing(inspect(flow.service), 25)
+        req_type = String.pad_trailing(inspect(flow.request_type), 25)
+        version = String.pad_trailing(inspect(flow.version), 12)
+        mode = String.pad_trailing(to_string(flow.local?), 8)
+        nodes = inspect(flow.nodes)
+        IO.puts(service <> req_type <> version <> mode <> nodes <> status)
+      end)
+    end
+
+    IO.puts("")
+    :ok
+  end
+
+  @doc """
+  [Shell Helper] Print a formatted request inspection to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.inspect_print(%{service: "user_service", request_type: "get_user"})
+  """
+  def inspect_print(request) do
+    plan = Diagnostics.inspect_request(request)
+
+    IO.puts("\n=== Request Inspection ===")
+
+    if plan.request do
+      r = plan.request
+      IO.puts("Service:      #{inspect(r.service)}")
+      IO.puts("Request Type: #{inspect(r.request_type)}")
+      IO.puts("Version:      #{inspect(r.version)}")
+      IO.puts("User ID:      #{inspect(r.user_id)}")
+      IO.puts("Device ID:    #{inspect(r.device_id)}")
+      IO.puts("Request ID:   #{inspect(r.request_id)}")
+    end
+
+    if plan.error do
+      IO.puts("\n❌ Config not found: #{inspect(plan.error)}")
+    else
+      IO.puts("\n--- Execution Plan ---")
+
+      Enum.with_index(plan.steps, 1)
+      |> Enum.each(fn {step, idx} ->
+        IO.puts("  #{idx}. [#{step.phase}] #{step.desc}")
+      end)
+    end
+
+    IO.puts("")
+    :ok
+  end
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Private formatters
+  # ──────────────────────────────────────────────────────────────────────
+
+  defp format_bytes(bytes) when is_integer(bytes) when bytes < 1024 do
+    "#{bytes} B"
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) when bytes < 1024 * 1024 do
+    "#{Float.round(bytes / 1024, 1)} KB"
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) when bytes < 1024 * 1024 * 1024 do
+    "#{Float.round(bytes / (1024 * 1024), 1)} MB"
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) do
+    "#{Float.round(bytes / (1024 * 1024 * 1024), 1)} GB"
+  end
+
+  defp format_bytes(_), do: "?"
+
+  defp format_uptime({ms, _}) when is_integer(ms) do
+    seconds = div(ms, 1000)
+    hours = div(seconds, 3600)
+    minutes = rem(div(seconds, 60), 60)
+    secs = rem(seconds, 60)
+    "#{hours}h #{minutes}m #{secs}s"
+  end
+
+  defp format_uptime(_), do: "?"
+
+  @doc """
+  Returns a runtime health check for the VM, distribution, and PhoenixGenApi processes.
+
+  Delegates to `PhoenixGenApi.Diagnostics.health_check/1`.
+  """
+  @spec health_check(keyword()) :: map()
+  def health_check(opts \\ []) do
+    PhoenixGenApi.Diagnostics.health_check(opts)
+  end
+
+  @doc """
+  Returns runtime VM and PhoenixGenApi statistics.
+
+  Delegates to `PhoenixGenApi.Diagnostics.statistics/1`.
+  """
+  @spec statistics(keyword()) :: map()
+  def statistics(opts \\ []) do
+    PhoenixGenApi.Diagnostics.statistics(opts)
+  end
+
+  @doc """
+  Returns a debug-oriented runtime report.
+
+  Delegates to `PhoenixGenApi.Diagnostics.debug_report/1`.
+  """
+  @spec debug_report(keyword()) :: map()
+  def debug_report(opts \\ []) do
+    PhoenixGenApi.Diagnostics.debug_report(opts)
+  end
+
+  @doc """
+  Enables legacy Erlang tracing for processes or ports.
+
+  Requires the `:enable_tracing` admin action.
+  """
+  @spec trace_processes(term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def trace_processes(targets, opts \\ []) do
+    PhoenixGenApi.Diagnostics.trace_processes(targets, opts)
+  end
+
+  @doc """
+  Enables call tracing for specific MFAs.
+
+  Requires the `:enable_tracing` admin action.
+  """
+  @spec trace_functions(term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def trace_functions(mfas, opts \\ []) do
+    PhoenixGenApi.Diagnostics.trace_functions(mfas, opts)
+  end
+
+  @doc """
+  Disables legacy Erlang tracing for processes or ports.
+
+  Requires the `:disable_tracing` admin action.
+  """
+  @spec stop_trace(term(), keyword()) :: {:ok, map()} | {:error, term()}
+  def stop_trace(targets \\ :all, opts \\ []) do
+    PhoenixGenApi.Diagnostics.stop_trace(targets, opts)
+  end
+
+  @doc """
+  Disables call tracing for specific MFAs.
+
+  Requires the `:disable_tracing` admin action.
+  """
+  @spec stop_trace_functions(term()) :: {:ok, map()} | {:error, term()}
+  def stop_trace_functions(mfas \\ :all) do
+    PhoenixGenApi.Diagnostics.stop_trace_functions(mfas)
+  end
+
+  @doc """
+  Returns a small trace status snapshot.
+  """
+  @spec trace_status() :: map()
+  def trace_status do
+    PhoenixGenApi.Diagnostics.trace_status()
+  end
+
+  @doc """
+  [Shell Helper] Traces the call flow for a service/request_type from the
+  gateway to its target nodes.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.call_flow("user_service", "get_user")
+  """
+  @spec call_flow(String.t() | atom(), String.t(), String.t() | nil) :: map()
+  def call_flow(service, request_type, version \\ nil) do
+    PhoenixGenApi.Diagnostics.call_flow(service, request_type, version)
+  end
+
+  @doc """
+  [Shell Helper] Inspects a request and returns its full execution plan.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.inspect_request(%{service: "user_service", request_type: "get_user"})
+  """
+  @spec inspect_request(map()) :: map()
+  def inspect_request(request) do
+    PhoenixGenApi.Diagnostics.inspect_request(request)
+  end
+
+  @doc """
+  [Shell Helper] Returns the cluster topology view from this node.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.cluster_view()
+  """
+  @spec cluster_view() :: map()
+  def cluster_view do
+    PhoenixGenApi.Diagnostics.cluster_view()
+  end
+
+  @doc """
+  [Shell Helper] Lists all registered call flows across all services.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.list_call_flows()
+      iex> PhoenixGenApi.list_call_flows(include_disabled: true)
+  """
+  @spec list_call_flows(keyword()) :: [map()]
+  def list_call_flows(opts \\ []) do
+    PhoenixGenApi.Diagnostics.list_call_flows(opts)
+  end
+
+  @doc """
   Pushes a `PushConfig` to this server node.
 
   This is the server-side API for receiving pushed configs from remote nodes.
@@ -734,6 +1332,123 @@ defmodule PhoenixGenApi do
 
     IO.puts("")
     :ok
+  end
+
+  @doc """
+  [Shell Helper] Quick view of failed FunConfig entries.
+
+  Shows configs that failed validation during pull or push, with their
+  service, request_type, version, source, node, and reason.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.failed_configs()
+      iex> PhoenixGenApi.failed_configs(source: :pull)
+      iex> PhoenixGenApi.failed_configs(source: :push, limit: 20)
+  """
+  def failed_configs(opts \\ []) do
+    PhoenixGenApi.ConfigFailed.list(opts)
+  end
+
+  @doc """
+  [Shell Helper] Print a formatted table of failed FunConfig entries to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.failed_configs_print()
+      iex> PhoenixGenApi.failed_configs_print(source: :pull, limit: 10)
+  """
+  def failed_configs_print(opts \\ []) do
+    entries = PhoenixGenApi.ConfigFailed.list(opts)
+    source_filter = Keyword.get(opts, :source)
+    limit = Keyword.get(opts, :limit, 100)
+
+    IO.puts("\n=== Failed FunConfig Entries ===")
+
+    if source_filter do
+      IO.puts("Source: #{source_filter}")
+    end
+
+    IO.puts("Showing: #{length(entries)} entries (limit: #{limit})")
+
+    if entries == [] do
+      IO.puts("  (no failed entries)")
+    else
+      header =
+        String.pad_trailing("ID", 8) <>
+          String.pad_trailing("Service", 20) <>
+          String.pad_trailing("Request Type", 22) <>
+          String.pad_trailing("Version", 10) <> String.pad_trailing("Source", 8) <> "Reason"
+
+      IO.puts("\n" <> header)
+      IO.puts(String.duplicate("-", 90))
+
+      Enum.each(entries, fn entry ->
+        id_str = String.pad_trailing("#{entry.id}", 8)
+        svc_str = String.pad_trailing(inspect(entry.service), 20)
+        req_str = String.pad_trailing(inspect(entry.request_type), 22)
+        ver_str = String.pad_trailing(inspect(entry.version), 10)
+        src_str = String.pad_trailing(inspect(entry.source), 8)
+        reason_str = Enum.join(entry.reason, "; ")
+        IO.puts(id_str <> svc_str <> req_str <> ver_str <> src_str <> reason_str)
+      end)
+    end
+
+    IO.puts("")
+    :ok
+  end
+
+  @doc """
+  [Shell Helper] Print a summary of failed FunConfig entries to the console.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.failed_configs_summary()
+  """
+  def failed_configs_summary() do
+    summary = PhoenixGenApi.ConfigFailed.summary()
+
+    IO.puts("\n=== Failed Configs Summary ===")
+    IO.puts("Total:  #{summary.total}")
+    IO.puts("Pull:   #{summary.pull}")
+    IO.puts("Push:   #{summary.push}")
+
+    if summary.by_service != %{} do
+      IO.puts("\n--- By Service ---")
+
+      Enum.each(summary.by_service, fn {service, entries} ->
+        IO.puts("  #{inspect(service)}: #{length(entries)} failed")
+      end)
+    end
+
+    if summary.newest do
+      IO.puts("\n--- Newest ---")
+      n = summary.newest
+
+      IO.puts(
+        "  ##{n.id} #{inspect(n.service)}/#{inspect(n.request_type)} [#{n.source}] #{Enum.join(n.reason, "; ")}"
+      )
+    end
+
+    IO.puts("")
+    :ok
+  end
+
+  @doc """
+  Cleans up expired failed config entries (older than 24h).
+  Returns the number of entries removed.
+  """
+  @spec cleanup_failed_configs() :: non_neg_integer()
+  def cleanup_failed_configs do
+    PhoenixGenApi.ConfigFailed.cleanup()
+  end
+
+  @doc """
+  Clears all failed config entries regardless of expiry.
+  """
+  @spec clear_failed_configs() :: :ok
+  def clear_failed_configs do
+    PhoenixGenApi.ConfigFailed.clear()
   end
 
   defmacro __using__(opts) do

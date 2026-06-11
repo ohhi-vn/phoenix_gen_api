@@ -1,8 +1,8 @@
 defmodule PhoenixGenApi.StreamCallTest do
   use ExUnit.Case, async: true
 
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.StreamCall
-  alias PhoenixGenApi.Structs.{Request, FunConfig}
 
   # ConfigDb is already started by the application
 

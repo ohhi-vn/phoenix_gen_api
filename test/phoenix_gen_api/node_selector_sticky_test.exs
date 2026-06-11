@@ -6,7 +6,7 @@ defmodule PhoenixGenApi.NodeSelectorStickyTest do
 
   describe "sticky node affinity" do
     test "selects same node for same hash_key value" do
-      nodes = [:"node1@host", :"node2@host", :"node3@host"]
+      nodes = [:node1@host, :node2@host, :node3@host]
 
       config = %FunConfig{
         request_type: "test",
@@ -30,8 +30,8 @@ defmodule PhoenixGenApi.NodeSelectorStickyTest do
       }
 
       # Same user_id should get same node
-      assert {:ok, node1} = NodeSelector.get_node(config, request1)
-      assert {:ok, node1} = NodeSelector.get_node(config, request2)
+      assert {:ok, _node1} = NodeSelector.get_node(config, request1)
+      assert {:ok, _node1} = NodeSelector.get_node(config, request2)
 
       # Different user_id should get different node (or same by chance, but let's test)
       request3 = %Request{
@@ -47,7 +47,7 @@ defmodule PhoenixGenApi.NodeSelectorStickyTest do
     end
 
     test "falls back to random when hash_key not found" do
-      nodes = [:"node1@host", :"node2@host"]
+      nodes = [:node1@host, :node2@host]
 
       config = %FunConfig{
         request_type: "test",
@@ -67,7 +67,7 @@ defmodule PhoenixGenApi.NodeSelectorStickyTest do
     end
 
     test "get_nodes returns ordered list with sticky node first" do
-      nodes = [:"node1@host", :"node2@host", :"node3@host"]
+      nodes = [:node1@host, :node2@host, :node3@host]
 
       config = %FunConfig{
         request_type: "test",

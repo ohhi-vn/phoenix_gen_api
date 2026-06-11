@@ -52,6 +52,8 @@ defmodule PhoenixGenApi.Security do
           :change_detail_error
           | :update_rate_limit_config
           | :push_config
+          | :enable_tracing
+          | :disable_tracing
 
   # ---------------------------------------------------------------------------
   # Admin Gate
@@ -73,7 +75,13 @@ defmodule PhoenixGenApi.Security do
   """
   @spec admin_action_allowed?(admin_action()) :: boolean()
   def admin_action_allowed?(action)
-      when action in [:change_detail_error, :update_rate_limit_config, :push_config] do
+      when action in [
+             :change_detail_error,
+             :update_rate_limit_config,
+             :push_config,
+             :enable_tracing,
+             :disable_tracing
+           ] do
     allowed = Application.get_env(:phoenix_gen_api, :admin_actions, [])
 
     if action in allowed do
@@ -202,7 +210,7 @@ defmodule PhoenixGenApi.Security do
   end
 
   # MFA allowlist check
-  defp check_mfa_allowlist({module, function, _args} = mfa) do
+  defp check_mfa_allowlist(mfa = {module, function, _args}) do
     allowlist = Application.get_env(:phoenix_gen_api, :mfa_allowlist)
 
     if is_nil(allowlist) do

@@ -1,7 +1,7 @@
 defmodule PhoenixGenApi.JsonConfigTest do
   use ExUnit.Case, async: false
-  alias PhoenixGenApi.JsonConfig
   alias PhoenixGenApi.ConfigDb
+  alias PhoenixGenApi.JsonConfig
   alias PhoenixGenApi.Structs.FunConfig
 
   setup do

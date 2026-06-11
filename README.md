@@ -48,6 +48,7 @@ Service nodes can register new APIs at any time — the gateway picks them up au
 | **Circuit Breaker** | Pool-level and worker-level circuit breakers |
 | **Telemetry** | 31 events across 5 categories for observability |
 | **Security** | Admin gate, push tokens, MFA allowlist, payload size limits |
+| **Diagnostics** | Runtime health checks, statistics, call-flow inspection, cluster view, admin-gated tracing |
 
 ## Installation
 
@@ -73,6 +74,7 @@ Use [`:libcluster`](https://hex.pm/packages/libcluster) to form the Erlang clust
 | [Execute Flow](guides/execute_flow.md) | Line-by-line walkthrough of the complete request execution path with file references |
 | [Relay Messages](guides/relay_messages.md) | Complete reference for group-based messaging: group types, permission matrix, process monitoring |
 | [Telemetry](guides/telemetry.md) | Full event reference, integration patterns, Telemetry.Metrics examples, and best practices |
+| [Diagnostics](guides/diagnostics.md) | Runtime health checks, statistics, call-flow inspection, cluster view, admin-gated tracing, IEx helpers |
 
 ## Quick Start
 
@@ -145,7 +147,99 @@ PhoenixGenApi.rl_config()               # Rate limiter config
 PhoenixGenApi.cache_status()            # Config cache status
 PhoenixGenApi.pool_status()             # Worker pool status
 PhoenixGenApi.pushed_services_status()  # Pushed services status
+
+# Diagnostics & Monitoring
+PhoenixGenApi.health_check()              # Runtime health report
+PhoenixGenApi.health_check(max_memory_bytes: 100_000_000)
+PhoenixGenApi.statistics()               # VM & PhoenixGenApi statistics
+PhoenixGenApi.debug_report(process_limit: 10)  # Top processes, ETS tables
+PhoenixGenApi.call_flow("user_service", "get_user")  # Trace request flow
+PhoenixGenApi.cluster_view()             # Cluster topology
+PhoenixGenApi.list_call_flows()          # All registered call flows
 ```
+
+### IEx Print Helpers
+
+For quick console output, use the `*_print` variants:
+
+```elixir
+# Print formatted health check to console
+PhoenixGenApi.health_print()
+
+# Print formatted statistics to console
+PhoenixGenApi.stats_print()
+
+# Print formatted debug report to console
+PhoenixGenApi.debug_print(process_limit: 10)
+
+# Print formatted call flow trace to console
+PhoenixGenApi.call_flow_print("user_service", "get_user")
+
+# Print formatted cluster topology to console
+PhoenixGenApi.cluster_print()
+
+# Print formatted list of all call flows to console
+PhoenixGenApi.flows_print()
+
+# Print formatted request inspection to console
+PhoenixGenApi.inspect_print(%{service: "user_service", request_type: "get_user"})
+
+# Failed config tracking (24h TTL)
+PhoenixGenApi.failed_configs()                    # List failed configs
+PhoenixGenApi.failed_configs(source: :pull)       # Filter by source
+PhoenixGenApi.failed_configs_print()               # Print formatted table
+PhoenixGenApi.failed_configs_summary()             # Print summary
+PhoenixGenApi.cleanup_failed_configs()             # Clean expired entries
+```
+
+## Failed Config Tracking
+
+PhoenixGenApi automatically tracks FunConfig entries that fail validation during
+pull or push. Entries are stored in an ETS table with a 24-hour TTL and include
+the config, failure reason, source (:pull or :push), and originating node.
+
+```elixir
+# List all failed entries
+PhoenixGenApi.failed_configs()
+
+# Filter by source
+PhoenixGenApi.failed_configs(source: :pull)
+PhoenixGenApi.failed_configs(source: :push, limit: 20)
+
+# Print formatted table to console
+PhoenixGenApi.failed_configs_print()
+
+# Print summary (counts by source, by service)
+PhoenixGenApi.failed_configs_summary()
+
+# Clean up expired entries (older than 24h)
+PhoenixGenApi.cleanup_failed_configs()
+
+# Clear all entries
+PhoenixGenApi.clear_failed_configs()
+```
+
+## Diagnostics & Tracing
+
+For runtime debugging, PhoenixGenApi provides admin-gated tracing:
+
+```elixir
+# Configure admin actions
+config :phoenix_gen_api, :admin_actions, [
+  :enable_tracing,
+  :disable_tracing
+]
+
+# Trace processes
+PhoenixGenApi.trace_processes(:all, flags: [:call, :procs])
+PhoenixGenApi.stop_trace(:all)
+
+# Trace specific functions
+PhoenixGenApi.trace_functions({MyApp.Api, :get_user, 1})
+PhoenixGenApi.stop_trace_functions(:all)
+```
+
+See the [Diagnostics Guide](guides/diagnostics.md) for full documentation.
 
 ## Related Packages
 

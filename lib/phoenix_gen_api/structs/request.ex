@@ -140,10 +140,14 @@ defmodule PhoenixGenApi.Structs.Request do
           raise e
 
         e ->
-          raise DecodeError,
-                code: :invalid_payload,
-                message: "Malformed request payload: #{Exception.message(e)}",
-                details: e
+          exception =
+            DecodeError.exception(
+              :invalid_payload,
+              "Malformed request payload: #{Exception.message(e)}",
+              e
+            )
+
+          reraise exception, __STACKTRACE__
       end
 
     request = %{request | args: request.args || %{}}

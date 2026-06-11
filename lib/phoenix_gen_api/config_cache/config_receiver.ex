@@ -122,6 +122,14 @@ defmodule PhoenixGenApi.ConfigReceiver do
   end
 
   @doc """
+  Returns a status snapshot for the config receiver.
+  """
+  @spec status() :: map()
+  def status() do
+    GenServer.call(__MODULE__, :status)
+  end
+
+  @doc """
   Removes a pushed service from the receiver's state.
 
   Also removes the service from `ConfigPuller` if it was registered for
@@ -181,6 +189,15 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
   def handle_call(:get_all_pushed_services, _from, state) do
     {:reply, state.service_versions, state}
+  end
+
+  def handle_call(:status, _from, state) do
+    {:reply,
+     %{
+       status: :ok,
+       pushed_services: state.service_versions,
+       pushed_configs: state.pushed_configs
+     }, state}
   end
 
   def handle_call({:delete_pushed_service, service}, _from, state) do
@@ -308,10 +325,17 @@ defmodule PhoenixGenApi.ConfigReceiver do
           if FunConfig.valid?(config) do
             {[config], acc_errors}
           else
+            reasons =
+              case FunConfig.validate_with_details(config) do
+                {:error, errors} -> errors
+                _ -> ["unknown validation error"]
+              end
+
             error_msg =
               "invalid FunConfig: request_type=#{inspect(config.request_type)}, service=#{inspect(service)}, version=#{inspect(config.version)}, nodes: #{inspect(config.nodes)}, mfa: #{inspect(config.mfa)}, response_type: #{inspect(config.response_type)}, check_permission: #{inspect(config.check_permission)}"
 
             Logger.error("[ConfigReceiver] #{error_msg}")
+            PhoenixGenApi.ConfigFailed.record(config, reasons, :push, nil)
             {[], [error_msg | acc_errors]}
           end
 

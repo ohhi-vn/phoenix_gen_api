@@ -347,9 +347,7 @@ defmodule PhoenixGenApi.Permission do
   # ──────────────────────────────────────────────
 
   @doc false
-  @spec find_in_map_args(map() | nil, String.t()) :: any()
-  defp find_in_map_args(nil, _arg_name), do: nil
-
+  @spec find_in_map_args(map(), String.t()) :: any()
   defp find_in_map_args(args, arg_name) when is_map(args) do
     args
     |> Map.values()

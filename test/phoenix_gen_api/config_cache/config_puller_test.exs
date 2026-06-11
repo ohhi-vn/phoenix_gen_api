@@ -2,7 +2,6 @@ defmodule PhoenixGenApi.ConfigPullerTest do
   use ExUnit.Case, async: false
 
   alias PhoenixGenApi.ConfigPuller
-  alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.Structs.ServiceConfig
 
   # ConfigDb and ConfigPuller are already started by the application
@@ -528,6 +527,7 @@ defmodule PhoenixGenApi.ConfigPullerTest do
 
       # Store the current version
       version_before = ConfigPuller.get_service_version("force_pull_service")
+      _ = version_before
 
       # Force pull should clear versions and re-fetch
       ConfigPuller.force_pull()

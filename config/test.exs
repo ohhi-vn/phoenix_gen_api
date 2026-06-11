@@ -6,7 +6,7 @@ config :phoenix_gen_api,
   client_mode: false
 
 # Print only warnings and errors during test
-config :logger, level: :warn
+config :logger, level: :warning
 
 # Enable admin actions for tests
 config :phoenix_gen_api, :admin_actions, [

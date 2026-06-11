@@ -1,8 +1,8 @@
 defmodule PhoenixGenApi.HooksTest do
   use ExUnit.Case, async: true
 
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.Hooks
-  alias PhoenixGenApi.Structs.{Request, FunConfig}
 
   defp test_request do
     %Request{

@@ -457,14 +457,9 @@ defmodule PhoenixGenApi.NodeSelector do
         {:ok, after_nodes ++ before}
 
       {:sticky, hash_key} ->
-        case sticky_node(request, nodes, hash_key) do
-          {:ok, primary} ->
-            fallbacks = List.delete(nodes, primary)
-            {:ok, [primary | fallbacks]}
-
-          error ->
-            error
-        end
+        {:ok, primary} = sticky_node(request, nodes, hash_key)
+        fallbacks = List.delete(nodes, primary)
+        {:ok, [primary | fallbacks]}
 
       _ ->
         Logger.error("[NodeSelector] invalid choose_node_mode: #{inspect(mode)}")

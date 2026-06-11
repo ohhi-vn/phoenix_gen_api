@@ -1,8 +1,8 @@
 defmodule PhoenixGenApiTest do
   use ExUnit.Case, async: true
 
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.StreamCall
-  alias PhoenixGenApi.Structs.{Request, FunConfig}
 
   describe "stop_stream/1" do
     test "stops stream with pid" do

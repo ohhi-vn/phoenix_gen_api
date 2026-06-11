@@ -167,7 +167,10 @@ defmodule PhoenixGenApi.RateLimiterTest do
 
       assert :ok == RateLimiter.check_rate_limit("user_direct_1", :global, :user_id)
       assert :ok == RateLimiter.check_rate_limit("user_direct_1", :global, :user_id)
-      assert {:error, :rate_limited, details} = RateLimiter.check_rate_limit("user_direct_1", :global, :user_id)
+
+      assert {:error, :rate_limited, details} =
+               RateLimiter.check_rate_limit("user_direct_1", :global, :user_id)
+
       assert details.scope == :global
     end
 
@@ -187,7 +190,10 @@ defmodule PhoenixGenApi.RateLimiterTest do
 
       scope = {"direct_service", "direct_api"}
       assert :ok == RateLimiter.check_rate_limit("user_direct_api_2", scope, :user_id)
-      assert {:error, :rate_limited, details} = RateLimiter.check_rate_limit("user_direct_api_2", scope, :user_id)
+
+      assert {:error, :rate_limited, details} =
+               RateLimiter.check_rate_limit("user_direct_api_2", scope, :user_id)
+
       assert details.scope == scope
     end
   end
@@ -360,10 +366,12 @@ defmodule PhoenixGenApi.RateLimiterTest do
 
       # Count successes and failures
       successes = Enum.count(results, &(&1 == :ok))
-      failures = Enum.count(results, fn
-        {:error, :rate_limited, _} -> true
-        _ -> false
-      end)
+
+      failures =
+        Enum.count(results, fn
+          {:error, :rate_limited, _} -> true
+          _ -> false
+        end)
 
       # Should have exactly 50 successes and 50 failures
       assert successes == 50

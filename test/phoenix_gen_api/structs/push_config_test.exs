@@ -1,7 +1,7 @@
 defmodule PhoenixGenApi.PushConfigTest do
   use ExUnit.Case, async: true
 
-  alias PhoenixGenApi.Structs.{PushConfig, FunConfig, ServiceConfig}
+  alias PhoenixGenApi.Structs.{FunConfig, PushConfig, ServiceConfig}
 
   defp valid_push_config(overrides \\ %{}) do
     fun_config = %FunConfig{

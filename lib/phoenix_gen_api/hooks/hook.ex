@@ -158,15 +158,16 @@ defmodule PhoenixGenApi.Hooks do
       %{module: mod, function: fun, type: type}
     )
 
-    task = Task.async(fn ->
-      try do
-        apply(mod, fun, args)
-      rescue
-        e -> {:__hook_exception, Exception.message(e)}
-      catch
-        kind, value -> {:__hook_exception, {kind, value}}
-      end
-    end)
+    task =
+      Task.async(fn ->
+        try do
+          apply(mod, fun, args)
+        rescue
+          e -> {:__hook_exception, Exception.message(e)}
+        catch
+          kind, value -> {:__hook_exception, {kind, value}}
+        end
+      end)
 
     result =
       case Task.yield(task, @default_hook_timeout) do

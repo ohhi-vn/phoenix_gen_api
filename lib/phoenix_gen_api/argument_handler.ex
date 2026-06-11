@@ -402,7 +402,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
     cond do
       # function has no arguments.
-      arg_types == nil or map_size(arg_types) == 0 ->
+      map_size(arg_types) == 0 ->
         []
 
       # arg_orders is :map, return a map instead of a list.

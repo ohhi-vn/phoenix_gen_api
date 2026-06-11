@@ -1,9 +1,9 @@
 defmodule PhoenixGenApi.ExecutorRetryTest do
   use ExUnit.Case, async: true
 
-  alias PhoenixGenApi.Executor
-  alias PhoenixGenApi.Structs.{Request, FunConfig}
   alias PhoenixGenApi.ConfigDb
+  alias PhoenixGenApi.Executor
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   # Helper module to track call counts for retry testing
   # Uses an Agent to coordinate state across multiple process calls

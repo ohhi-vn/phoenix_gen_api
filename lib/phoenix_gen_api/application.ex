@@ -26,7 +26,12 @@ defmodule PhoenixGenApi.Application do
           # Registry for relay group membership (pid dispatch)
           {Registry, keys: :duplicate, name: PhoenixGenApi.RelayRegistry},
           # Relay group GenServer — serializes all ETS operations
-          PhoenixGenApi.RelayServer
+          PhoenixGenApi.RelayServer,
+          # Failed config tracking (24h TTL ETS table)
+          %{
+            id: PhoenixGenApi.ConfigFailed,
+            start: {PhoenixGenApi.ConfigFailed, :start_link, [[]]}
+          }
         ]
       end
 

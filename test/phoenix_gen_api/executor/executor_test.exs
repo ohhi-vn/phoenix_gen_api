@@ -1,9 +1,9 @@
 defmodule PhoenixGenApi.ExecutorTest do
   use ExUnit.Case, async: true
 
-  alias PhoenixGenApi.Executor
-  alias PhoenixGenApi.Structs.{Request, FunConfig}
   alias PhoenixGenApi.ConfigDb
+  alias PhoenixGenApi.Executor
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   # ConfigDb is already started by the application
 

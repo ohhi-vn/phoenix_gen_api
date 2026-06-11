@@ -65,6 +65,10 @@ defmodule PhoenixGenApi.RelayServer do
     GenServer.call(__MODULE__, {:handle_relay, request, fun_config})
   end
 
+  def status do
+    GenServer.call(__MODULE__, :status)
+  end
+
   # ── Server Callbacks ───────────────────────────────────────────
 
   @impl true
@@ -155,6 +159,31 @@ defmodule PhoenixGenApi.RelayServer do
   def handle_call({:handle_relay, request, fun_config}, _from, state) do
     result = Relay.do_handle_relay(request, fun_config)
     {:reply, result, state}
+  end
+
+  def handle_call(:status, _from, state) do
+    groups = :ets.tab2list(@table)
+
+    group_summaries =
+      Enum.map(groups, fn {group_id, group_type, members} ->
+        member_count = map_size(members)
+        active_count = Enum.count(members, fn {_user_id, member} -> member.status == :active end)
+
+        %{
+          group_id: group_id,
+          group_type: group_type,
+          member_count: member_count,
+          active_count: active_count
+        }
+      end)
+
+    {:reply,
+     %{
+       status: :ok,
+       group_count: length(group_summaries),
+       groups: group_summaries,
+       monitored_memberships: map_size(state.monitors)
+     }, state}
   end
 
   @impl true
