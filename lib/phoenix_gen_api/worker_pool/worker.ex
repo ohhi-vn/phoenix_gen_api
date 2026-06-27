@@ -185,8 +185,8 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
         end)
 
       # Monitor task for crash detection and timeout
-      Process.monitor(task_pid)
-      Process.send_after(self(), {:task_timeout, task_pid}, timeout)
+      ref = Process.monitor(task_pid)
+      Process.send_after(self(), {:task_timeout, task_pid, ref}, timeout)
 
       {:noreply,
        %{state | current_task: task, current_task_pid: task_pid, task_start_time: start_time}}
@@ -194,7 +194,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   end
 
   @impl true
-  def handle_info({:task_timeout, task_pid}, state) do
+  def handle_info({:task_timeout, task_pid, ref}, state) do
     if state.current_task_pid == task_pid and Process.alive?(task_pid) do
       Logger.error(
         "[Worker] task timed out after #{state.task_timeout}ms, terminating task, pool: #{inspect(state.pool_name)}"
@@ -213,6 +213,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
         }
       )
 
+      Process.demonitor(ref, [:flush])
       Process.exit(task_pid, :kill)
       new_state = record_failure(state)
       send(state.pool_name, {:worker_done, self()})
@@ -229,6 +230,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
       # Record the failure and mark that we've already handled this exception
       # so the :DOWN handler doesn't emit duplicate telemetry.
       new_state = record_failure(state)
+      send(state.pool_name, {:worker_done, self()})
       {:noreply, %{new_state | task_exception: true}}
     else
       {:noreply, state}

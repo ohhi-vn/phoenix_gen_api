@@ -420,7 +420,10 @@ defmodule PhoenixGenApi.ConfigDb do
               versioned ->
                 {_key, latest} =
                   Enum.max_by(versioned, fn {{_s, _r, version}, _config} ->
-                    Version.parse!(version)
+                    case Version.parse(version) do
+                      {:ok, v} -> v
+                      :error -> Version.parse!("0.0.0")
+                    end
                   end)
 
                 {:ok, latest}

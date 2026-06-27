@@ -7,8 +7,22 @@ defmodule PhoenixGenApi.RateLimiterTest do
   setup do
     # RateLimiter is already started by the application supervisor.
     # Reset configuration and clear all rate limit data between tests.
+    # Ensure admin actions are allowed so update_config/1 succeeds.
+    original_admin_actions = Application.get_env(:phoenix_gen_api, :admin_actions, [])
+
+    Application.put_env(:phoenix_gen_api, :admin_actions, [
+      :update_rate_limit_config,
+      :change_detail_error,
+      :push_config
+    ])
+
     RateLimiter.update_config(%{global_limits: [], api_limits: []})
     RateLimiter.clear()
+
+    on_exit(fn ->
+      Application.put_env(:phoenix_gen_api, :admin_actions, original_admin_actions)
+    end)
+
     :ok
   end
 

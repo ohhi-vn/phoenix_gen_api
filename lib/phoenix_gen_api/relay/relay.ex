@@ -223,6 +223,7 @@ defmodule PhoenixGenApi.Relay do
 
       [{^group_id, _, _}] ->
         :ets.delete(@table, group_id)
+        Registry.unregister_match(@registry, group_id, :_)
         Logger.info("[Relay] group deleted: #{group_id}")
         :ok
     end
@@ -428,7 +429,8 @@ defmodule PhoenixGenApi.Relay do
     %{
       roles: MapSet.new(roles),
       status: status,
-      joined_at: DateTime.utc_now()
+      joined_at: DateTime.utc_now(),
+      monitor_ref: nil
     }
   end
 

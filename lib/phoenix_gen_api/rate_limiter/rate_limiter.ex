@@ -359,7 +359,24 @@ defmodule PhoenixGenApi.RateLimiter do
     if enabled?() do
       start_time = System.monotonic_time(:microsecond)
       instance = select_instance(request)
-      result = GenServer.call(instance, {:check_rate_limit, request})
+      timeout = rate_limit_timeout()
+
+      result =
+        try do
+          GenServer.call(instance, {:check_rate_limit, request}, timeout)
+        rescue
+          e ->
+            if fail_open?() do
+              Logger.error(
+                "[RateLimiter] call failed (fail-open): #{Exception.message(e)}, request_id: #{request.request_id}"
+              )
+
+              :ok
+            else
+              {:error, :rate_limiter_error, %{message: Exception.message(e)}}
+            end
+        end
+
       duration = System.monotonic_time(:microsecond) - start_time
 
       :telemetry.execute(
@@ -1164,6 +1181,10 @@ defmodule PhoenixGenApi.RateLimiter do
 
   defp fail_open?() do
     Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:fail_open] != false
+  end
+
+  defp rate_limit_timeout() do
+    Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:timeout] || 1000
   end
 
   defp cleanup_interval() do

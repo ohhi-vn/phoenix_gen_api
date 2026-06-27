@@ -129,6 +129,8 @@ defmodule PhoenixGenApi.NodeSelector do
   @sticky_table_name :phoenix_gen_api_sticky_nodes
   # 1 hour TTL for sticky mappings
   @sticky_ttl_ms 3_600_000
+  # Maximum number of sticky entries to prevent memory exhaustion
+  @max_sticky_entries 100_000
 
   @doc """
   Selects a single target node based on the configuration and request.
@@ -474,12 +476,7 @@ defmodule PhoenixGenApi.NodeSelector do
   end
 
   defp hash_node_with_fallback(request, nodes, hash_key) do
-    value =
-      Map.get(request.args, hash_key) ||
-        case request do
-          %{^hash_key => v} when not is_nil(v) -> v
-          _ -> nil
-        end
+    value = Map.get(request.args, hash_key)
 
     case value do
       nil ->
@@ -597,11 +594,7 @@ defmodule PhoenixGenApi.NodeSelector do
   end
 
   defp get_sticky_value(request, hash_key) do
-    Map.get(request.args, hash_key) ||
-      case request do
-        %{^hash_key => v} when not is_nil(v) -> v
-        _ -> nil
-      end
+    Map.get(request.args, hash_key)
   end
 
   defp ensure_sticky_table do
@@ -638,10 +631,26 @@ defmodule PhoenixGenApi.NodeSelector do
 
   defp select_and_store_sticky(nodes, sticky_key) do
     ensure_sticky_table()
+
+    if :ets.info(@sticky_table_name, :size) >= @max_sticky_entries do
+      evict_oldest_sticky()
+    end
+
     node = Enum.random(nodes)
     ts = System.system_time(:millisecond)
     :ets.insert(@sticky_table_name, {sticky_key, node, ts})
     {:ok, node}
+  end
+
+  # Evicts the oldest sticky entry when the table is at capacity.
+  defp evict_oldest_sticky do
+    case :ets.first(@sticky_table_name) do
+      :"$end_of_table" ->
+        :ok
+
+      key ->
+        :ets.delete(@sticky_table_name, key)
+    end
   end
 
   @doc """

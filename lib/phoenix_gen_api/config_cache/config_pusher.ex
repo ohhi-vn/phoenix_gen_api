@@ -104,6 +104,10 @@ defmodule PhoenixGenApi.ConfigPusher do
         "node=#{inspect(server_node)} timeout=#{timeout}ms force=#{force}"
     )
 
+    # Read push_token at runtime so config changes take effect
+    push_token = Application.get_env(:phoenix_gen_api, :push_token)
+    push_config = %{push_config | push_token: push_token}
+
     result =
       :rpc.call(
         server_node,
@@ -426,8 +430,6 @@ defmodule PhoenixGenApi.ConfigPusher do
     version_function = Keyword.get(opts, :version_function)
     version_args = Keyword.get(opts, :version_args, [])
 
-    push_token = Application.get_env(:phoenix_gen_api, :push_token)
-
     %PushConfig{
       service: service,
       nodes: nodes,
@@ -439,7 +441,7 @@ defmodule PhoenixGenApi.ConfigPusher do
       version_module: version_module,
       version_function: version_function,
       version_args: version_args,
-      push_token: push_token
+      push_token: nil
     }
   end
 end

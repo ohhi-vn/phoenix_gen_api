@@ -112,6 +112,10 @@ defmodule PhoenixGenApi.RelayServer do
       {:ok, _} ->
         ref = Process.monitor(channel_pid)
         new_monitors = Map.put(state.monitors, {group_id, user_id}, ref)
+
+        # Store the monitor ref in the member info so we can demonitor on leave
+        update_monitor_ref(group_id, user_id, ref)
+
         {:reply, result, %{state | monitors: new_monitors}}
 
       _ ->
@@ -133,6 +137,9 @@ defmodule PhoenixGenApi.RelayServer do
               Process.demonitor(ref, [:flush])
               monitors
           end
+
+        # Also demonitor the ref stored in member info
+        demonitor_from_member_info(group_id, user_id)
 
         {:reply, result, %{state | monitors: new_monitors}}
 
@@ -186,6 +193,46 @@ defmodule PhoenixGenApi.RelayServer do
      }, state}
   end
 
+  defp update_monitor_ref(group_id, user_id, ref) do
+    case :ets.lookup(Relay.table(), group_id) do
+      [{^group_id, group_type, members}] ->
+        case Map.get(members, user_id) do
+          nil ->
+            :ok
+
+          member ->
+            updated_member = Map.put(member, :monitor_ref, ref)
+            updated_members = Map.put(members, user_id, updated_member)
+            :ets.insert(Relay.table(), {group_id, group_type, updated_members})
+        end
+
+      [] ->
+        :ok
+    end
+  end
+
+  defp demonitor_from_member_info(group_id, user_id) do
+    case :ets.lookup(Relay.table(), group_id) do
+      [{^group_id, group_type, members}] ->
+        case Map.get(members, user_id) do
+          nil ->
+            :ok
+
+          %{monitor_ref: ref} when is_reference(ref) ->
+            Process.demonitor(ref, [:flush])
+            updated_member = Map.put(members[user_id], :monitor_ref, nil)
+            updated_members = Map.put(members, user_id, updated_member)
+            :ets.insert(Relay.table(), {group_id, group_type, updated_members})
+
+          _ ->
+            :ok
+        end
+
+      [] ->
+        :ok
+    end
+  end
+
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     case Enum.find(state.monitors, fn {_key, v} -> v == ref end) do
@@ -197,6 +244,7 @@ defmodule PhoenixGenApi.RelayServer do
           "[RelayServer] channel process down, cleaning up membership, group_id: #{group_id}, user_id: #{user_id}, reason: #{inspect(reason)}"
         )
 
+        Process.demonitor(ref, [:flush])
         Relay.do_leave_group(group_id, user_id)
         new_monitors = Map.delete(state.monitors, {group_id, user_id})
         {:noreply, %{state | monitors: new_monitors}}

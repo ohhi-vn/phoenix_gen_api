@@ -160,7 +160,7 @@ defmodule PhoenixGenApi.ArgumentHandler do
   defp get_type_with_params(type) when not is_list(type) and not is_tuple(type), do: {type, []}
 
   # Handle old tuple format: {:list_num, 2}
-  defp get_type_with_params({type, value}) when is_atom(type) do
+  defp get_type_with_params({type, value}) when is_atom(type) and not is_list(value) do
     # Convert old tuple format to keyword list
     params =
       case type do
@@ -174,6 +174,11 @@ defmodule PhoenixGenApi.ArgumentHandler do
       end
 
     {type, params}
+  end
+
+  # Handle old tuple format where value is already a keyword list: {:string, [max_bytes: 5]}
+  defp get_type_with_params({type, value}) when is_atom(type) and is_list(value) do
+    {type, value}
   end
 
   defp get_type_with_params(arg_config) when is_list(arg_config) do
@@ -871,8 +876,12 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   defp convert_arg!(arg, :datetime) when is_binary(arg) do
     case DateTime.from_iso8601(arg) do
-      {:ok, datetime, _offset} ->
+      {:ok, datetime, offset} when offset != 0 ->
         datetime
+
+      {:ok, _datetime, _offset} ->
+        raise ArgumentError,
+              "datetime must include timezone offset (e.g., '2024-01-01T00:00:00Z' or '2024-01-01T00:00:00+07:00'), got: #{inspect(arg)}"
 
       {:error, reason} ->
         raise ArgumentError, "invalid datetime format for #{inspect(arg)}: #{reason}"

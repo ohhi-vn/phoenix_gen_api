@@ -271,12 +271,12 @@ defmodule PhoenixGenApi.ConfigReceiver do
     end
   end
 
-  defp validate_push_token(%PushConfig{push_token: token}) do
+  defp validate_push_token(%PushConfig{push_token: token, service: service}) do
     if Security.valid_push_token?(token) do
       :ok
     else
       Logger.warning(
-        "[ConfigReceiver] push token rejected: service=unknown token=#{inspect(token)}"
+        "[ConfigReceiver] push token rejected: service=#{inspect(service)} token=#{inspect(token)}"
       )
 
       {:error, :invalid_push_token}

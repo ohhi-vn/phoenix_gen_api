@@ -333,14 +333,16 @@ defmodule PhoenixGenApi.WorkerPool do
     final_idle = MapSet.put(new_idle, new_pid)
     final_idle_list = [new_pid | new_idle_list]
 
-    # Record failure for circuit breaker
+    # Worker death is not a task failure — don't count it toward circuit breaker.
+    # Just reset the consecutive failures counter since we have a fresh worker.
     new_state =
-      record_failure(%{
+      %{
         state
         | workers: final_workers,
           idle_workers: final_idle,
-          idle_workers_list: final_idle_list
-      })
+          idle_workers_list: final_idle_list,
+          consecutive_failures: 0
+      }
 
     {:noreply, new_state}
   end
@@ -353,18 +355,16 @@ defmodule PhoenixGenApi.WorkerPool do
 
   ## Private Functions
 
-  defp find_idle_worker(_idle_workers, idle_list) do
-    case idle_list do
-      [pid | _] -> {:ok, pid}
-      [] -> :no_idle_worker
+  defp find_idle_worker(idle_workers, _idle_list) do
+    if MapSet.size(idle_workers) > 0 do
+      pid = Enum.random(MapSet.to_list(idle_workers))
+      {:ok, pid}
+    else
+      :no_idle_worker
     end
   end
 
   ## Circuit Breaker Functions
-
-  defp circuit_breaker_threshold do
-    Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_threshold] || 10
-  end
 
   defp circuit_breaker_cooldown do
     Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_cooldown] || 60_000
@@ -375,35 +375,6 @@ defmodule PhoenixGenApi.WorkerPool do
       circuit_open_at,
       circuit_breaker_cooldown()
     )
-  end
-
-  defp record_failure(state) do
-    new_failures = state.consecutive_failures + 1
-    new_total_failed = state.total_tasks_failed + 1
-
-    if new_failures >= circuit_breaker_threshold() and state.circuit_open_at == nil do
-      Logger.warning(
-        "[WorkerPool] circuit breaker opened after #{new_failures} consecutive failures, pool: #{state.pool_name}"
-      )
-
-      :telemetry.execute(
-        [:phoenix_gen_api, :worker_pool, :circuit_breaker, :open],
-        %{},
-        %{
-          pool_name: state.pool_name,
-          consecutive_failures: new_failures
-        }
-      )
-
-      %{
-        state
-        | consecutive_failures: new_failures,
-          circuit_open_at: System.monotonic_time(:millisecond),
-          total_tasks_failed: new_total_failed
-      }
-    else
-      %{state | consecutive_failures: new_failures, total_tasks_failed: new_total_failed}
-    end
   end
 
   defp record_success(state) do

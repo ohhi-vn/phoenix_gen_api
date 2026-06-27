@@ -31,7 +31,7 @@ defmodule PhoenixGenApi.Helpers.Shared do
   @spec same_service?(atom() | String.t(), atom() | String.t()) :: boolean()
   def same_service?(fun_service, push_service)
       when is_atom(fun_service) and is_atom(push_service) do
-    fun_service == push_service
+    fun_service != nil and push_service != nil and fun_service == push_service
   end
 
   def same_service?(fun_service, push_service)
@@ -41,12 +41,12 @@ defmodule PhoenixGenApi.Helpers.Shared do
 
   def same_service?(fun_service, push_service)
       when is_atom(fun_service) and is_binary(push_service) do
-    Atom.to_string(fun_service) == push_service
+    fun_service != nil and Atom.to_string(fun_service) == push_service
   end
 
   def same_service?(fun_service, push_service)
       when is_binary(fun_service) and is_atom(push_service) do
-    fun_service == Atom.to_string(push_service)
+    push_service != nil and fun_service == Atom.to_string(push_service)
   end
 
   def same_service?(_, _), do: false

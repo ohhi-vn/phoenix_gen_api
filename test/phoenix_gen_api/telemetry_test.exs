@@ -11,9 +11,22 @@ defmodule PhoenixGenApi.TelemetryTest do
     # Clean ConfigDb before each test
     :ets.delete_all_objects(PhoenixGenApi.ConfigDb)
 
+    # Ensure admin actions are allowed so update_config/1 succeeds
+    original_admin_actions = Application.get_env(:phoenix_gen_api, :admin_actions, [])
+
+    Application.put_env(:phoenix_gen_api, :admin_actions, [
+      :update_rate_limit_config,
+      :change_detail_error,
+      :push_config
+    ])
+
     # Reset rate limiter
     RateLimiter.update_config(%{global_limits: [], api_limits: []})
     RateLimiter.clear()
+
+    on_exit(fn ->
+      Application.put_env(:phoenix_gen_api, :admin_actions, original_admin_actions)
+    end)
 
     :ok
   end

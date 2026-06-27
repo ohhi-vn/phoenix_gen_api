@@ -133,19 +133,20 @@ defmodule PhoenixGenApi.Security do
   def valid_push_token?(_), do: false
 
   # Constant-time binary comparison to prevent timing attacks.
-  # Compares length first, then all bytes regardless of early mismatch.
+  # Always does the full comparison regardless of length to avoid leaking
+  # length info via timing.
   defp constant_time_compare(a, b) when is_binary(a) and is_binary(b) do
-    if byte_size(a) == byte_size(b) do
-      constant_time_compare_bin(a, b, 0) == 0
-    else
-      # Still do a dummy comparison to avoid leaking length info via timing
-      :crypto.hash(:sha256, a)
-      :crypto.hash(:sha256, b)
-      false
-    end
+    size_eq = byte_size(a) == byte_size(b)
+    result = constant_time_compare_bin(a, b, 0)
+    size_eq and result == 0
   end
 
   defp constant_time_compare_bin(<<>>, <<>>, acc), do: acc
+
+  defp constant_time_compare_bin(<<>>, _, acc) when acc != 0, do: acc
+  defp constant_time_compare_bin(_, <<>>, acc) when acc != 0, do: acc
+  defp constant_time_compare_bin(<<>>, _, _acc), do: 1
+  defp constant_time_compare_bin(_, <<>>, _acc), do: 1
 
   defp constant_time_compare_bin(<<x, rest_a::binary>>, <<y, rest_b::binary>>, acc) do
     constant_time_compare_bin(rest_a, rest_b, acc ||| Bitwise.bxor(x, y))

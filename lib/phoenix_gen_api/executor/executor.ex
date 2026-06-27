@@ -426,7 +426,8 @@ defmodule PhoenixGenApi.Executor do
 
   defp execute_local(mod, fun, args, timeout) do
     # Validate MFA before calling to prevent arbitrary code execution
-    if function_exported?(mod, fun, length(args)) do
+    with :ok <- PhoenixGenApi.Security.validate_mfa({mod, fun, args}),
+         true <- function_exported?(mod, fun, length(args)) do
       task = Task.async(fn -> apply(mod, fun, args) end)
 
       case Task.yield(task, timeout) || Task.shutdown(task) do
@@ -435,9 +436,19 @@ defmodule PhoenixGenApi.Executor do
         {:exit, reason} -> {:error, "local execution failed: #{inspect(reason)}"}
       end
     else
-      Logger.error("[Executor] MFA not exported: #{inspect(mod)}.#{inspect(fun)}/#{length(args)}")
+      {:error, {:mfa_not_allowed, _}} = error ->
+        Logger.error(
+          "[Executor] local MFA not allowed: #{inspect(mod)}.#{inspect(fun)}/#{length(args)}"
+        )
 
-      {:error, :function_not_found}
+        error
+
+      false ->
+        Logger.error(
+          "[Executor] MFA not exported: #{inspect(mod)}.#{inspect(fun)}/#{length(args)}"
+        )
+
+        {:error, :function_not_found}
     end
   end
 
@@ -550,8 +561,9 @@ defmodule PhoenixGenApi.Executor do
     end
   end
 
-  defp apply_remote_retry(state = %RetryState{retry_config: {:same_node, n}}) when n > 0 do
-    if retryable_error?(state.result) do
+  # Tail-recursive retry loop for remote execution.
+  defp apply_remote_retry(state = %RetryState{retry_config: {:same_node, n}}) do
+    if retryable_error?(state.result) and n > 0 do
       backoff_ms = NodeSelector.calculate_backoff(n)
 
       Logger.info(
@@ -566,7 +578,6 @@ defmodule PhoenixGenApi.Executor do
         %{mode: :same_node, type: :remote, nodes: state.nodes}
       )
 
-      # Retry on the same nodes that were originally selected
       new_result =
         execute_remote_with_fallback(
           state.nodes,
@@ -580,13 +591,12 @@ defmodule PhoenixGenApi.Executor do
 
       apply_remote_retry(%{state | result: new_result, retry_config: {:same_node, n - 1}})
     else
-      state.result
+      finalize_retry(state)
     end
   end
 
-  defp apply_remote_retry(state = %RetryState{retry_config: {:all_nodes, n}}) when n > 0 do
-    if retryable_error?(state.result) do
-      # Retry on ALL available nodes
+  defp apply_remote_retry(state = %RetryState{retry_config: {:all_nodes, n}}) do
+    if retryable_error?(state.result) and n > 0 do
       all_nodes =
         case NodeSelector.resolve_nodes_list(state.fun_config) do
           {:ok, nodes} -> nodes
@@ -625,14 +635,19 @@ defmodule PhoenixGenApi.Executor do
           retry_config: {:all_nodes, n - 1}
       })
     else
-      state.result
+      finalize_retry(state)
     end
   end
 
   defp apply_remote_retry(state = %RetryState{}) do
+    finalize_retry(state)
+  end
+
+  # Common retry finalization logic
+  defp finalize_retry(state = %RetryState{retry_config: config}) do
     if retryable_error?(state.result) do
       Logger.warning(
-        "[Executor] all retry attempts exhausted, mode: #{inspect(state.retry_config)}, request_id: #{state.request.request_id}"
+        "[Executor] all retry attempts exhausted, mode: #{inspect(config)}, request_id: #{state.request.request_id}"
       )
 
       :telemetry.execute(
@@ -640,7 +655,7 @@ defmodule PhoenixGenApi.Executor do
         %{},
         %{
           request_id: state.request.request_id,
-          mode: state.retry_config,
+          mode: config,
           last_error: inspect(state.result)
         }
       )

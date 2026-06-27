@@ -62,6 +62,8 @@ defmodule PhoenixGenApi.Diagnostics do
   alias PhoenixGenApi.{ConfigDb, ConfigPuller, ConfigReceiver, RateLimiter}
   alias PhoenixGenApi.RelayServer
 
+  require Logger
+
   @trace_process_targets [
     :all,
     :processes,
@@ -381,7 +383,8 @@ defmodule PhoenixGenApi.Diagnostics do
     with :ok <- admin_action_allowed?(:enable_tracing),
          {:ok, tracer} <- tracer(opts),
          {:ok, flags} <- trace_flags(opts),
-         {:ok, normalized_targets} <- normalize_trace_targets(targets) do
+         {:ok, normalized_targets} <- normalize_trace_targets(targets),
+         :ok <- validate_trace_targets(normalized_targets) do
       trace_flags_with_tracer = [{:tracer, tracer} | flags]
 
       results =
@@ -396,6 +399,36 @@ defmodule PhoenixGenApi.Diagnostics do
          targets: normalized_targets,
          results: results
        }}
+    end
+  end
+
+  defp validate_trace_targets([:all]), do: :ok
+
+  defp validate_trace_targets(targets) do
+    invalid =
+      Enum.reject(targets, fn
+        t when is_pid(t) ->
+          true
+
+        t when is_port(t) ->
+          true
+
+        t when is_atom(t) ->
+          if Code.ensure_loaded?(t) do
+            true
+          else
+            Logger.warning("[Diagnostics] Trace target module not loaded: #{inspect(t)}")
+            false
+          end
+
+        _ ->
+          false
+      end)
+
+    if invalid == [] do
+      :ok
+    else
+      {:error, {:invalid_trace_target, invalid}}
     end
   end
 
@@ -420,7 +453,8 @@ defmodule PhoenixGenApi.Diagnostics do
          {:ok, tracer} <- tracer(opts),
          {:ok, flags} <- trace_flags(opts),
          {:ok, match_spec} <- match_spec(opts),
-         {:ok, normalized_mfas} <- normalize_mfas(mfas) do
+         {:ok, normalized_mfas} <- normalize_mfas(mfas),
+         :ok <- validate_mfa_modules(normalized_mfas) do
       {:ok, process_trace} = trace_processes(:all, Keyword.put(opts, :tracer, tracer))
 
       pattern_results =
@@ -439,6 +473,26 @@ defmodule PhoenixGenApi.Diagnostics do
        }}
     end
   end
+
+  defp validate_mfa_modules([{mod, _, _} | _] = mfas) when is_atom(mod) do
+    invalid =
+      Enum.reject(mfas, fn {mod, _, _} ->
+        if Code.ensure_loaded?(mod) do
+          true
+        else
+          Logger.warning("[Diagnostics] Trace MFA module not loaded: #{inspect(mod)}")
+          false
+        end
+      end)
+
+    if invalid == [] do
+      :ok
+    else
+      {:error, {:invalid_mfa, invalid}}
+    end
+  end
+
+  defp validate_mfa_modules(_), do: :ok
 
   @doc """
   Disables legacy Erlang tracing for processes or ports.

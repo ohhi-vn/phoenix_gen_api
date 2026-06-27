@@ -485,8 +485,29 @@ defmodule PhoenixGenApi.ConfigPuller do
           {acc_list, acc_versions, [{:error, {:task_exit, reason}} | results_acc]}
       end)
 
-    success? = Enum.all?(results, &(&1 == :ok))
-    {new_api_list, new_service_versions, success?}
+    # Treat partial success as success — log failed services but don't
+    # increment failure_count for transient per-service errors.
+    results_list =
+      Enum.map(results, fn
+        {:ok, _} -> :ok
+        {:error, _} -> :error
+        :ok -> :ok
+      end)
+
+    _success? = Enum.all?(results_list, &(&1 == :ok))
+
+    failed_count = Enum.count(results_list, &(&1 == :error))
+
+    if failed_count > 0 do
+      Logger.warning(
+        "[ConfigPuller] partial pull: #{failed_count}/#{length(results_list)} services failed"
+      )
+    end
+
+    # Consider it a success if at least half of services succeeded
+    partial_success? = failed_count < length(results_list)
+
+    {new_api_list, new_service_versions, partial_success?}
   end
 
   # Fetches and processes a single service's configuration.
