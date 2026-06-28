@@ -250,12 +250,5 @@ See the [Diagnostics Guide](guides/diagnostics.md) for full documentation.
 | [ClusterHelper](https://hex.pm/packages/cluster_helper) | Dynamic cluster node discovery |
 | [ToonEx](https://hex.pm/packages/toon_ex) | TOON encoder/decoder — compact binary protocol for Phoenix Channels |
 | [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) | Ash extension that auto-generates `FunConfig` from Ash resources |
-
-## AI Agent Support
-
-```bash
-mix usage_rules.sync AGENTS.md --all --link-to-folder deps --inline usage_rules:all
-mix tidewave
-```
-
-Connect at `http://localhost:4114/tidewave/mcp`. See [Tidewave](https://hexdocs.pm/tidewave/) for details.
+| [PhoenixGenApiTui
+](https://hex.pm/packages/phoenix_gen_api_tui) | Terminail UI for show services & functions in runtime |

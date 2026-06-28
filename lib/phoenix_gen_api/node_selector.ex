@@ -564,7 +564,7 @@ defmodule PhoenixGenApi.NodeSelector do
       select_and_store_sticky(nodes, hash_key)
     else
       ensure_sticky_table()
-      handle_sticky_lookup(nodes, hash_key)
+      handle_sticky_lookup(nodes, value)
     end
   end
 
@@ -594,7 +594,12 @@ defmodule PhoenixGenApi.NodeSelector do
   end
 
   defp get_sticky_value(request, hash_key) do
-    Map.get(request.args, hash_key)
+    args_val = Map.get(request.args, hash_key)
+    struct_field = String.to_atom(hash_key)
+    struct_val = Map.get(request, struct_field)
+    args_val || struct_val
+  rescue
+    ArgumentError -> nil
   end
 
   defp ensure_sticky_table do
@@ -664,19 +669,31 @@ defmodule PhoenixGenApi.NodeSelector do
   - `:ok` - Cleanup completed
   """
   def cleanup_sticky_table do
-    now_ms = System.system_time(:millisecond)
+    ensure_sticky_table()
 
-    :ets.foldl(@sticky_table_name, [], fn {key, node, ts}, acc ->
-      if ts < now_ms - @sticky_ttl_ms do
-        [{key, node, ts} | acc]
-      else
-        acc
-      end
-    end)
-    |> Enum.each(fn {key, node, ts} ->
-      :ets.delete_object(@sticky_table_name, {key, node, ts})
-    end)
+    case :ets.whereis(@sticky_table_name) do
+      :undefined ->
+        :ok
 
-    :ok
+      tid ->
+        now_ms = System.system_time(:millisecond)
+
+        :ets.foldl(
+          fn {key, node, ts}, acc ->
+            if ts < now_ms - @sticky_ttl_ms do
+              [{key, node, ts} | acc]
+            else
+              acc
+            end
+          end,
+          [],
+          tid
+        )
+        |> Enum.each(fn {key, node, ts} ->
+          :ets.delete_object(tid, {key, node, ts})
+        end)
+
+        :ok
+    end
   end
 end
