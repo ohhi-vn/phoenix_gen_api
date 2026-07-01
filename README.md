@@ -250,5 +250,4 @@ See the [Diagnostics Guide](guides/diagnostics.md) for full documentation.
 | [ClusterHelper](https://hex.pm/packages/cluster_helper) | Dynamic cluster node discovery |
 | [ToonEx](https://hex.pm/packages/toon_ex) | TOON encoder/decoder — compact binary protocol for Phoenix Channels |
 | [AshPhoenixGenApi](https://hex.pm/packages/ash_phoenix_gen_api) | Ash extension that auto-generates `FunConfig` from Ash resources |
-| [PhoenixGenApiTui
-](https://hex.pm/packages/phoenix_gen_api_tui) | Terminail UI for show services & functions in runtime |
+| [PhoenixGenApiTui](https://hex.pm/packages/phoenix_gen_api_tui) | Terminail UI for show services & functions in runtime |
