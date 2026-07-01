@@ -131,6 +131,8 @@ defmodule PhoenixGenApi.Permission do
 
   require Logger
 
+  @default_permission_rpc_timeout 5_000
+
   @doc """
   Exception raised when a permission check fails.
 
@@ -312,6 +314,149 @@ defmodule PhoenixGenApi.Permission do
   end
 
   # ──────────────────────────────────────────────
+  # check_permission! — raising version
+  # ──────────────────────────────────────────────
+
+  @doc """
+  Checks permission and raises an exception if the check fails.
+
+  This is the raising version of `check_permission/2`. It should be used in the
+  request execution pipeline where permission failures should halt processing.
+
+  ## Parameters
+
+    - `request` - The `Request` struct containing user information and arguments
+    - `fun_config` - The `FunConfig` struct with permission settings
+
+  ## Returns
+
+    - `nil` - Permission check passed (function returns nothing on success)
+
+  ## Raises
+
+    - `PermissionDenied` - If the permission check fails
+
+  ## Examples
+
+      request = %Request{
+        user_id: "user_123",
+        args: %{"user_id" => "user_999"}
+      }
+
+      config = %FunConfig{check_permission: {:arg, "user_id"}}
+
+      # This will raise because user_ids don't match
+      Permission.check_permission!(request, config)
+      # ** (PhoenixGenApi.Permission.PermissionDenied) Permission denied...
+
+  ## Notes
+
+  - Logs a warning with request details when permission is denied
+  - Always called before request execution in the Executor module
+  - Returns nothing on success (only side effect is potential exception)
+  """
+  def check_permission!(request = %Request{}, fun_config = %FunConfig{}) do
+    if not check_permission(request, fun_config) do
+      permission_mode = determine_permission_mode(fun_config)
+
+      Logger.warning(
+        "[Permission] denied: user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, mode: #{inspect(permission_mode)}"
+      )
+
+      raise PermissionDenied,
+        user_id: request.user_id,
+        request_id: request.request_id,
+        request_type: request.request_type,
+        permission_mode: permission_mode
+    end
+
+    nil
+  end
+
+  # ──────────────────────────────────────────────
+  # Remote permission callback — runs on target node via RPC
+  # Used when the permission module only exists on remote nodes.
+  # ──────────────────────────────────────────────
+
+  @doc """
+  Executes a permission callback on a remote node via RPC.
+
+  This is needed when the permission callback module (e.g. `StorageService.Games.Security`)
+  only exists on remote target nodes and not on the gateway node.
+
+  Accepts an optional pre-resolved `node` to ensure permission check and execution
+  run on the **same target node** (prevents TOCTOU race conditions).
+
+  When no node is given, picks one via `NodeSelector.get_node/2`.
+  Returns `:ok` or raises `PermissionDenied`.
+  """
+  @spec check_permission_remote!(Request.t(), FunConfig.t(), atom()) :: :ok | no_return()
+  def check_permission_remote!(request = %Request{}, fun_config = %FunConfig{}, node) do
+    {mod, fun, args} = fun_config.permission_callback
+    timeout = fun_config.timeout || @default_permission_rpc_timeout
+
+    case :rpc.call(node, mod, fun, [request | args], timeout) do
+      {:badrpc, reason} ->
+        Logger.error(
+          "[Permission] permission_callback RPC failed on node #{inspect(node)}: #{inspect(reason)}"
+        )
+
+        raise PermissionDenied,
+          user_id: request.user_id,
+          request_id: request.request_id,
+          request_type: request.request_type,
+          permission_mode: {:callback, {mod, fun, args}}
+
+      true ->
+        :ok
+
+      false ->
+        Logger.warning(
+          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false on node #{inspect(node)}"
+        )
+
+        raise PermissionDenied,
+          user_id: request.user_id,
+          request_id: request.request_id,
+          request_type: request.request_type,
+          permission_mode: {:callback, {mod, fun, args}}
+
+      other ->
+        Logger.warning(
+          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value: #{inspect(other)} on node #{inspect(node)}"
+        )
+
+        raise PermissionDenied,
+          user_id: request.user_id,
+          request_id: request.request_id,
+          request_type: request.request_type,
+          permission_mode: {:callback, {mod, fun, args}}
+    end
+  end
+
+  # Fallback — picks node automatically when none is provided
+  @doc false
+  def check_permission_remote!(request = %Request{}, fun_config = %FunConfig{}) do
+    case PhoenixGenApi.NodeSelector.get_node(fun_config, request) do
+      {:ok, node} ->
+        check_permission_remote!(request, fun_config, node)
+
+      {:error, reason} ->
+        Logger.error(
+          "[Permission] node selection failed for remote permission callback: #{inspect(reason)}"
+        )
+
+        {mod, fun, args} = fun_config.permission_callback
+
+        raise PermissionDenied,
+          user_id: request.user_id,
+          request_id: request.request_id,
+          request_type: request.request_type,
+          permission_mode: {:callback, {mod, fun, args}}
+    end
+  end
+
+  # ──────────────────────────────────────────────
   # Shared arg-checking logic (eliminates duplication between :map and standard)
   # ──────────────────────────────────────────────
 
@@ -397,66 +542,6 @@ defmodule PhoenixGenApi.Permission do
 
         false
     end
-  end
-
-  # ──────────────────────────────────────────────
-  # check_permission! — raising version
-  # ──────────────────────────────────────────────
-
-  @doc """
-  Checks permission and raises an exception if the check fails.
-
-  This is the raising version of `check_permission/2`. It should be used in the
-  request execution pipeline where permission failures should halt processing.
-
-  ## Parameters
-
-    - `request` - The `Request` struct containing user information and arguments
-    - `fun_config` - The `FunConfig` struct with permission settings
-
-  ## Returns
-
-    - `nil` - Permission check passed (function returns nothing on success)
-
-  ## Raises
-
-    - `PermissionDenied` - If the permission check fails
-
-  ## Examples
-
-      request = %Request{
-        user_id: "user_123",
-        args: %{"user_id" => "user_999"}
-      }
-
-      config = %FunConfig{check_permission: {:arg, "user_id"}}
-
-      # This will raise because user_ids don't match
-      Permission.check_permission!(request, config)
-      # ** (PhoenixGenApi.Permission.PermissionDenied) Permission denied...
-
-  ## Notes
-
-  - Logs a warning with request details when permission is denied
-  - Always called before request execution in the Executor module
-  - Returns nothing on success (only side effect is potential exception)
-  """
-  def check_permission!(request = %Request{}, fun_config = %FunConfig{}) do
-    if not check_permission(request, fun_config) do
-      permission_mode = determine_permission_mode(fun_config)
-
-      Logger.warning(
-        "[Permission] denied: user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, mode: #{inspect(permission_mode)}"
-      )
-
-      raise PermissionDenied,
-        user_id: request.user_id,
-        request_id: request.request_id,
-        request_type: request.request_type,
-        permission_mode: permission_mode
-    end
-
-    nil
   end
 
   # ──────────────────────────────────────────────

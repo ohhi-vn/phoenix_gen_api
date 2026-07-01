@@ -987,4 +987,87 @@ defmodule PhoenixGenApi.PermissionTest do
       assert exception.permission_mode == {:role, ["admin"]}
     end
   end
+
+  # ──────────────────────────────────────────────
+  # check_permission_remote!/2 — remote node execution
+  # ──────────────────────────────────────────────
+
+  describe "check_permission_remote!/2" do
+    setup do
+      remote_nodes = [:"nonexistent_perm@test"]
+
+      config = %FunConfig{
+        request_type: "test_remote_perm",
+        service: "test_remote_perm_service",
+        nodes: remote_nodes,
+        choose_node_mode: :random,
+        timeout: 500,
+        mfa: {__MODULE__, :test_remote_perm_fn, []},
+        arg_types: nil,
+        arg_orders: [],
+        response_type: :sync,
+        check_permission: false,
+        permission_callback: {TestCallback, :allow, []},
+        request_info: false
+      }
+
+      request = %Request{
+        request_id: "test_remote_perm_req",
+        request_type: "test_remote_perm",
+        service: "test_remote_perm_service",
+        user_id: "user_123",
+        device_id: "device_456",
+        args: %{}
+      }
+
+      {:ok, config: config, request: request}
+    end
+
+    test "raises PermissionDenied when node is unreachable (badrpc)", %{
+      config: config,
+      request: request
+    } do
+      assert_raise PhoenixGenApi.Permission.PermissionDenied, fn ->
+        Permission.check_permission_remote!(request, config)
+      end
+    end
+
+    test "raises PermissionDenied when node_selection fails", %{request: request} do
+      config = %FunConfig{
+        request_type: "test_remote_perm",
+        service: "test_remote_perm_service",
+        nodes: [],
+        choose_node_mode: :random,
+        timeout: 500,
+        mfa: {__MODULE__, :test_remote_perm_fn, []},
+        arg_types: nil,
+        arg_orders: [],
+        response_type: :sync,
+        check_permission: false,
+        permission_callback: {TestCallback, :allow, []},
+        request_info: false
+      }
+
+      assert_raise PhoenixGenApi.Permission.PermissionDenied, fn ->
+        Permission.check_permission_remote!(request, config)
+      end
+    end
+
+    test "permission_mode in exception includes the callback MFA", %{
+      config: config,
+      request: request
+    } do
+      exception =
+        assert_raise PhoenixGenApi.Permission.PermissionDenied, fn ->
+          Permission.check_permission_remote!(request, config)
+        end
+
+      assert exception.permission_mode == {:callback, {TestCallback, :allow, []}}
+      assert exception.user_id == "user_123"
+      assert exception.request_id == "test_remote_perm_req"
+    end
+  end
+
+  # Helper for remote test (unused but needed for FunConfig validation)
+  def test_remote_perm_fn, do: :ok
 end

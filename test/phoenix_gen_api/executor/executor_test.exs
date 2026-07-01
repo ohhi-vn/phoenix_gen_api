@@ -617,4 +617,129 @@ defmodule PhoenixGenApi.ExecutorTest do
   def test_length_list(list) do
     length(list)
   end
+
+  # Permission callback helpers for remote/local tests
+  def test_perm_callback(_request), do: true
+  def test_allow_perm_callback(_request), do: true
+  def test_deny_perm_callback(_request), do: false
+
+  # ──────────────────────────────────────────────
+  # Remote permission callback tests
+  # ──────────────────────────────────────────────
+
+  describe "remote permission_callback" do
+    test "returns permission denied when remote node is unreachable", %{unique: unique} do
+      config = %FunConfig{
+        request_type: "test_remote_callback_#{unique}",
+        service: "test_service_#{unique}",
+        nodes: [:"nonexistent_perm_exec@test"],
+        choose_node_mode: :random,
+        timeout: 500,
+        mfa: {__MODULE__, :test_sync_function, []},
+        arg_types: %{"name" => :string, "age" => :num},
+        arg_orders: ["name", "age"],
+        response_type: :sync,
+        check_permission: false,
+        permission_callback: {__MODULE__, :test_perm_callback, []},
+        request_info: false
+      }
+
+      ConfigDb.add(config)
+
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_remote_callback_#{unique}")
+      end)
+
+      request = %Request{
+        request_id: "test_remote_cb_req_#{unique}",
+        request_type: "test_remote_callback_#{unique}",
+        service: "test_service_#{unique}",
+        user_id: "user_123",
+        device_id: "device_456",
+        args: %{"name" => "Alice", "age" => 30}
+      }
+
+      result = Executor.execute!(request)
+
+      assert result.success == false
+      assert result.error =~ "Permission denied"
+    end
+
+    test "local service still uses local permission callback (skips remote check)", %{
+      unique: unique
+    } do
+      config = %FunConfig{
+        request_type: "test_local_callback_#{unique}",
+        service: "test_service_#{unique}",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {__MODULE__, :test_sync_function, []},
+        arg_types: %{"name" => :string, "age" => :num},
+        arg_orders: ["name", "age"],
+        response_type: :sync,
+        check_permission: false,
+        permission_callback: {__MODULE__, :test_allow_perm_callback, []},
+        request_info: false
+      }
+
+      ConfigDb.add(config)
+
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_local_callback_#{unique}")
+      end)
+
+      request = %Request{
+        request_id: "test_local_cb_req_#{unique}",
+        request_type: "test_local_callback_#{unique}",
+        service: "test_service_#{unique}",
+        user_id: "user_123",
+        device_id: "device_456",
+        args: %{"name" => "Alice", "age" => 30}
+      }
+
+      result = Executor.execute!(request)
+
+      # Local callback should work and execute succeeds
+      assert result.success == true
+      assert result.result == "Hello Alice, age 30"
+    end
+
+    test "permission denied via callback prevents execution", %{unique: unique} do
+      config = %FunConfig{
+        request_type: "test_denied_callback_#{unique}",
+        service: "test_service_#{unique}",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {__MODULE__, :test_sync_function, []},
+        arg_types: %{"name" => :string, "age" => :num},
+        arg_orders: ["name", "age"],
+        response_type: :sync,
+        check_permission: false,
+        permission_callback: {__MODULE__, :test_deny_perm_callback, []},
+        request_info: false
+      }
+
+      ConfigDb.add(config)
+
+      on_exit(fn ->
+        ConfigDb.delete("test_service_#{unique}", "test_denied_callback_#{unique}")
+      end)
+
+      request = %Request{
+        request_id: "test_denied_cb_req_#{unique}",
+        request_type: "test_denied_callback_#{unique}",
+        service: "test_service_#{unique}",
+        user_id: "user_123",
+        device_id: "device_456",
+        args: %{"name" => "Alice", "age" => 30}
+      }
+
+      result = Executor.execute!(request)
+
+      assert result.success == false
+      assert result.error =~ "Permission denied"
+    end
+  end
 end

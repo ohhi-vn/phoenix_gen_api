@@ -60,6 +60,7 @@ defmodule PhoenixGenApi.Executor do
   alias PhoenixGenApi.StreamCall
   alias PhoenixGenApi.ArgumentHandler
   alias PhoenixGenApi.Permission
+  alias PhoenixGenApi.Permission.PermissionDenied
   alias PhoenixGenApi.RateLimiter
   alias PhoenixGenApi.Hooks
   alias PhoenixGenApi.NodeSelector
@@ -291,9 +292,29 @@ defmodule PhoenixGenApi.Executor do
     # Unauthenticated requests are rejected before consuming rate limit resources.
     # Execution order: Permission check → Rate limit check → Argument validation → Execution
     try do
-      Permission.check_permission!(request, fun_config)
+      if needs_remote_permission_check?(fun_config) do
+        # Pre-resolve the target node so permission check and execution use the same node
+        case NodeSelector.get_node(fun_config, request) do
+          {:ok, node} ->
+            Permission.check_permission_remote!(request, fun_config, node)
+
+          {:error, reason} ->
+            Logger.error(
+              "[Executor] node selection failed for remote permission callback: #{inspect(reason)}"
+            )
+
+            raise PermissionDenied.exception(
+                    user_id: request.user_id,
+                    request_id: request.request_id,
+                    request_type: request.request_type,
+                    permission_mode: {:callback, fun_config.permission_callback}
+                  )
+        end
+      else
+        Permission.check_permission!(request, fun_config)
+      end
     rescue
-      _e in PhoenixGenApi.Permission.PermissionDenied ->
+      _e in PermissionDenied ->
         error_response = Response.error_response(request.request_id, "Permission denied")
         Hooks.run_after(fun_config.after_execute, request, fun_config, error_response)
         error_response
@@ -311,6 +332,15 @@ defmodule PhoenixGenApi.Executor do
             result
         end
     end
+  end
+
+  # Determines if the permission callback must run on a remote target node.
+  # Returns true when a custom permission_callback is set AND the service
+  # is not local (the callback module only exists on remote nodes).
+  defp needs_remote_permission_check?(%FunConfig{permission_callback: nil}), do: false
+
+  defp needs_remote_permission_check?(%FunConfig{permission_callback: {_, _, _}} = fun_config) do
+    not FunConfig.local_service?(fun_config)
   end
 
   defp execute_request(request, fun_config) do
