@@ -674,6 +674,8 @@ defmodule PhoenixGenApi.Executor do
   end
 
   # Common retry finalization logic
+  defp finalize_retry(%RetryState{result: result, retry_config: nil}), do: result
+
   defp finalize_retry(state = %RetryState{retry_config: config}) do
     if retryable_error?(state.result) do
       Logger.warning(

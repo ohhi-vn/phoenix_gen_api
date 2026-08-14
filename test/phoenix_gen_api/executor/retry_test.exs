@@ -352,6 +352,21 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       config_tracker: config_tracker,
       unique: unique
     } do
+      request_id = "test_remote_no_retry_req_#{unique}"
+      test_pid = self()
+      handler_id = "test-no-retry-exhausted-#{unique}"
+
+      :telemetry.attach(
+        handler_id,
+        [:phoenix_gen_api, :executor, :retry, :exhausted],
+        fn _event, _measurements, metadata, _config ->
+          send(test_pid, {:retry_exhausted, metadata.request_id})
+        end,
+        %{}
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
       # Use a non-existent node to simulate remote failure
       config = %FunConfig{
         request_type: "test_remote_no_retry_#{unique}",
@@ -371,7 +386,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       track_config(config_tracker, config)
 
       request = %Request{
-        request_id: "test_remote_no_retry_req_#{unique}",
+        request_id: request_id,
         request_type: "test_remote_no_retry_#{unique}",
         service: "test_service_#{unique}",
         user_id: "user_123",
@@ -382,6 +397,7 @@ defmodule PhoenixGenApi.ExecutorRetryTest do
       result = Executor.execute!(request)
 
       assert result.success == false
+      refute_received {:retry_exhausted, ^request_id}
     end
 
     test "retries remote execution with {:same_node, n} on badrpc", %{
