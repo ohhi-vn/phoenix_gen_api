@@ -47,6 +47,7 @@ Service nodes can register new APIs at any time — the gateway picks them up au
 | **Relay Messages** | Group-based message relaying with automatic cleanup on disconnect |
 | **Circuit Breaker** | Pool-level and worker-level circuit breakers |
 | **Telemetry** | 31 events across 5 categories for observability |
+| **Tracing** | Per-request-type / per-user-id `key=value` trace files with size-based rotation, enabled at runtime or via config, with negligible overhead. Records every action of a traced request — structured milestones plus raw `Logger` output — across the executor, rate limiter, argument handler, config db, hooks, permission, node selector, stream calls, and worker pool |
 | **Security** | Admin gate, push tokens, MFA allowlist, payload size limits |
 | **Diagnostics** | Runtime health checks, statistics, call-flow inspection, cluster view, admin-gated tracing |
 
@@ -75,6 +76,7 @@ Use [`:libcluster`](https://hex.pm/packages/libcluster) to form the Erlang clust
 | [Relay Messages](guides/relay_messages.md) | Complete reference for group-based messaging: group types, permission matrix, process monitoring |
 | [Telemetry](guides/telemetry.md) | Full event reference, integration patterns, Telemetry.Metrics examples, and best practices |
 | [Diagnostics](guides/diagnostics.md) | Runtime health checks, statistics, call-flow inspection, cluster view, admin-gated tracing, IEx helpers |
+| [Tracing](guides/tracing.md) | Per-request-type / per-user-id request tracing: enable at runtime or via config, trace file format, events, raw log capture, rotation |
 
 ## Quick Start
 

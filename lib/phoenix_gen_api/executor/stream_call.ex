@@ -78,7 +78,8 @@ defmodule PhoenixGenApi.StreamCall do
   ### GenServer Callbacks
 
   @impl true
-  def init(args) do
+  def init(args = %{request: request}) do
+    PhoenixGenApi.Tracer.apply_trace_metadata(request)
     {:ok, args, {:continue, :start_stream}}
   end
 

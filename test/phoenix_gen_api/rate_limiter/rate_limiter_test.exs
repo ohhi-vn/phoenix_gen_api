@@ -23,6 +23,11 @@ defmodule PhoenixGenApi.RateLimiterTest do
       Application.put_env(:phoenix_gen_api, :admin_actions, original_admin_actions)
     end)
 
+    on_exit(fn ->
+      RateLimiter.update_config(%{global_limits: [], api_limits: []})
+      RateLimiter.clear()
+    end)
+
     :ok
   end
 

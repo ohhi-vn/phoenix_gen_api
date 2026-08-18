@@ -33,6 +33,177 @@ defmodule PhoenixGenApi.JsonConfigTest do
       assert [%FunConfig{request_type: "send_message"}] = result
     end
 
+    test "supports a custom encoder MFA format" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      result =
+        JsonConfig.generate("chat", format: {__MODULE__, :custom_encoder, ["suffix"]})
+
+      assert result == %{"send_message - send_message" => "suffix"}
+    end
+
+    test "raises ArgumentError for an invalid format" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      assert_raise ArgumentError, ~r/invalid format/, fn ->
+        JsonConfig.generate("chat", format: :invalid_format)
+      end
+    end
+
+    test "raises ArgumentError for an invalid descriptions option" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      assert_raise ArgumentError, ~r/invalid descriptions option/, fn ->
+        JsonConfig.generate("chat", format: :map, descriptions: "not a map or fn")
+      end
+    end
+
+    test "supports arg_values as a function" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      result =
+        JsonConfig.generate("chat",
+          format: :map,
+          arg_values: fn fun_config ->
+            Map.new(fun_config.arg_orders, &{&1, "example-#{&1}"})
+          end
+        )
+
+      result_list = Enum.to_list(result)
+      {_, value} = hd(result_list)
+      assert value["data"]["args"] == %{"content" => "example-content"}
+    end
+
+    test "raises ArgumentError for an invalid arg_values option" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      assert_raise ArgumentError, ~r/invalid arg_values option/, fn ->
+        JsonConfig.generate("chat", format: :map, arg_values: 42)
+      end
+    end
+
+    test "handles arg_orders as :map using arg_types directly" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{
+          "content" => [type: :string, default_value: "hello"],
+          "age" => [type: :num, default_value: 18]
+        },
+        arg_orders: :map,
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      result = JsonConfig.generate("chat", format: :map)
+      result_list = Enum.to_list(result)
+      {_, value} = hd(result_list)
+      assert value["data"]["args"] == %{"content" => "hello", "age" => 18}
+    end
+
+    test "handles arg_orders as an unsupported value by returning empty args" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: :invalid_order,
+        response_type: :sync
+      }
+
+      {_key, value} = JsonConfig.export_single(config)
+      assert value["data"]["args"] == %{}
+    end
+
+    test "uses a default value when the arg_config provides one" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => [type: :string, default_value: "default-content"]},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      result = JsonConfig.generate("chat", format: :map)
+      result_list = Enum.to_list(result)
+      {_, value} = hd(result_list)
+      assert value["data"]["args"] == %{"content" => "default-content"}
+    end
+
     test "returns map format when format: :map" do
       config = %FunConfig{
         request_type: "send_message",
@@ -199,6 +370,26 @@ defmodule PhoenixGenApi.JsonConfigTest do
       assert map_size(result) == 2
     end
 
+    test "export_all/0 with default opts" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: "chat",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      result = JsonConfig.export_all()
+      assert is_list(result)
+      assert [%FunConfig{request_type: "send_message"}] = result
+    end
+
     test "generates for single service with export_service/2" do
       config1 = %FunConfig{
         request_type: "send_message",
@@ -232,6 +423,46 @@ defmodule PhoenixGenApi.JsonConfigTest do
       result_list = Enum.to_list(result)
       assert length(result_list) == 1
       {"send_message - send_message", _} = hd(result_list)
+    end
+
+    test "export_service/1 works with an atom service name and default opts" do
+      config = %FunConfig{
+        request_type: "send_message",
+        service: :chat,
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+
+      result = JsonConfig.export_service(:chat)
+      assert [%FunConfig{request_type: "send_message", service: :chat}] = result
+    end
+
+    test "skips configurations that cannot be retrieved (disabled configs)" do
+      config = %FunConfig{
+        request_type: "disabled_req",
+        service: "disabled_service",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {MyModule, :send_message, []},
+        arg_types: %{"content" => :string},
+        arg_orders: ["content"],
+        version: "1.0.0",
+        response_type: :sync
+      }
+
+      ConfigDb.add(config)
+      ConfigDb.disable("disabled_service", "disabled_req", "1.0.0")
+
+      result = JsonConfig.generate("disabled_service")
+      assert result == []
     end
   end
 
@@ -283,5 +514,9 @@ defmodule PhoenixGenApi.JsonConfigTest do
       assert value["data"]["device_id"] == "custom_device"
       assert value["data"]["request_id"] == "custom_request"
     end
+  end
+
+  def custom_encoder(config_map, suffix) do
+    Map.new(config_map, fn {key, _value} -> {key, suffix} end)
   end
 end

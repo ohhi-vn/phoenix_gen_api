@@ -172,7 +172,7 @@ defmodule PhoenixGenApi.Permission do
 
   def check_permission(request, %FunConfig{permission_callback: {mod, fun, args}})
       when is_atom(mod) and is_atom(fun) and is_list(args) do
-    execute_permission_callback(mod, fun, [request | args])
+    execute_permission_callback(mod, fun, args, request)
   end
 
   # ──────────────────────────────────────────────
@@ -242,7 +242,7 @@ defmodule PhoenixGenApi.Permission do
       "[Permission] {:arg, #{inspect(arg_name)}} check with nil/empty user_id - " <>
         "this usually means the socket was not authenticated. " <>
         "Consider using require_verified_user_id: true in your channel. " <>
-        "user_id: #{inspect(user_id)}, request_id: #{inspect(request.request_id)}"
+        "user_id: #{inspect(user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}"
     )
 
     false
@@ -360,7 +360,7 @@ defmodule PhoenixGenApi.Permission do
       permission_mode = determine_permission_mode(fun_config)
 
       Logger.warning(
-        "[Permission] denied: user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, mode: #{inspect(permission_mode)}"
+        "[Permission] denied, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}, mode: #{inspect(permission_mode)}"
       )
 
       raise PermissionDenied,
@@ -506,38 +506,50 @@ defmodule PhoenixGenApi.Permission do
   # execute_permission_callback — runs the MFA callback with error handling
   # ──────────────────────────────────────────────
 
-  @spec execute_permission_callback(module(), atom(), list()) :: boolean()
-  defp execute_permission_callback(mod, fun, args) do
+  @spec execute_permission_callback(module(), atom(), list(), Request.t()) :: boolean()
+  defp execute_permission_callback(mod, fun, args, request) do
     try do
-      case apply(mod, fun, args) do
+      case apply(mod, fun, [request | args]) do
         true ->
+          Logger.debug(
+            "[Permission] callback allowed, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}, callback: {#{inspect(mod)}, #{inspect(fun)}}"
+          )
+
           true
 
         false ->
-          Logger.warning(
-            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false"
+          log_permission_denied(
+            request,
+            "callback check",
+            "callback {#{inspect(mod)}, #{inspect(fun)}} returned false"
           )
 
           false
 
         other ->
-          Logger.warning(
-            "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value: #{inspect(other)}"
+          log_permission_denied(
+            request,
+            "callback check",
+            "callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value: #{inspect(other)}"
           )
 
           false
       end
     rescue
       e ->
-        Logger.error(
-          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} raised: #{Exception.message(e)}"
+        log_permission_denied(
+          request,
+          "callback check",
+          "callback {#{inspect(mod)}, #{inspect(fun)}} raised: #{Exception.message(e)}"
         )
 
         false
     catch
       kind, reason ->
-        Logger.error(
-          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} caught #{inspect(kind)}: #{inspect(reason)}"
+        log_permission_denied(
+          request,
+          "callback check",
+          "callback {#{inspect(mod)}, #{inspect(fun)}} caught #{inspect(kind)}: #{inspect(reason)}"
         )
 
         false
@@ -557,7 +569,7 @@ defmodule PhoenixGenApi.Permission do
 
   defp log_permission_denied(request, check_type, reason) do
     Logger.warning(
-      "[Permission] #{check_type} denied: #{reason}, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}"
+      "[Permission] #{check_type} denied, reason: #{reason}, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}"
     )
   end
 end

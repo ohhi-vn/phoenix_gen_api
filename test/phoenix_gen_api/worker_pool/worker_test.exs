@@ -77,4 +77,76 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
       assert Process.alive?(worker)
     end
   end
+
+  describe "circuit breaker" do
+    test "opens after threshold failures and rejects subsequent tasks" do
+      Application.put_env(:phoenix_gen_api, :worker_pool,
+        circuit_breaker_threshold: 1,
+        circuit_breaker_cooldown: 60_000
+      )
+
+      on_exit(fn ->
+        Application.delete_env(:phoenix_gen_api, :worker_pool)
+      end)
+
+      parent = self()
+      {:ok, worker} = Worker.start_link(pool_name: parent)
+
+      Worker.execute(worker, fn -> raise "boom" end)
+      assert_receive {:worker_done, ^worker}, 1000
+
+      Worker.execute(worker, fn -> send(parent, :should_not_run) end)
+      assert_receive {:worker_done, ^worker}, 1000
+      refute_receive :should_not_run, 100
+
+      assert Process.alive?(worker)
+    end
+
+    test "closes the circuit after cooldown and resets on success" do
+      Application.put_env(:phoenix_gen_api, :worker_pool,
+        circuit_breaker_threshold: 1,
+        circuit_breaker_cooldown: 0
+      )
+
+      on_exit(fn ->
+        Application.delete_env(:phoenix_gen_api, :worker_pool)
+      end)
+
+      parent = self()
+      {:ok, worker} = Worker.start_link(pool_name: parent)
+
+      Worker.execute(worker, fn -> raise "boom" end)
+      assert_receive {:worker_done, ^worker}, 1000
+
+      Worker.execute(worker, fn -> send(parent, :ran_after_cooldown) end)
+      assert_receive :ran_after_cooldown, 1000
+      assert_receive {:worker_done, ^worker}, 1000
+    end
+  end
+
+  describe "timeout handling" do
+    test "terminates a task that exceeds the task_timeout" do
+      parent = self()
+      {:ok, worker} = Worker.start_link(pool_name: parent, task_timeout: 50)
+
+      Worker.execute(worker, fn ->
+        Process.sleep(500)
+        send(parent, :task_survived)
+      end)
+
+      assert_receive {:worker_done, ^worker}, 1000
+      refute_receive :task_survived, 100
+      assert Process.alive?(worker)
+    end
+  end
+
+  describe "unknown messages" do
+    test "ignores unknown messages" do
+      parent = self()
+      {:ok, worker} = Worker.start_link(pool_name: parent)
+      send(worker, :some_unknown_message)
+      Process.sleep(20)
+      assert Process.alive?(worker)
+    end
+  end
 end

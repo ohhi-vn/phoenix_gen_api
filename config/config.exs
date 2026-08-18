@@ -31,6 +31,21 @@ config :phoenix_gen_api, :worker_pool,
   # Maximum number of tasks to queue when all workers are busy
   max_queue_size: 10_000
 
+# Request tracing — trace one or more request types and/or user ids.
+# Each traced request type / user id is logged to its own file under :log_dir.
+# Also configurable at runtime via PhoenixGenApi.Tracer functions.
+# :log_level is the Logger level temporarily raised globally while tracing is
+# enabled so debug/info output is captured (raw Logger lines are written to the
+# trace file as `event=log`).
+# config :phoenix_gen_api, :tracer,
+#   enabled: true,
+#   log_dir: "log/phoenix_gen_api_traces",
+#   max_file_bytes: 50_000_000,
+#   max_backup_files: 5,
+#   log_level: :debug,
+#   request_types: ["get_user"],
+#   user_ids: ["user_123"]
+
 # Configure config puller
 # config :phoenix_gen_api, :gen_api,
 #   pull_timeout: 5_000,

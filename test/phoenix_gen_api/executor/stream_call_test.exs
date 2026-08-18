@@ -108,6 +108,120 @@ defmodule PhoenixGenApi.StreamCallTest do
       Process.sleep(100)
       refute Process.alive?(pid)
     end
+
+    test "stops by request_id when the stream was started from the calling process",
+         %{request: request, config: config} do
+      args = %{
+        request: request,
+        fun_config: config,
+        receiver: self()
+      }
+
+      {:ok, pid} = StreamCall.start_link(args)
+
+      # Wait for init
+      receive do
+        {:stream_response, _} -> :ok
+      after
+        1000 -> :ok
+      end
+
+      assert :ok = StreamCall.stop(request.request_id)
+
+      # Should receive completion message
+      receive do
+        {:stream_response, response} ->
+          assert response.has_more == false
+      after
+        1000 -> flunk("Expected completion message")
+      end
+
+      Process.sleep(100)
+      refute Process.alive?(pid)
+    end
+
+    test "returns {:error, :not_found} for an unknown request_id", %{request: request} do
+      assert {:error, :not_found} = StreamCall.stop(request.request_id)
+    end
+  end
+
+  describe "error paths" do
+    test "sends an error response when the underlying call returns an error",
+         %{request: request} do
+      config = %FunConfig{
+        request_type: request.request_type,
+        service: "test_service_err",
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {__MODULE__, :test_stream_error, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :stream,
+        check_permission: false,
+        request_info: true
+      }
+
+      {:ok, pid} = StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
+
+      receive do
+        {:stream_response, response} ->
+          assert response.success == false
+          assert response.error =~ "Internal Server Error"
+      after
+        1000 -> flunk("Expected error response")
+      end
+
+      Process.sleep(100)
+      refute Process.alive?(pid)
+    end
+
+    test "includes the error details when detail_error is enabled", %{request: request, config: config} do
+      Application.put_env(:phoenix_gen_api, :detail_error, true)
+
+      on_exit(fn ->
+        Application.delete_env(:phoenix_gen_api, :detail_error)
+      end)
+
+      {:ok, pid} = StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
+
+      # Wait for init
+      receive do
+        {:stream_response, _} -> :ok
+      after
+        1000 -> :ok
+      end
+
+      send(pid, {:error, "specific failure detail"})
+
+      receive do
+        {:stream_response, response} ->
+          assert response.success == false
+          assert response.error =~ "specific failure detail"
+      after
+        1000 -> flunk("Expected detailed error message")
+      end
+
+      Process.sleep(100)
+      refute Process.alive?(pid)
+    end
+
+    test "ignores unknown messages", %{request: request, config: config} do
+      {:ok, pid} = StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
+
+      # Wait for init
+      receive do
+        {:stream_response, _} -> :ok
+      after
+        1000 -> :ok
+      end
+
+      send(pid, :some_unknown_message)
+      Process.sleep(50)
+      assert Process.alive?(pid)
+
+      StreamCall.stop(pid)
+    end
   end
 
   describe "handle_info/2 messages" do
@@ -236,5 +350,9 @@ defmodule PhoenixGenApi.StreamCallTest do
   # Helper test function
   def test_stream_function(_query, _request_info) do
     {:ok, :init}
+  end
+
+  def test_stream_error do
+    {:error, "stream call failed"}
   end
 end

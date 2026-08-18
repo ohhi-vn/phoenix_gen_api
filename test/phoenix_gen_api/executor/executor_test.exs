@@ -632,7 +632,7 @@ defmodule PhoenixGenApi.ExecutorTest do
       config = %FunConfig{
         request_type: "test_remote_callback_#{unique}",
         service: "test_service_#{unique}",
-        nodes: [:"nonexistent_perm_exec@test"],
+        nodes: [:nonexistent_perm_exec@test],
         choose_node_mode: :random,
         timeout: 500,
         mfa: {__MODULE__, :test_sync_function, []},

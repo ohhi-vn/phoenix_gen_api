@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.ArgumentHandlerTest do
   use ExUnit.Case
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.ArgumentHandler
   alias PhoenixGenApi.Structs.{FunConfig, Request}
 
@@ -845,6 +847,197 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
                    fn ->
                      ArgumentHandler.validate_args!(config, request)
                    end
+    end
+  end
+
+  describe "coverage: legacy tuple format edge branches" do
+    test "old tuple {:list_map, N} builds list_map params and converts" do
+      config = %FunConfig{arg_types: %{"items" => {:list_map, 5}}, arg_orders: ["items"]}
+      request = %Request{args: %{"items" => [%{name: "a"}]}}
+
+      assert ArgumentHandler.convert_args!(config, request) == [[%{name: "a"}]]
+    end
+
+    test "old tuple with unknown type falls through to empty params" do
+      config = %FunConfig{arg_types: %{"flag" => {:boolean, 5}}, arg_orders: ["flag"]}
+      request = %Request{args: %{"flag" => true}}
+
+      assert ArgumentHandler.convert_args!(config, request) == [true]
+    end
+  end
+
+  describe "coverage: build_type_with_params branches" do
+    test "extended :uuid with params builds {:uuid, []}" do
+      config = %FunConfig{
+        arg_types: %{"id" => [type: :uuid, max_bytes: 5]},
+        arg_orders: ["id"]
+      }
+
+      request = %Request{args: %{"id" => "550e8400-e29b-41d4-a716-446655440000"}}
+
+      assert_raise FunctionClauseError, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+
+    test "extended :list_uuid with max_items validates and converts" do
+      config = %FunConfig{
+        arg_types: %{"ids" => [type: :list_uuid, max_items: 5]},
+        arg_orders: ["ids"]
+      }
+
+      request = %Request{args: %{"ids" => ["550e8400-e29b-41d4-a716-446655440000"]}}
+
+      assert ArgumentHandler.convert_args!(config, request) == [
+               ["550e8400-e29b-41d4-a716-446655440000"]
+             ]
+    end
+
+    test "extended :list_map with max_items validates and converts" do
+      config = %FunConfig{
+        arg_types: %{"items" => [type: :list_map, max_items: 5]},
+        arg_orders: ["items"]
+      }
+
+      request = %Request{args: %{"items" => [%{name: "a"}]}}
+
+      assert ArgumentHandler.convert_args!(config, request) == [[%{name: "a"}]]
+    end
+
+    test "unhandled type with params falls through to the simple type" do
+      config = %FunConfig{
+        arg_types: %{"created_at" => {:datetime, [max_bytes: 5]}},
+        arg_orders: ["created_at"]
+      }
+
+      request = %Request{args: %{"created_at" => "2024-01-15T10:30:00+07:00"}}
+
+      assert [%DateTime{}] = ArgumentHandler.convert_args!(config, request)
+    end
+  end
+
+  describe "coverage: convert_args! missing argument in arg_orders" do
+    test "raises when an arg_orders name is not present in arg_types" do
+      config = %FunConfig{
+        arg_types: %{"name" => :string, "age" => :num},
+        arg_orders: ["name", "age", "missing_arg"]
+      }
+
+      request = %Request{args: %{"name" => "John", "age" => 30}}
+
+      assert_raise ArgumentError, ~r/missing argument "missing_arg" in nil/, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+
+    test "emits debug log for converted args" do
+      config = %FunConfig{
+        arg_types: %{"name" => :string, "age" => :num},
+        arg_orders: ["name", "age"]
+      }
+
+      request = %Request{args: %{"name" => "John", "age" => 30}}
+
+      previous_level = Logger.level()
+      Logger.configure(level: :debug)
+
+      log =
+        capture_log(fn ->
+          assert ArgumentHandler.convert_args!(config, request) == ["John", 30]
+        end)
+
+      Logger.configure(level: previous_level)
+
+      assert log =~ "converted args"
+    end
+  end
+
+  describe "coverage: arg_map_validation! negative paths" do
+    test "raises when a nested map string value exceeds max byte size" do
+      config = %FunConfig{arg_types: %{"data" => {:map, [max_items: 100]}}}
+      request = %Request{args: %{"data" => %{"key" => String.duplicate("a", 3001)}}}
+
+      assert_raise ArgumentError, ~r/nested map string value exceeds max byte size/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "validates list values inside a map via arg_list_validation!" do
+      config = %FunConfig{arg_types: %{"data" => {:map, [max_items: 100]}}}
+      request = %Request{args: %{"data" => %{"list" => [1, 2, "three"]}}}
+
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+    end
+  end
+
+  describe "coverage: arg_list_validation! negative paths" do
+    test "raises when a string item in a list exceeds max byte size" do
+      config = %FunConfig{arg_types: %{"items" => :list}}
+      request = %Request{args: %{"items" => [String.duplicate("a", 3001)]}}
+
+      assert_raise ArgumentError, ~r/string item in list exceeds max byte size/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "raises when a list contains an unsupported item type" do
+      config = %FunConfig{arg_types: %{"items" => :list}}
+      request = %Request{args: %{"items" => [{:a, 1}]}}
+
+      assert_raise ArgumentError, ~r/unsupported type \{:a, 1\}/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+  end
+
+  describe "coverage: unknown and unsupported type configs" do
+    test "raises unknown type for argument when type is nil" do
+      config = %FunConfig{arg_types: %{"x" => [type: nil]}}
+      request = %Request{args: %{"x" => 1}}
+
+      assert_raise ArgumentError, ~r/unknown type for argument "x"/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+
+    test "raises unsupported type when type is a string" do
+      config = %FunConfig{arg_types: %{"x" => "string"}}
+      request = %Request{args: %{"x" => "hello"}}
+
+      assert_raise ArgumentError, ~r/unsupported type "string" for argument "x"/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
+    end
+  end
+
+  describe "coverage: datetime conversion with zero offset" do
+    test "raises when datetime uses Z/UTC offset" do
+      config = %FunConfig{arg_types: %{"created_at" => :datetime}, arg_orders: ["created_at"]}
+      request = %Request{args: %{"created_at" => "2024-01-15T10:30:00Z"}}
+
+      assert ArgumentHandler.validate_args!(config, request) == :ok
+
+      assert_raise ArgumentError, ~r/timezone offset/, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+  end
+
+  describe "coverage: list_uuid and list_map conversion happy paths" do
+    test "converts a simple :list_uuid" do
+      config = %FunConfig{arg_types: %{"ids" => :list_uuid}, arg_orders: ["ids"]}
+      request = %Request{args: %{"ids" => ["550e8400-e29b-41d4-a716-446655440000"]}}
+
+      assert ArgumentHandler.convert_args!(config, request) == [
+               ["550e8400-e29b-41d4-a716-446655440000"]
+             ]
+    end
+
+    test "converts a simple :list_map" do
+      config = %FunConfig{arg_types: %{"items" => :list_map}, arg_orders: ["items"]}
+      request = %Request{args: %{"items" => [%{a: 1}]}}
+
+      assert ArgumentHandler.convert_args!(config, request) == [[%{a: 1}]]
     end
   end
 end

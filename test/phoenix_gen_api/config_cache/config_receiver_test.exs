@@ -276,4 +276,126 @@ defmodule PhoenixGenApi.ConfigReceiverTest do
       assert_receive {:config_push, 1, "TelemetryService", "1.5.0"}, 1000
     end
   end
+
+  describe "error paths" do
+    test "rejects a push when the configured token does not match" do
+      Application.put_env(:phoenix_gen_api, :push_token, "configured-secret")
+
+      on_exit(fn ->
+        Application.delete_env(:phoenix_gen_api, :push_token)
+      end)
+
+      config = valid_push_config(push_token: "wrong-token")
+      assert {:error, :invalid_push_token} = ConfigReceiver.push(config)
+    end
+
+    test "rejects a push with a missing token when one is configured" do
+      Application.put_env(:phoenix_gen_api, :push_token, "configured-secret")
+
+      on_exit(fn ->
+        Application.delete_env(:phoenix_gen_api, :push_token)
+      end)
+
+      config = valid_push_config(push_token: nil)
+      assert {:error, :invalid_push_token} = ConfigReceiver.push(config)
+    end
+
+    test "accepts a push with the correct token" do
+      Application.put_env(:phoenix_gen_api, :push_token, "configured-secret")
+
+      on_exit(fn ->
+        Application.delete_env(:phoenix_gen_api, :push_token)
+      end)
+
+      config = valid_push_config(push_token: "configured-secret")
+      assert {:ok, :accepted} = ConfigReceiver.push(config)
+    end
+
+    test "rejects a push when every FunConfig item is invalid" do
+      invalid_fun_config = %FunConfig{
+        request_type: "bad_req",
+        service: "test_service",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {String, :upcase, []},
+        arg_types: %{},
+        arg_orders: :nope,
+        response_type: :sync,
+        version: "1.0.0"
+      }
+
+      config = valid_push_config(fun_configs: [invalid_fun_config])
+      assert {:error, {:all_invalid, _errors}} = ConfigReceiver.push(config)
+    end
+
+    test "rejects a push when fun_configs contains an unexpected item" do
+      config = valid_push_config(fun_configs: [:not_a_config])
+      assert {:error, {:validation_failed, _errors}} = ConfigReceiver.push(config)
+    end
+
+    test "stores valid items and reports partial push when some are invalid" do
+      good_fun_config = %FunConfig{
+        request_type: "good_req",
+        service: "test_service",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {String, :upcase, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :sync,
+        version: "1.0.0"
+      }
+
+      bad_fun_config = %FunConfig{
+        request_type: "bad_req",
+        service: "test_service",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {String, :upcase, []},
+        arg_types: %{},
+        arg_orders: :nope,
+        response_type: :sync,
+        version: "1.0.0"
+      }
+
+      config = valid_push_config(fun_configs: [good_fun_config, bad_fun_config])
+      assert {:ok, :accepted} = ConfigReceiver.push(config)
+      assert {:ok, _} = ConfigDb.get("test_service", "good_req", "1.0.0")
+      assert ConfigDb.get("test_service", "bad_req", "1.0.0") == {:error, :not_found}
+    end
+  end
+
+  describe "auto-pull registration" do
+    test "registers the service with ConfigPuller when module/function are present" do
+      config =
+        valid_push_config(%{
+          service: "puller_service",
+          config_version: "1.0.0",
+          module: __MODULE__,
+          function: :dummy_pull,
+          fun_configs: [
+            %FunConfig{
+              request_type: "pull_req",
+              service: "puller_service",
+              nodes: [Node.self()],
+              choose_node_mode: :random,
+              timeout: 5000,
+              mfa: {String, :upcase, []},
+              arg_types: %{},
+              arg_orders: [],
+              response_type: :sync,
+              version: "1.0.0"
+            }
+          ]
+        })
+
+      assert {:ok, :accepted} = ConfigReceiver.push(config)
+
+      assert :ok = ConfigReceiver.delete_pushed_service("puller_service")
+      assert nil == ConfigReceiver.get_pushed_config("puller_service")
+    end
+  end
 end

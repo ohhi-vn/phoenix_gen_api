@@ -701,10 +701,13 @@ defmodule PhoenixGenApi do
             cond do
               Map.has_key?(check, :instance_count) and Map.has_key?(check, :alive_instances) ->
                 "  alive=#{check[:alive_instances]}/#{check[:instance_count]}"
+
               Map.has_key?(check, :instance_count) ->
                 "  instances=#{check[:instance_count]}"
+
               check[:reason] ->
                 "  reason=#{check[:reason]}"
+
               true ->
                 ""
             end
@@ -1079,7 +1082,7 @@ defmodule PhoenixGenApi do
       IO.puts("Request ID:   #{inspect(r.request_id)}")
     end
 
-    if plan.error do
+    if Map.get(plan, :error) do
       IO.puts("\n❌ Config not found: #{inspect(plan.error)}")
     else
       IO.puts("\n--- Execution Plan ---")
@@ -1202,6 +1205,73 @@ defmodule PhoenixGenApi do
   @spec trace_status() :: map()
   def trace_status do
     PhoenixGenApi.Diagnostics.trace_status()
+  end
+
+  @doc """
+  Enables request tracing for one or more request types.
+
+  Traced requests are written to a per-request-type `key=value` log file.
+  See `PhoenixGenApi.Tracer` for configuration and log format.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.enable_trace_request_type("get_user")
+      iex> PhoenixGenApi.enable_trace_request_type(["get_user", "create_order"])
+  """
+  @spec enable_trace_request_type(String.t() | [String.t()]) :: :ok
+  def enable_trace_request_type(request_type) do
+    PhoenixGenApi.Tracer.enable_request_type(request_type)
+  end
+
+  @doc """
+  Disables request tracing for one or more request types.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.disable_trace_request_type("get_user")
+  """
+  @spec disable_trace_request_type(String.t() | [String.t()]) :: :ok
+  def disable_trace_request_type(request_type) do
+    PhoenixGenApi.Tracer.disable_request_type(request_type)
+  end
+
+  @doc """
+  Enables request tracing for one or more user ids.
+
+  Traced requests are written to a per-user-id `key=value` log file.
+  See `PhoenixGenApi.Tracer` for configuration and log format.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.enable_trace_user_id("user_123")
+  """
+  @spec enable_trace_user_id(String.t() | [String.t()]) :: :ok
+  def enable_trace_user_id(user_id) do
+    PhoenixGenApi.Tracer.enable_user_id(user_id)
+  end
+
+  @doc """
+  Disables request tracing for one or more user ids.
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.disable_trace_user_id("user_123")
+  """
+  @spec disable_trace_user_id(String.t() | [String.t()]) :: :ok
+  def disable_trace_user_id(user_id) do
+    PhoenixGenApi.Tracer.disable_user_id(user_id)
+  end
+
+  @doc """
+  Returns the current tracing status (enabled keys, log dir, open trace files).
+
+  ## Usage in IEx
+
+      iex> PhoenixGenApi.tracer_status()
+  """
+  @spec tracer_status() :: map()
+  def tracer_status do
+    PhoenixGenApi.Tracer.status()
   end
 
   @doc """

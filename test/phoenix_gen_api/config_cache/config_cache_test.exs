@@ -180,6 +180,14 @@ defmodule PhoenixGenApi.ConfigDbTest do
     assert {:ok, ^config} = ConfigDb.get_fast("Test", "test_request")
   end
 
+  test "get_fast/2 returns :disabled for a sole disabled config" do
+    config = valid_config(%{version: nil})
+    assert :ok = ConfigDb.add(config)
+    assert :ok = ConfigDb.disable("Test", "test_request")
+
+    assert {:error, :disabled} = ConfigDb.get_fast("Test", "test_request")
+  end
+
   test "get_fast/2 returns latest versioned config when multiple versions exist" do
     config_v1 = valid_config(%{version: "1.0.0", timeout: 1000})
     config_v2 = valid_config(%{version: "2.0.0", timeout: 2000})
@@ -504,6 +512,98 @@ defmodule PhoenixGenApi.ConfigDbTest do
       assert :ok = ConfigDb.delete("Test", "test_request", "1.0.0")
 
       assert_receive {:config_delete, "Test", "test_request", "1.0.0"}, 1000
+    end
+  end
+
+  describe "error paths and status" do
+    test "add/1 with MFA on the denylist" do
+      config = valid_config(%{mfa: {:os, :cmd, []}})
+      assert {:error, {:mfa_not_allowed, {:os, :cmd, []}}} = ConfigDb.add(config)
+      assert ConfigDb.get("Test", "test_request") == {:error, :not_found}
+    end
+
+    test "add/1 with an invalid config" do
+      config = valid_config(%{arg_orders: :invalid_order})
+      assert {:error, :invalid_config} = ConfigDb.add(config)
+      assert ConfigDb.get("Test", "test_request") == {:error, :not_found}
+    end
+
+    test "add/1 with an invalid request_type" do
+      config = valid_config(%{request_type: ""})
+      assert {:error, :invalid_config} = ConfigDb.add(config)
+    end
+
+    test "update/1 with an invalid config" do
+      assert {:error, :invalid_config} = ConfigDb.update(valid_config(%{arg_orders: :nope}))
+    end
+
+    test "batch_add/1 skips invalid, denied and unexpected items" do
+      valid = valid_config(%{request_type: "batch_ok"})
+      invalid = valid_config(%{request_type: "batch_bad", arg_orders: :nope})
+      denied = valid_config(%{request_type: "batch_denied", mfa: {:os, :cmd, []}})
+
+      assert {:ok, 1} = ConfigDb.batch_add([valid, invalid, denied, :garbage, 42])
+      assert {:ok, _} = ConfigDb.get("Test", "batch_ok")
+      assert ConfigDb.get("Test", "batch_bad") == {:error, :not_found}
+      assert ConfigDb.get("Test", "batch_denied") == {:error, :not_found}
+    end
+
+    test "batch_add/1 returns all_invalid when nothing is insertable" do
+      assert {:error, :all_invalid} = ConfigDb.batch_add([:garbage, 42])
+    end
+
+    test "get/3 returns not_found for an unsupported version" do
+      config = valid_config(%{version: "1.0.0"})
+      assert :ok = ConfigDb.add(config)
+      assert ConfigDb.get("Test", "test_request", "9.9.9") == {:error, :not_found}
+    end
+
+    test "get_fast/2 returns not_found when all versions are disabled" do
+      v1 = valid_config(%{version: "1.0.0"})
+      v2 = valid_config(%{version: "2.0.0"})
+      assert :ok = ConfigDb.add(v1)
+      assert :ok = ConfigDb.add(v2)
+      assert :ok = ConfigDb.disable("Test", "test_request", "1.0.0")
+      assert :ok = ConfigDb.disable("Test", "test_request", "2.0.0")
+      assert ConfigDb.get_fast("Test", "test_request") == {:error, :not_found}
+    end
+
+    test "get_fast/2 returns a nil-version config when versioned one is disabled" do
+      nil_version = valid_config()
+      versioned = valid_config(%{version: "1.0.0"})
+      assert :ok = ConfigDb.add(nil_version)
+      assert :ok = ConfigDb.add(versioned)
+      assert :ok = ConfigDb.disable("Test", "test_request", "1.0.0")
+
+      assert {:ok, %FunConfig{version: nil}} = ConfigDb.get_fast("Test", "test_request")
+    end
+
+    test "get_fast/2 tolerates non-semver versions when resolving latest" do
+      v1 = valid_config(%{version: "1.0.0", request_type: "semver_test"})
+      weird = valid_config(%{version: "not-semver", request_type: "semver_test"})
+      assert :ok = ConfigDb.add(v1)
+      assert :ok = ConfigDb.add(weird)
+
+      assert {:ok, %FunConfig{version: "1.0.0"}} = ConfigDb.get_fast("Test", "semver_test")
+    end
+
+    test "enable/3 and disable/3 round-trip" do
+      config = valid_config(%{version: "2.0.0"})
+      assert :ok = ConfigDb.add(config)
+      assert {:ok, _} = ConfigDb.get("Test", "test_request", "2.0.0")
+      assert :ok = ConfigDb.disable("Test", "test_request", "2.0.0")
+      assert ConfigDb.get("Test", "test_request", "2.0.0") == {:error, :disabled}
+      assert :ok = ConfigDb.enable("Test", "test_request", "2.0.0")
+      assert {:ok, _} = ConfigDb.get("Test", "test_request", "2.0.0")
+    end
+
+    test "status/0 reports count, services and ets info" do
+      assert :ok = ConfigDb.add(valid_config(%{request_type: "status_test"}))
+      status = ConfigDb.status()
+      assert status.status == :ok
+      assert status.count == 1
+      assert "Test" in status.services
+      assert status.ets.exists == true
     end
   end
 end

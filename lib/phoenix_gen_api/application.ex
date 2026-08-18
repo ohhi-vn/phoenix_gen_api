@@ -11,7 +11,10 @@ defmodule PhoenixGenApi.Application do
 
     children =
       if client_mode do
-        []
+        [
+          # Request tracer — works in both client and gateway mode
+          PhoenixGenApi.Tracer
+        ]
       else
         [
           # Rate limiter for global and per-API rate limiting
@@ -32,7 +35,7 @@ defmodule PhoenixGenApi.Application do
             id: PhoenixGenApi.ConfigFailed,
             start: {PhoenixGenApi.ConfigFailed, :start_link, [[]]}
           }
-        ]
+        ] ++ [PhoenixGenApi.Tracer]
       end
 
     Logger.info(

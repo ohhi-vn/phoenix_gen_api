@@ -170,4 +170,107 @@ defmodule PhoenixGenApi.NodeSelectorTest do
   def get_invalid_nodes do
     "not_a_list"
   end
+
+  def get_raising_nodes do
+    raise "boom"
+  end
+
+  def get_throwing_nodes do
+    throw(:caught)
+  end
+
+  describe "resolve_nodes/1 and resolve_nodes_list/1" do
+    test "resolve_nodes/1 with :local, list and invalid nodes" do
+      assert {:ok, %FunConfig{nodes: :local}} =
+               NodeSelector.resolve_nodes(%FunConfig{nodes: :local})
+
+      nodes = ["node1@localhost", "node2@localhost"]
+      assert {:ok, %FunConfig{nodes: ^nodes}} = NodeSelector.resolve_nodes(%FunConfig{nodes: nodes})
+
+      assert {:error, {:invalid_nodes_configuration, :bogus}} =
+               NodeSelector.resolve_nodes(%FunConfig{nodes: :bogus})
+    end
+
+    test "resolve_nodes/1 with a dynamic MFA that raises or throws" do
+      assert {:error, {:dynamic_node_resolution_failed, {:exception, "boom"}}} =
+               NodeSelector.resolve_nodes(%FunConfig{nodes: {__MODULE__, :get_raising_nodes, []}})
+
+      assert {:error, {:dynamic_node_resolution_failed, {:throw, :caught}}} =
+               NodeSelector.resolve_nodes(%FunConfig{nodes: {__MODULE__, :get_throwing_nodes, []}})
+    end
+
+    test "resolve_nodes/1 with a malformed dynamic MFA" do
+      assert {:error, {:dynamic_node_resolution_failed, :invalid_mfa_format}} =
+               NodeSelector.resolve_nodes(%FunConfig{nodes: {String, :upcase, :not_a_list}})
+    end
+
+    test "resolve_nodes_list/1 with :local" do
+      assert {:ok, [local]} = NodeSelector.resolve_nodes_list(%FunConfig{nodes: :local})
+      assert local == Node.self()
+    end
+
+    test "resolve_nodes_list/1 propagates resolution errors" do
+      assert {:error, {:invalid_nodes_configuration, :bogus}} =
+               NodeSelector.resolve_nodes_list(%FunConfig{nodes: :bogus})
+    end
+  end
+
+  describe "choose_node_valid?/1" do
+    test "returns true for all supported modes" do
+      assert NodeSelector.choose_node_valid?(%FunConfig{choose_node_mode: :random})
+      assert NodeSelector.choose_node_valid?(%FunConfig{choose_node_mode: :hash})
+      assert NodeSelector.choose_node_valid?(%FunConfig{choose_node_mode: {:hash, "k"}})
+      assert NodeSelector.choose_node_valid?(%FunConfig{choose_node_mode: :round_robin})
+      assert NodeSelector.choose_node_valid?(%FunConfig{choose_node_mode: {:sticky, "k"}})
+    end
+
+    test "returns false for unsupported modes" do
+      refute NodeSelector.choose_node_valid?(%FunConfig{choose_node_mode: :bogus})
+    end
+  end
+
+  describe "get_node/2 with invalid choose_node_mode" do
+    test "returns an error" do
+      config = %FunConfig{
+        nodes: ["node1@localhost"],
+        choose_node_mode: :bogus,
+        request_type: "x"
+      }
+
+      assert {:error, {:invalid_choose_node_mode, :bogus}} =
+               NodeSelector.get_node(config, %Request{request_id: "r"})
+    end
+  end
+
+  describe "get_nodes/2 with invalid choose_node_mode" do
+    test "returns an error" do
+      config = %FunConfig{
+        nodes: ["node1@localhost"],
+        choose_node_mode: :bogus,
+        request_type: "x"
+      }
+
+      assert {:error, {:invalid_choose_node_mode, :bogus}} =
+               NodeSelector.get_nodes(config, %Request{request_id: "r"})
+    end
+  end
+
+  describe "calculate_backoff/2" do
+    test "with jitter disabled returns deterministic capped delay" do
+      assert NodeSelector.calculate_backoff(1, jitter: false) == 100
+      assert NodeSelector.calculate_backoff(20, jitter: false, base_ms: 100, max_ms: 500) == 500
+    end
+  end
+
+  describe "reset_round_robin/0" do
+    test "returns :ok when the counter table does not exist yet" do
+      assert :ok = NodeSelector.reset_round_robin()
+    end
+
+    test "returns :ok after the counter table exists" do
+      config = %FunConfig{nodes: ["node1@localhost", "node2@localhost"], choose_node_mode: :round_robin}
+      assert {:ok, _node} = NodeSelector.get_node(config, %Request{request_id: "r"})
+      assert :ok = NodeSelector.reset_round_robin()
+    end
+  end
 end

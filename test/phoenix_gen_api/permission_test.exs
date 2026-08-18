@@ -994,7 +994,7 @@ defmodule PhoenixGenApi.PermissionTest do
 
   describe "check_permission_remote!/2" do
     setup do
-      remote_nodes = [:"nonexistent_perm@test"]
+      remote_nodes = [:nonexistent_perm@test]
 
       config = %FunConfig{
         request_type: "test_remote_perm",
@@ -1065,6 +1065,41 @@ defmodule PhoenixGenApi.PermissionTest do
       assert exception.permission_mode == {:callback, {TestCallback, :allow, []}}
       assert exception.user_id == "user_123"
       assert exception.request_id == "test_remote_perm_req"
+    end
+
+    test "returns :ok when explicit node callback returns true", %{
+      config: config,
+      request: request
+    } do
+      assert :ok = Permission.check_permission_remote!(request, config, Node.self())
+    end
+
+    test "raises PermissionDenied when explicit node callback returns false", %{
+      config: config,
+      request: request
+    } do
+      config = %{config | permission_callback: {TestCallback, :deny, []}}
+
+      exception =
+        assert_raise PhoenixGenApi.Permission.PermissionDenied, fn ->
+          Permission.check_permission_remote!(request, config, Node.self())
+        end
+
+      assert exception.permission_mode == {:callback, {TestCallback, :deny, []}}
+    end
+
+    test "raises PermissionDenied when explicit node callback returns an unexpected value", %{
+      config: config,
+      request: request
+    } do
+      config = %{config | permission_callback: {TestCallback, :unexpected, []}}
+
+      exception =
+        assert_raise PhoenixGenApi.Permission.PermissionDenied, fn ->
+          Permission.check_permission_remote!(request, config, Node.self())
+        end
+
+      assert exception.permission_mode == {:callback, {TestCallback, :unexpected, []}}
     end
   end
 

@@ -278,6 +278,83 @@ defmodule PhoenixGenApi.TelemetryTest do
 
       :ok = Telemetry.detach_default_logger("test-default-logger")
     end
+
+    test "uses default handler id when called without arguments" do
+      :ok = Telemetry.attach_default_logger()
+      :ok = Telemetry.detach_default_logger()
+    end
+  end
+
+  describe "attach_hooks/2 and attach_worker_pool/2" do
+    test "attach_hooks/2 attaches to hook events with default config" do
+      test_pid = self()
+
+      :ok =
+        Telemetry.attach_hooks("test-hooks-2", fn event, _measurements, metadata, _config ->
+          send(test_pid, {:hooks_event, event, metadata})
+        end)
+
+      on_exit(fn ->
+        Telemetry.detach_all("test-hooks-2")
+      end)
+
+      config =
+        valid_config(%{
+          service: "Hooks2TelemetryTest",
+          request_type: "hooks2_api",
+          before_execute: {__MODULE__, :before_hook_ok}
+        })
+
+      ConfigDb.add(config)
+
+      request = %Request{
+        request_id: "hooks2_req",
+        request_type: "hooks2_api",
+        service: "Hooks2TelemetryTest",
+        user_id: "hooks2_user",
+        args: %{}
+      }
+
+      Executor.execute!(request)
+
+      assert_receive {:hooks_event, [:phoenix_gen_api, :hook, :before, :start], _}, 1000
+      assert_receive {:hooks_event, [:phoenix_gen_api, :hook, :before, :stop], _}, 1000
+    end
+
+    test "attach_worker_pool/2 attaches to worker pool events with default config" do
+      test_pid = self()
+
+      :ok =
+        Telemetry.attach_worker_pool("test-wp-2", fn event, _measurements, metadata, _config ->
+          send(test_pid, {:wp2_event, event, metadata})
+        end)
+
+      on_exit(fn ->
+        Telemetry.detach_all("test-wp-2")
+      end)
+
+      config =
+        valid_config(%{
+          service: "WP2TelemetryTest",
+          request_type: "wp2_api",
+          response_type: :async
+        })
+
+      ConfigDb.add(config)
+
+      request = %Request{
+        request_id: "wp2_req",
+        request_type: "wp2_api",
+        service: "WP2TelemetryTest",
+        user_id: "wp2_user",
+        args: %{}
+      }
+
+      Executor.execute!(request)
+
+      assert_receive {:wp2_event, [:phoenix_gen_api, :worker_pool, :task, :start], _}, 2000
+      assert_receive {:wp2_event, [:phoenix_gen_api, :worker_pool, :task, :stop], _}, 2000
+    end
   end
 
   describe "execute/3" do

@@ -226,6 +226,37 @@ defmodule PhoenixGenApi.WorkerPoolTest do
     end
   end
 
+  describe "worker restart" do
+    test "restarts a worker that dies and keeps the pool functional" do
+      parent = self()
+
+      task = fn -> send(parent, :done) end
+      assert :ok = WorkerPool.execute_async(:test_pool, task)
+      assert_receive :done, 1000
+
+      state = :sys.get_state(:test_pool)
+      workers = Map.keys(state.workers)
+      assert length(workers) == 3
+
+      victim = Enum.random(workers)
+      Process.exit(victim, :kill)
+      Process.sleep(50)
+
+      assert :ok = WorkerPool.execute_async(:test_pool, task)
+      assert_receive :done, 1000
+
+      new_state = :sys.get_state(:test_pool)
+      assert map_size(new_state.workers) == 3
+      refute victim in Map.keys(new_state.workers)
+    end
+
+    test "ignores unknown messages" do
+      send(:test_pool, :some_unknown_message)
+      Process.sleep(20)
+      assert Process.alive?(Process.whereis(:test_pool))
+    end
+  end
+
   # Helper to send message to all worker processes (broadcast)
   defp send_to_all_workers(pids, message) do
     # Send to all processes - workers will receive the message in their task execution

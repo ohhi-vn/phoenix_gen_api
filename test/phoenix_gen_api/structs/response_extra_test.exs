@@ -190,4 +190,36 @@ defmodule PhoenixGenApi.Structs.ResponseExtraTest do
       assert Map.has_key?(response, :error)
     end
   end
+
+  describe "encode!/1 and encode!/2" do
+    test "encode!/1 returns a plain map" do
+      response = Response.sync_response("req_encode", %{data: "value"})
+
+      encoded = Response.encode!(response)
+      assert encoded[:request_id] == "req_encode"
+      assert encoded[:success] == true
+    end
+
+    test "encode!/2 ignores opts" do
+      response = Response.sync_response("req_encode2", "data")
+
+      encoded = Response.encode!(response, %{})
+      assert encoded[:result] == "data"
+    end
+  end
+
+  describe "encode/2" do
+    test "returns the encoded map for an encodable response" do
+      response = Response.sync_response("req_enc", %{a: 1})
+
+      encoded = Response.encode(response, [])
+      assert encoded[:request_id] == "req_enc"
+    end
+
+    test "returns {:error, reason} when the result cannot be converted to a map" do
+      response = %Response{request_id: "req_enc_err", result: Stream.map([1, 2], & &1), success: true}
+
+      assert {:error, "cannot convert to map type"} = Response.encode(response, [])
+    end
+  end
 end

@@ -377,7 +377,7 @@ defmodule PhoenixGenApi.ConfigDb do
           {:ok, FunConfig.t()} | {:error, :not_found}
   def get_fast(service, request_type) when is_binary(request_type) do
     case :ets.match_object(__MODULE__, {{service, request_type, :"$1"}, :"$2"}) do
-      [[{_key, config} | _]] ->
+      [{_key, config}] ->
         if Map.get(config, :disabled, false) do
           {:error, :disabled}
         else

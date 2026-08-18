@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tracer**: New `PhoenixGenApi.Tracer` request tracing feature. Trace one or more
+  request types and/or user ids — added at runtime via
+  `PhoenixGenApi.Tracer.enable_request_type/1` / `enable_user_id/1` or configured
+  statically with `config :phoenix_gen_api, :tracer`. Each traced request type /
+  user id is logged to its own `key=value` log file with automatic size-based
+  rotation. The hot-path check is a cheap in-memory lookup that no-ops when
+  tracing is disabled or unmatched; file I/O happens asynchronously in a dedicated
+  writer process so request execution is never blocked.
+- **Permission logging**: Richer, consistent log output for permission checks —
+  callback logs now include `user_id`, `request_id`, `request_type`, and `service`,
+  and denied logs include the service and request type.
+- **Trace every action**: Tracing now covers *all* logs and actions of a traced
+  request, not just the three lifecycle events. The executor emits structured
+  milestone events (`config_lookup`, `hook_before`, `rate_limit`, `arguments`,
+  `execution`, `error`, `retry`, `retry_exhausted`, `rpc_fallback`, `async`,
+  `stream`, `hook_after`) and raw `Logger` output from every module that touches
+  the request is captured as `event=log` lines (with `level`, `pid`, `mfa`,
+  `message`). Capture is metadata-driven: `begin_trace/1` attaches trace context
+  to the process, worker processes re-apply it, and `end_trace/1` restores the
+  original metadata. While tracing is enabled the global `Logger` level is raised
+  to the new `:log_level` config option (default `:debug`) so debug/info output is
+  captured, and a filter suppresses untraced low-level logs from the console.
+- **Guides**: Added `guides/tracing.md` documenting the Tracer feature (enabling at
+  runtime or via config, trace file format, events, rotation, raw log capture, and
+  performance characteristics) and linked it from the README.
+
 ### Fixed
+
+- **ConfigCache**: Fixed `get_fast/2` returning `{:error, :not_found}` for a sole disabled config — the single-match pattern used a nested-list shape that `:ets.match_object` never produces, so disabled configs fell through to the multi-version branch and were reported as not found. They now correctly return `{:error, :disabled}`.
 
 #### Compiler warnings
 - **ArgumentHandler**: Removed dead `arg_types == nil` check in `convert_args!/2` — `arg_types` is always a map (assigned via `config.arg_types || %{}`), making the `nil` branch unreachable.

@@ -172,4 +172,65 @@ defmodule PhoenixGenApi.Structs.RequestExtraTest do
       assert Request.max_payload_bytes() == 1_000_000
     end
   end
+
+  describe "decode!/1 with user_roles" do
+    test "keeps non-empty binary roles" do
+      params = %{
+        "request_id" => "req_roles",
+        "request_type" => "test_request",
+        "service" => "test_service",
+        "user_roles" => ["admin", "user", "editor"]
+      }
+
+      request = Request.decode!(params)
+      assert request.user_roles == ["admin", "user", "editor"]
+    end
+
+    test "filters out non-binary and empty roles" do
+      params = %{
+        "request_id" => "req_roles",
+        "request_type" => "test_request",
+        "service" => "test_service",
+        "user_roles" => ["admin", "", 123, nil, :atom, "user"]
+      }
+
+      request = Request.decode!(params)
+      assert request.user_roles == ["admin", "user"]
+    end
+
+    test "returns nil when user_roles is not a list" do
+      params = %{
+        "request_id" => "req_roles",
+        "request_type" => "test_request",
+        "service" => "test_service",
+        "user_roles" => "admin"
+      }
+
+      request = Request.decode!(params)
+      assert request.user_roles == nil
+    end
+
+    test "returns nil when user_roles is an empty list" do
+      params = %{
+        "request_id" => "req_roles",
+        "request_type" => "test_request",
+        "service" => "test_service",
+        "user_roles" => []
+      }
+
+      request = Request.decode!(params)
+      assert request.user_roles == []
+    end
+
+    test "returns nil when user_roles is not provided" do
+      params = %{
+        "request_id" => "req_roles",
+        "request_type" => "test_request",
+        "service" => "test_service"
+      }
+
+      request = Request.decode!(params)
+      assert request.user_roles == nil
+    end
+  end
 end
