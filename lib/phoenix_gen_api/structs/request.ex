@@ -139,7 +139,7 @@ defmodule PhoenixGenApi.Structs.Request do
         Nestru.decode!(params, Request)
       rescue
         e in DecodeError ->
-          raise e
+          reraise e, __STACKTRACE__
 
         e ->
           exception =
@@ -188,16 +188,14 @@ defmodule PhoenixGenApi.Structs.Request do
   end
 
   defp payload_size(params) do
-    cond do
-      function_exported?(:erlang, :external_size, 1) ->
-        :erlang.external_size(params)
+    if function_exported?(:erlang, :external_size, 1) do
+      :erlang.external_size(params)
+    else
+      Logger.warning(
+        "[Request] Using fallback payload_size (term_to_binary). Upgrade OTP for external_size support."
+      )
 
-      true ->
-        Logger.warning(
-          "[Request] Using fallback payload_size (term_to_binary). Upgrade OTP for external_size support."
-        )
-
-        params |> :erlang.term_to_binary() |> byte_size()
+      params |> :erlang.term_to_binary() |> byte_size()
     end
   end
 

@@ -171,7 +171,8 @@ defmodule PhoenixGenApiTest do
 
       on_exit(fn -> PhoenixGenApi.set_global_limits(original) end)
 
-      assert :ok = PhoenixGenApi.set_global_limits([%{key: key, max_requests: 5, window_ms: 1000}])
+      assert :ok =
+               PhoenixGenApi.set_global_limits([%{key: key, max_requests: 5, window_ms: 1000}])
 
       limits = PhoenixGenApi.get_global_limits()
       assert Enum.any?(limits, &(&1.key == key))
@@ -285,7 +286,9 @@ defmodule PhoenixGenApiTest do
       request_type = "inspect_known_#{unique()}"
       register_config(request_type)
 
-      found = PhoenixGenApi.inspect_request(%{service: "test_service", request_type: request_type})
+      found =
+        PhoenixGenApi.inspect_request(%{service: "test_service", request_type: request_type})
+
       assert found.request
       assert is_list(found.steps)
     end
@@ -315,7 +318,9 @@ defmodule PhoenixGenApiTest do
     end
 
     test "trace_functions/2, stop_trace_functions/1 and trace_status/0 work" do
-      result = PhoenixGenApi.trace_functions([{__MODULE__, :echo_fn, 0}], trace_control_word: "test")
+      result =
+        PhoenixGenApi.trace_functions([{__MODULE__, :echo_fn, 0}], trace_control_word: "test")
+
       assert match?({:ok, _}, result) or match?({:error, _}, result)
 
       stop_result = PhoenixGenApi.stop_trace_functions()
@@ -395,7 +400,13 @@ defmodule PhoenixGenApiTest do
   describe "failed configs" do
     test "failed_configs/1 lists recorded entries with filters" do
       ConfigFailed.clear()
-      entry = ConfigFailed.record(%FunConfig{service: "fc_service", request_type: "fc_rt"}, "bad", :pull)
+
+      entry =
+        ConfigFailed.record(
+          %FunConfig{service: "fc_service", request_type: "fc_rt"},
+          "bad",
+          :pull
+        )
 
       assert entry.id
       assert Enum.any?(PhoenixGenApi.failed_configs(), &(&1.id == entry.id))
@@ -564,7 +575,8 @@ defmodule PhoenixGenApiTest do
       assert output =~ "Failed FunConfig Entries"
       assert output =~ "(no failed entries)"
 
-      entry = ConfigFailed.record(%FunConfig{service: "fp_svc", request_type: "fp_rt"}, "bad", :pull)
+      entry =
+        ConfigFailed.record(%FunConfig{service: "fp_svc", request_type: "fp_rt"}, "bad", :pull)
 
       filled =
         capture_io(fn -> PhoenixGenApi.failed_configs_print(source: :pull) end)
@@ -597,6 +609,7 @@ defmodule PhoenixGenApiTest do
       register_config(request_type)
 
       socket = %{ref: self(), assigns: %{user_id: "user_1"}}
+
       payload = %{
         "request_id" => "req_#{unique()}",
         "request_type" => request_type,
@@ -605,7 +618,8 @@ defmodule PhoenixGenApiTest do
         "args" => %{}
       }
 
-      assert {:reply, {:ok, ^request_type}, ^socket} = channel.handle_in("phoenix_gen_api", payload, socket)
+      assert {:reply, {:ok, ^request_type}, ^socket} =
+               channel.handle_in("phoenix_gen_api", payload, socket)
 
       assert_received {:pushed, "phoenix_gen_api", %Response{success: true} = pushed}
       assert pushed.request_id == payload["request_id"]
@@ -617,7 +631,12 @@ defmodule PhoenixGenApiTest do
       register_config(request_type)
 
       socket = %{ref: self(), assigns: %{}}
-      payload = %{"request_id" => "req_#{unique()}", "request_type" => request_type, "service" => "test_service"}
+
+      payload = %{
+        "request_id" => "req_#{unique()}",
+        "request_type" => request_type,
+        "service" => "test_service"
+      }
 
       log =
         capture_log(fn ->
@@ -627,7 +646,8 @@ defmodule PhoenixGenApiTest do
 
       assert log =~ "rejected unauthenticated request"
 
-      assert_received {:pushed, "phoenix_gen_api", %Response{success: false, error: "Authentication required"}}
+      assert_received {:pushed, "phoenix_gen_api",
+                       %Response{success: false, error: "Authentication required"}}
     end
 
     test "handle_in/3 returns an error response on decode failure" do
@@ -636,14 +656,16 @@ defmodule PhoenixGenApiTest do
       socket = %{ref: self(), assigns: %{user_id: "user_1"}}
       payload = %{"request_id" => "req_#{unique()}"}
 
-      assert {:reply, {:error, message}, ^socket} = channel.handle_in("phoenix_gen_api", payload, socket)
+      assert {:reply, {:error, message}, ^socket} =
+               channel.handle_in("phoenix_gen_api", payload, socket)
+
       assert message =~ "Missing required fields"
 
       assert_received {:pushed, "phoenix_gen_api", %Response{success: false, error: error}}
       assert error =~ "Invalid request:"
     end
 
-test "handle_in/3 returns an error response when permission is denied" do
+    test "handle_in/3 returns an error response when permission is denied" do
       channel = PhoenixGenApiTest.Channel
       request_type = "ch_denied_#{unique()}"
 
@@ -654,6 +676,7 @@ test "handle_in/3 returns an error response when permission is denied" do
       )
 
       socket = %{ref: self(), assigns: %{user_id: "user_1"}}
+
       payload = %{
         "request_id" => "req_#{unique()}",
         "request_type" => request_type,
@@ -665,7 +688,8 @@ test "handle_in/3 returns an error response when permission is denied" do
       assert {:reply, {:ok, ^request_type}, ^socket} =
                channel.handle_in("phoenix_gen_api", payload, socket)
 
-      assert_received {:pushed, "phoenix_gen_api", %Response{success: false, error: "Permission denied"}}
+      assert_received {:pushed, "phoenix_gen_api",
+                       %Response{success: false, error: "Permission denied"}}
     end
 
     test "override_user_id injects the verified socket user_id into the request" do
@@ -680,6 +704,7 @@ test "handle_in/3 returns an error response when permission is denied" do
       )
 
       socket = %{ref: self(), assigns: %{user_id: "server_user"}}
+
       payload = %{
         "request_id" => "req_#{unique()}",
         "request_type" => request_type,
@@ -688,7 +713,8 @@ test "handle_in/3 returns an error response when permission is denied" do
         "args" => %{"name" => "Bob"}
       }
 
-      assert {:reply, {:ok, ^request_type}, ^socket} = channel.handle_in("phoenix_gen_api", payload, socket)
+      assert {:reply, {:ok, ^request_type}, ^socket} =
+               channel.handle_in("phoenix_gen_api", payload, socket)
 
       assert_received {:pushed, "phoenix_gen_api", %Response{result: %{user_id: "server_user"}}}
     end
@@ -705,6 +731,7 @@ test "handle_in/3 returns an error response when permission is denied" do
       )
 
       socket = %{ref: self(), assigns: %{user_id: "server_user"}}
+
       payload = %{
         "request_id" => "req_#{unique()}",
         "request_type" => request_type,
@@ -725,6 +752,7 @@ test "handle_in/3 returns an error response when permission is denied" do
       register_config(request_type)
 
       socket = %{ref: self(), assigns: %{}}
+
       payload = %{
         "request_id" => "req_#{unique()}",
         "request_type" => request_type,
@@ -744,6 +772,7 @@ test "handle_in/3 returns an error response when permission is denied" do
       register_config(request_type)
 
       socket = %{ref: self(), assigns: %{user_id: "user_1"}}
+
       payload = %{
         "request_id" => "req_#{unique()}",
         "request_type" => request_type,

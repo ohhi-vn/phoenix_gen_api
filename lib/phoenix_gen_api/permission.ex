@@ -195,7 +195,7 @@ defmodule PhoenixGenApi.Permission do
     true
   end
 
-  def check_permission(%Request{user_id: user_id} = request, %FunConfig{
+  def check_permission(request = %Request{user_id: user_id}, %FunConfig{
         permission_callback: nil,
         check_permission: :any_authenticated
       }) do
@@ -234,7 +234,7 @@ defmodule PhoenixGenApi.Permission do
   end
 
   # Fallback for {:arg, ...} when user_id is nil or empty
-  def check_permission(%Request{user_id: user_id} = request, %FunConfig{
+  def check_permission(request = %Request{user_id: user_id}, %FunConfig{
         permission_callback: nil,
         check_permission: {:arg, arg_name}
       }) do
@@ -508,52 +508,50 @@ defmodule PhoenixGenApi.Permission do
 
   @spec execute_permission_callback(module(), atom(), list(), Request.t()) :: boolean()
   defp execute_permission_callback(mod, fun, args, request) do
-    try do
-      case apply(mod, fun, [request | args]) do
-        true ->
-          Logger.debug(
-            "[Permission] callback allowed, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}, callback: {#{inspect(mod)}, #{inspect(fun)}}"
-          )
+    case apply(mod, fun, [request | args]) do
+      true ->
+        Logger.debug(
+          "[Permission] callback allowed, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}, callback: {#{inspect(mod)}, #{inspect(fun)}}"
+        )
 
-          true
+        true
 
-        false ->
-          log_permission_denied(
-            request,
-            "callback check",
-            "callback {#{inspect(mod)}, #{inspect(fun)}} returned false"
-          )
-
-          false
-
-        other ->
-          log_permission_denied(
-            request,
-            "callback check",
-            "callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value: #{inspect(other)}"
-          )
-
-          false
-      end
-    rescue
-      e ->
+      false ->
         log_permission_denied(
           request,
           "callback check",
-          "callback {#{inspect(mod)}, #{inspect(fun)}} raised: #{Exception.message(e)}"
+          "callback {#{inspect(mod)}, #{inspect(fun)}} returned false"
         )
 
         false
-    catch
-      kind, reason ->
+
+      other ->
         log_permission_denied(
           request,
           "callback check",
-          "callback {#{inspect(mod)}, #{inspect(fun)}} caught #{inspect(kind)}: #{inspect(reason)}"
+          "callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value: #{inspect(other)}"
         )
 
         false
     end
+  rescue
+    e ->
+      log_permission_denied(
+        request,
+        "callback check",
+        "callback {#{inspect(mod)}, #{inspect(fun)}} raised: #{Exception.message(e)}"
+      )
+
+      false
+  catch
+    kind, reason ->
+      log_permission_denied(
+        request,
+        "callback check",
+        "callback {#{inspect(mod)}, #{inspect(fun)}} caught #{inspect(kind)}: #{inspect(reason)}"
+      )
+
+      false
   end
 
   # ──────────────────────────────────────────────

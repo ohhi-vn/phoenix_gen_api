@@ -115,7 +115,7 @@ defmodule PhoenixGenApi.DiagnosticsTest do
       assert flow.timeout == 5000
       assert flow.mfa == {__MODULE__, :test_fn, []}
       assert is_list(flow.steps)
-      assert length(flow.steps) > 0
+      assert flow.steps != []
 
       # Verify step structure
       Enum.each(flow.steps, fn step ->
@@ -412,7 +412,7 @@ defmodule PhoenixGenApi.DiagnosticsTest do
       PhoenixGenApi.ConfigDb.add(config)
 
       flows = Diagnostics.list_call_flows()
-      assert length(flows) >= 1
+      assert flows != []
 
       flow = Enum.find(flows, &(&1.service == "list_test_service"))
       assert flow != nil
@@ -752,7 +752,9 @@ defmodule PhoenixGenApi.DiagnosticsTest do
     overrides = Map.new(overrides)
 
     service = Map.get(overrides, :service, "diag_svc_#{System.unique_integer([:positive])}")
-    request_type = Map.get(overrides, :request_type, "diag_rt_#{System.unique_integer([:positive])}")
+
+    request_type =
+      Map.get(overrides, :request_type, "diag_rt_#{System.unique_integer([:positive])}")
 
     base = %PhoenixGenApi.Structs.FunConfig{
       request_type: request_type,

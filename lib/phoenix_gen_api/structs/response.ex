@@ -94,11 +94,9 @@ defmodule PhoenixGenApi.Structs.Response do
   Encodes a Response struct to a map, returning `{:ok, map}` or `{:error, reason}`.
   """
   def encode(res = %__MODULE__{}, _opts) do
-    try do
-      encode!(res)
-    rescue
-      _ -> {:error, "cannot convert to map type"}
-    end
+    encode!(res)
+  rescue
+    _ -> {:error, "cannot convert to map type"}
   end
 
   # special impl for JSON library

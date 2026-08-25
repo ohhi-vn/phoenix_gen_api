@@ -227,7 +227,9 @@ defmodule PhoenixGenApi.RateLimiterExtraTest do
 
       assert :ok == RateLimiter.check_rate_limit("api_user", scope, :user_id)
       assert :ok == RateLimiter.check_rate_limit("api_user", scope, :user_id)
-      assert {:error, :rate_limited, _} = RateLimiter.check_rate_limit("api_user", scope, :user_id)
+
+      assert {:error, :rate_limited, _} =
+               RateLimiter.check_rate_limit("api_user", scope, :user_id)
 
       status = RateLimiter.get_rate_limit_status("api_user", scope, :user_id)
       assert is_list(status)
@@ -258,7 +260,9 @@ defmodule PhoenixGenApi.RateLimiterExtraTest do
         %{
           instance_count: :auto,
           global_limits: [%{key: :user_id, max_requests: 10, window_ms: 1000}],
-          api_limits: [%{service: "s", request_type: "a", key: :user_id, max_requests: 5, window_ms: 1000}]
+          api_limits: [
+            %{service: "s", request_type: "a", key: :user_id, max_requests: 5, window_ms: 1000}
+          ]
         },
         fn ->
           now = System.monotonic_time(:millisecond)
@@ -267,6 +271,7 @@ defmodule PhoenixGenApi.RateLimiterExtraTest do
 
           for i <- 1..40 do
             kind = rem(i, 3)
+
             timestamps =
               case kind do
                 0 -> [recent, old]
@@ -287,9 +292,13 @@ defmodule PhoenixGenApi.RateLimiterExtraTest do
           Process.sleep(100)
 
           remaining =
-            :ets.foldl(fn {key, _ts}, acc ->
-              if is_binary(key) and String.starts_with?(key, "cleanup_"), do: acc + 1, else: acc
-            end, 0, :rate_limiter_global)
+            :ets.foldl(
+              fn {key, _ts}, acc ->
+                if is_binary(key) and String.starts_with?(key, "cleanup_"), do: acc + 1, else: acc
+              end,
+              0,
+              :rate_limiter_global
+            )
 
           assert remaining > 0
         end
@@ -303,7 +312,9 @@ defmodule PhoenixGenApi.RateLimiterExtraTest do
         %{
           instance_count: 2,
           global_limits: [%{key: :user_id, max_requests: 5, window_ms: 10_000}],
-          api_limits: [%{service: "s", request_type: "a", key: :user_id, max_requests: 1, window_ms: 10_000}]
+          api_limits: [
+            %{service: "s", request_type: "a", key: :user_id, max_requests: 1, window_ms: 10_000}
+          ]
         },
         fn ->
           sup = :rate_limiter_supervisor

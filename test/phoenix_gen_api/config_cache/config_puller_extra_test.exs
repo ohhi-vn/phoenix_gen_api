@@ -2,7 +2,7 @@ defmodule PhoenixGenApi.ConfigPullerExtraTest do
   use ExUnit.Case, async: false
 
   alias PhoenixGenApi.ConfigPuller
-  alias PhoenixGenApi.Structs.{ServiceConfig, FunConfig}
+  alias PhoenixGenApi.Structs.{FunConfig, ServiceConfig}
 
   defmodule TestPullService do
     def nodes_ok, do: [Node.self()]
@@ -338,7 +338,10 @@ defmodule PhoenixGenApi.ConfigPullerExtraTest do
   describe "rpc fallback" do
     test "falls back to the next node when the config RPC fails" do
       service_name = "coverage_rpc_fallback_service"
-      svc = service(service_name, TestPullService, :get_config, [:nonode@unreachable, Node.self()])
+
+      svc =
+        service(service_name, TestPullService, :get_config, [:nonode@unreachable, Node.self()])
+
       ConfigPuller.add([svc])
       ConfigPuller.pull()
 
@@ -349,7 +352,10 @@ defmodule PhoenixGenApi.ConfigPullerExtraTest do
       service_name = "coverage_rpc_unexpected_service"
 
       svc =
-        service(service_name, TestPullService, :get_config_not_list, [Node.self(), :nonode@unreachable])
+        service(service_name, TestPullService, :get_config_not_list, [
+          Node.self(),
+          :nonode@unreachable
+        ])
 
       ConfigPuller.add([svc])
       ConfigPuller.pull()

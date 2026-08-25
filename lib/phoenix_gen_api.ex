@@ -168,9 +168,9 @@ defmodule PhoenixGenApi do
   - `PhoenixGenApi.NodeSelector` - Node selection strategies
   """
 
+  alias PhoenixGenApi.Diagnostics
   alias PhoenixGenApi.RateLimiter
   alias PhoenixGenApi.StreamCall
-  alias PhoenixGenApi.Diagnostics
 
   @spec stop_stream(pid()) :: :ok
   @doc """
@@ -328,7 +328,7 @@ defmodule PhoenixGenApi do
     A map with `:global` and `:api` keys containing the configured limits.
   """
   @spec get_rate_limit_config() :: %{global: list(), api: list()}
-  def get_rate_limit_config() do
+  def get_rate_limit_config do
     RateLimiter.get_configured_limits()
   end
 
@@ -345,7 +345,7 @@ defmodule PhoenixGenApi do
       # => [%{key: :user_id, max_requests: 2000, window_ms: 60_000}]
   """
   @spec get_global_limits() :: [map()]
-  def get_global_limits() do
+  def get_global_limits do
     RateLimiter.get_global_limits()
   end
 
@@ -540,7 +540,7 @@ defmodule PhoenixGenApi do
       # Remove a limit by key
       iex> PhoenixGenApi.rl_global(:remove, :ip_address)
   """
-  def rl_global() do
+  def rl_global do
     IO.puts("\n=== Global Rate Limits ===\n")
 
     get_global_limits()
@@ -576,7 +576,7 @@ defmodule PhoenixGenApi do
 
       iex> PhoenixGenApi.rl_config()
   """
-  def rl_config() do
+  def rl_config do
     config = get_rate_limit_config()
     IO.puts("\n=== Rate Limit Configuration ===\n")
     IO.puts("Global Limits:")
@@ -603,7 +603,7 @@ defmodule PhoenixGenApi do
 
       iex> PhoenixGenApi.cache_status()
   """
-  def cache_status() do
+  def cache_status do
     IO.puts("\n=== ConfigDb Cache Status ===\n")
     IO.puts("Total cached configs: #{PhoenixGenApi.ConfigDb.count()}")
     IO.puts("Services: #{inspect(PhoenixGenApi.ConfigDb.get_all_services())}")
@@ -617,7 +617,7 @@ defmodule PhoenixGenApi do
 
       iex> PhoenixGenApi.pool_status()
   """
-  def pool_status() do
+  def pool_status do
     IO.puts("\n=== Worker Pool Status ===\n")
     async_status = PhoenixGenApi.WorkerPool.status(:async_pool)
     stream_status = PhoenixGenApi.WorkerPool.status(:stream_pool)
@@ -730,7 +730,7 @@ defmodule PhoenixGenApi do
 
       iex> PhoenixGenApi.stats_print()
   """
-  def stats_print() do
+  def stats_print do
     stats = Diagnostics.statistics()
 
     IO.puts("\n=== PhoenixGenApi Statistics ===")
@@ -989,7 +989,7 @@ defmodule PhoenixGenApi do
 
       iex> PhoenixGenApi.cluster_print()
   """
-  def cluster_print() do
+  def cluster_print do
     view = Diagnostics.cluster_view()
 
     IO.puts("\n=== Cluster View ===")
@@ -1013,7 +1013,7 @@ defmodule PhoenixGenApi do
     end)
 
     IO.puts("\n--- Node Selection Strategies ---")
-    IO.puts("  #{Enum.join(Enum.map(view.node_selection.strategies, &inspect/1), ", ")}")
+    IO.puts("  #{Enum.map_join(view.node_selection.strategies, ", ", &inspect/1)}")
     IO.puts("  #{view.node_selection.description}")
 
     IO.puts("")
@@ -1403,7 +1403,7 @@ defmodule PhoenixGenApi do
 
       iex> PhoenixGenApi.pushed_services_status()
   """
-  def pushed_services_status() do
+  def pushed_services_status do
     IO.puts("\n=== Pushed Services Status ===\n")
 
     pushed_services = PhoenixGenApi.ConfigReceiver.get_all_pushed_services()
@@ -1493,7 +1493,7 @@ defmodule PhoenixGenApi do
 
       iex> PhoenixGenApi.failed_configs_summary()
   """
-  def failed_configs_summary() do
+  def failed_configs_summary do
     summary = PhoenixGenApi.ConfigFailed.summary()
 
     IO.puts("\n=== Failed Configs Summary ===")
@@ -1613,47 +1613,45 @@ defmodule PhoenixGenApi do
       end
 
       defp do_handle_request(payload, _socket) do
-        try do
-          request = PhoenixGenApi.Structs.Request.decode!(payload)
+        request = PhoenixGenApi.Structs.Request.decode!(payload)
 
-          case PhoenixGenApi.Executor.execute!(request) do
-            %PhoenixGenApi.Structs.Response{} = result ->
-              {{:ok, request.request_type}, result}
+        case PhoenixGenApi.Executor.execute!(request) do
+          %PhoenixGenApi.Structs.Response{} = result ->
+            {{:ok, request.request_type}, result}
 
-            {:ok, :no_response} ->
-              {{:ok, request.request_type}, nil}
-          end
-        rescue
-          e in PhoenixGenApi.Errors.DecodeError ->
-            request_id = Map.get(payload, "request_id", "unknown")
-
-            Logger.warning(
-              "[PhoenixGenApi] decode error, module: #{__MODULE__}, request_id: #{inspect(request_id)}, code: #{inspect(e.code)}, error: #{e.message}"
-            )
-
-            error_response =
-              PhoenixGenApi.Structs.Response.error_response(
-                request_id,
-                "Invalid request: #{e.message}"
-              )
-
-            {{:error, e.message}, error_response}
-
-          e ->
-            request_id = Map.get(payload, "request_id", "unknown")
-
-            Logger.error(
-              "[PhoenixGenApi] request processing failed, module: #{__MODULE__}, request_id: #{inspect(request_id)}, error: #{Exception.message(e)}"
-            )
-
-            error_response =
-              PhoenixGenApi.Structs.Response.error_response(
-                request_id,
-                "Request processing failed"
-              )
-
-            {{:error, Exception.message(e)}, error_response}
+          {:ok, :no_response} ->
+            {{:ok, request.request_type}, nil}
         end
+      rescue
+        e in PhoenixGenApi.Errors.DecodeError ->
+          request_id = Map.get(payload, "request_id", "unknown")
+
+          Logger.warning(
+            "[PhoenixGenApi] decode error, module: #{__MODULE__}, request_id: #{inspect(request_id)}, code: #{inspect(e.code)}, error: #{e.message}"
+          )
+
+          error_response =
+            PhoenixGenApi.Structs.Response.error_response(
+              request_id,
+              "Invalid request: #{e.message}"
+            )
+
+          {{:error, e.message}, error_response}
+
+        e ->
+          request_id = Map.get(payload, "request_id", "unknown")
+
+          Logger.error(
+            "[PhoenixGenApi] request processing failed, module: #{__MODULE__}, request_id: #{inspect(request_id)}, error: #{Exception.message(e)}"
+          )
+
+          error_response =
+            PhoenixGenApi.Structs.Response.error_response(
+              request_id,
+              "Request processing failed"
+            )
+
+          {{:error, Exception.message(e)}, error_response}
       end
 
       @doc false

@@ -37,8 +37,8 @@ defmodule PhoenixGenApi.ConfigDb do
 
   use GenServer, restart: :permanent
 
-  alias PhoenixGenApi.Structs.FunConfig
   alias PhoenixGenApi.Security
+  alias PhoenixGenApi.Structs.FunConfig
 
   require Logger
 
@@ -306,7 +306,7 @@ defmodule PhoenixGenApi.ConfigDb do
   Returns a status snapshot for the config database.
   """
   @spec status() :: map()
-  def status() do
+  def status do
     %{status: :ok, count: count(), services: get_all_services(), ets: ets_table_info()}
   end
 
@@ -330,23 +330,21 @@ defmodule PhoenixGenApi.ConfigDb do
   @spec get(String.t() | atom(), String.t(), String.t() | nil) ::
           {:ok, FunConfig.t()} | {:error, :not_found} | {:error, :disabled}
   def get(service, request_type, version \\ nil) when is_binary(request_type) do
-    try do
-      case :ets.lookup_element(__MODULE__, {service, request_type, version}, 2) do
-        config when is_map(config) ->
-          if Map.get(config, :disabled, false) do
-            {:error, :disabled}
-          else
-            {:ok, config}
-          end
+    case :ets.lookup_element(__MODULE__, {service, request_type, version}, 2) do
+      config when is_map(config) ->
+        if Map.get(config, :disabled, false) do
+          {:error, :disabled}
+        else
+          {:ok, config}
+        end
 
-        _ ->
-          {:error, :not_found}
-      end
-    rescue
-      ArgumentError ->
-        # Key not found in ETS
+      _ ->
         {:error, :not_found}
     end
+  rescue
+    ArgumentError ->
+      # Key not found in ETS
+      {:error, :not_found}
   end
 
   @doc """
@@ -499,7 +497,7 @@ defmodule PhoenixGenApi.ConfigDb do
     A map where keys are service names and values are maps of request types to lists of versions.
   """
   @spec get_all_functions() :: %{(String.t() | atom()) => %{String.t() => [String.t()]}}
-  def get_all_functions() do
+  def get_all_functions do
     :ets.foldl(
       fn {{service, request_type, version}, _config}, acc ->
         service_map = Map.get(acc, service, %{})
@@ -552,7 +550,7 @@ defmodule PhoenixGenApi.ConfigDb do
     A list of unique service names.
   """
   @spec get_all_services() :: [String.t() | atom()]
-  def get_all_services() do
+  def get_all_services do
     :ets.foldl(
       fn {{service, _request_type, _version}, _config}, acc ->
         if service in acc, do: acc, else: [service | acc]
@@ -570,7 +568,7 @@ defmodule PhoenixGenApi.ConfigDb do
     The count of cached configurations.
   """
   @spec count() :: non_neg_integer()
-  def count() do
+  def count do
     :ets.info(__MODULE__, :size)
   end
 
@@ -582,7 +580,7 @@ defmodule PhoenixGenApi.ConfigDb do
     - `:ok` - Cache was cleared successfully
   """
   @spec clear() :: :ok
-  def clear() do
+  def clear do
     :telemetry.execute(
       [:phoenix_gen_api, :config, :clear],
       %{},

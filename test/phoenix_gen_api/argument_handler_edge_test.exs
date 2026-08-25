@@ -302,7 +302,7 @@ defmodule PhoenixGenApi.ArgumentHandlerEdgeTest do
         arg_orders: ["created_at"]
       }
 
-      request = %Request{args: %{"created_at" => 12345}}
+      request = %Request{args: %{"created_at" => 12_345}}
 
       assert_raise ArgumentError, fn ->
         ArgumentHandler.validate_args!(config, request)
@@ -355,7 +355,7 @@ defmodule PhoenixGenApi.ArgumentHandlerEdgeTest do
         arg_orders: ["naive_time"]
       }
 
-      request = %Request{args: %{"naive_time" => 12345}}
+      request = %Request{args: %{"naive_time" => 12_345}}
 
       assert_raise ArgumentError, fn ->
         ArgumentHandler.convert_args!(config, request)

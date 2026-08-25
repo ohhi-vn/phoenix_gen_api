@@ -38,8 +38,8 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
   use GenServer, restart: :permanent
 
-  alias PhoenixGenApi.Structs.{PushConfig, FunConfig, ServiceConfig}
   alias PhoenixGenApi.{ConfigDb, ConfigPuller, Security}
+  alias PhoenixGenApi.Structs.{FunConfig, PushConfig, ServiceConfig}
 
   require Logger
 
@@ -117,7 +117,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
   Returns a map of all pushed services and their config versions.
   """
   @spec get_all_pushed_services() :: %{(String.t() | atom()) => String.t()}
-  def get_all_pushed_services() do
+  def get_all_pushed_services do
     GenServer.call(__MODULE__, :get_all_pushed_services)
   end
 
@@ -125,7 +125,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
   Returns a status snapshot for the config receiver.
   """
   @spec status() :: map()
-  def status() do
+  def status do
     GenServer.call(__MODULE__, :status)
   end
 
@@ -242,15 +242,13 @@ defmodule PhoenixGenApi.ConfigReceiver do
   defp decode_push_config(config = %PushConfig{}), do: {:ok, config}
 
   defp decode_push_config(data) when is_map(data) do
-    try do
-      config = PushConfig.from_map(data)
-      {:ok, config}
-    rescue
-      e ->
-        Logger.error("[ConfigReceiver] failed to decode PushConfig: error=#{inspect(e)}")
+    config = PushConfig.from_map(data)
+    {:ok, config}
+  rescue
+    e ->
+      Logger.error("[ConfigReceiver] failed to decode PushConfig: error=#{inspect(e)}")
 
-        {:error, :invalid_push_config_data}
-    end
+      {:error, :invalid_push_config_data}
   end
 
   defp decode_push_config(other) do

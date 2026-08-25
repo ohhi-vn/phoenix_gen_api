@@ -119,7 +119,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   Version checking is respected — if the stored version matches the remote version,
   the full pull for that service is skipped.
   """
-  def pull() do
+  def pull do
     GenServer.cast(__MODULE__, :pull)
   end
 
@@ -131,7 +131,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   Use this when you want to guarantee a fresh configuration pull, for example
   after a deployment or when you suspect the local cache is stale.
   """
-  def force_pull() do
+  def force_pull do
     GenServer.cast(__MODULE__, :force_pull)
   end
 
@@ -139,7 +139,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   Returns a status snapshot for the config puller.
   """
   @spec status() :: map()
-  def status() do
+  def status do
     GenServer.call(__MODULE__, :status)
   end
 
@@ -170,7 +170,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   @doc """
   Returns the map of services currently being pulled from.
   """
-  def get_services() do
+  def get_services do
     GenServer.call(__MODULE__, :get_services)
   end
 
@@ -201,7 +201,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   as their version value.
   """
   @spec get_all_versions() :: %{(String.t() | atom()) => term()}
-  def get_all_versions() do
+  def get_all_versions do
     GenServer.call(__MODULE__, :get_all_versions)
   end
 
@@ -521,33 +521,31 @@ defmodule PhoenixGenApi.ConfigPuller do
   #   - `{:skipped, version}` when the version matches and the pull is skipped
   #   - `{:error, reason}` when the pull fails
   defp fetch_and_process_service(service, stored_version) do
-    try do
-      nodes = resolve_nodes(service.nodes)
+    nodes = resolve_nodes(service.nodes)
 
-      if nodes == [] do
-        Logger.error(
-          "[ConfigPuller] no valid nodes for service: service=#{inspect(service.service)}"
-        )
+    if nodes == [] do
+      Logger.error(
+        "[ConfigPuller] no valid nodes for service: service=#{inspect(service.service)}"
+      )
 
-        {:error, :no_valid_nodes}
-      else
-        maybe_skip_pull(service, nodes, stored_version)
-      end
-    rescue
-      error ->
-        Logger.error(
-          "[ConfigPuller] RPC call failed: service=#{inspect(service.service)} error=#{Exception.message(error)}"
-        )
-
-        {:error, {:exception, Exception.message(error)}}
-    catch
-      kind, value ->
-        Logger.error(
-          "[ConfigPuller] unexpected error: service=#{inspect(service.service)} kind=#{kind} value=#{inspect(value)}"
-        )
-
-        {:error, {kind, value}}
+      {:error, :no_valid_nodes}
+    else
+      maybe_skip_pull(service, nodes, stored_version)
     end
+  rescue
+    error ->
+      Logger.error(
+        "[ConfigPuller] RPC call failed: service=#{inspect(service.service)} error=#{Exception.message(error)}"
+      )
+
+      {:error, {:exception, Exception.message(error)}}
+  catch
+    kind, value ->
+      Logger.error(
+        "[ConfigPuller] unexpected error: service=#{inspect(service.service)} kind=#{kind} value=#{inspect(value)}"
+      )
+
+      {:error, {kind, value}}
   end
 
   # Decides whether to skip the full pull based on the version check result.
@@ -665,24 +663,22 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   defp resolve_nodes({module, function, args})
        when is_atom(module) and is_atom(function) and is_list(args) do
-    try do
-      result = apply(module, function, args)
+    result = apply(module, function, args)
 
-      case result do
-        nodes when is_list(nodes) ->
-          Enum.filter(nodes, &is_atom/1)
+    case result do
+      nodes when is_list(nodes) ->
+        Enum.filter(nodes, &is_atom/1)
 
-        _ ->
-          Logger.error("[ConfigPuller] invalid node list from MFA: result=#{inspect(result)}")
-
-          []
-      end
-    rescue
-      error ->
-        Logger.error("[ConfigPuller] failed to resolve nodes: error=#{Exception.message(error)}")
+      _ ->
+        Logger.error("[ConfigPuller] invalid node list from MFA: result=#{inspect(result)}")
 
         []
     end
+  rescue
+    error ->
+      Logger.error("[ConfigPuller] failed to resolve nodes: error=#{Exception.message(error)}")
+
+      []
   end
 
   defp resolve_nodes(nodes) when is_list(nodes) do

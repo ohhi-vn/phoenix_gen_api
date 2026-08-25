@@ -33,8 +33,8 @@ defmodule PhoenixGenApi.StreamCall do
 
   use GenServer, restart: :temporary
 
-  alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
   alias PhoenixGenApi.Executor
+  alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
 
   require Logger
 

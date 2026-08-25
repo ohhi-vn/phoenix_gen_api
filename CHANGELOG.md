@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.23.1]
 
 ### Added
 
@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **FunConfig**: Fixed `arg_types` validation rejecting the `:datetime`, `:naive_datetime`, and `:list`
+  types that `ArgumentHandler` fully supports at request time — configs using them failed
+  `valid?/1` and were never registered. The accepted types are now defined once in a single
+  `@supported_arg_types` attribute shared by all three config formats (simple atom, old tuple,
+  extended keyword list), keeping validation in sync with runtime conversion.
 - **ConfigCache**: Fixed `get_fast/2` returning `{:error, :not_found}` for a sole disabled config — the single-match pattern used a nested-list shape that `:ets.match_object` never produces, so disabled configs fell through to the multi-version branch and were reported as not found. They now correctly return `{:error, :disabled}`.
 
 #### Compiler warnings

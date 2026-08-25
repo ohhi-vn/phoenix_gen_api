@@ -1,8 +1,8 @@
 defmodule PhoenixGenApi.Structs.FunConfigExtraTest do
   use ExUnit.Case, async: true
 
-  alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.ArgumentHandler
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   describe "local_service?/1" do
     test "returns true when nodes is :local" do

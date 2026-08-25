@@ -126,6 +126,24 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   @max_timeout 300_000
   @min_timeout 100
 
+  # Argument types accepted in arg_types configs. Must stay in sync with the
+  # types ArgumentHandler validates/converts at request time.
+  @supported_arg_types [
+    :string,
+    :num,
+    :boolean,
+    :datetime,
+    :naive_datetime,
+    :list,
+    :list_string,
+    :list_num,
+    :list_uuid,
+    :list_map,
+    :map,
+    :any,
+    :uuid
+  ]
+
   @type t :: %__MODULE__{
           request_type: String.t(),
           service: atom() | String.t(),
@@ -490,36 +508,14 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   @doc false
   defp valid_arg_config?(arg_config) when is_atom(arg_config) do
     # Simple format - just a type atom
-    arg_config in [
-      :string,
-      :num,
-      :boolean,
-      :list_string,
-      :list_num,
-      :list_uuid,
-      :list_map,
-      :map,
-      :any,
-      :uuid
-    ]
+    arg_config in @supported_arg_types
   end
 
   defp valid_arg_config?(arg_config) when is_tuple(arg_config) do
     # Old tuple format: {:string, 255}, {:list, 10}, etc.
     case arg_config do
       {type, _value} when is_atom(type) ->
-        type in [
-          :string,
-          :num,
-          :boolean,
-          :list_string,
-          :list_num,
-          :list_uuid,
-          :list_map,
-          :map,
-          :any,
-          :uuid
-        ]
+        type in @supported_arg_types
 
       _ ->
         false
@@ -529,19 +525,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   defp valid_arg_config?(arg_config) when is_list(arg_config) do
     # Extended format - keyword list with :type required
     case Keyword.get(arg_config, :type) do
-      type
-      when type in [
-             :string,
-             :num,
-             :boolean,
-             :list_string,
-             :list_num,
-             :list_uuid,
-             :list_map,
-             :map,
-             :any,
-             :uuid
-           ] ->
+      type when type in @supported_arg_types ->
         true
 
       _ ->

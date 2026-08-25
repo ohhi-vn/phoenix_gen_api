@@ -1159,7 +1159,11 @@ defmodule PhoenixGenApi.TracerTest do
     end
 
     test "captures a string message and forwards it to the tracer pid", %{snapshot: snapshot} do
-      event = %{level: :warning, meta: traced_meta(snapshot), msg: {:warning, {:string, "hello world"}}}
+      event = %{
+        level: :warning,
+        meta: traced_meta(snapshot),
+        msg: {:warning, {:string, "hello world"}}
+      }
 
       assert :ok = LogCapture.log(event, %{tracer_pid: self(), level: :debug})
 
@@ -1180,7 +1184,11 @@ defmodule PhoenixGenApi.TracerTest do
     end
 
     test "captures a format/args message", %{snapshot: snapshot} do
-      event = %{level: :info, meta: traced_meta(snapshot), msg: {:info, {:format, "value=~s", ["x"]}}}
+      event = %{
+        level: :info,
+        meta: traced_meta(snapshot),
+        msg: {:info, {:format, "value=~s", ["x"]}}
+      }
 
       assert :ok = LogCapture.log(event, %{tracer_pid: self(), level: :debug})
 
@@ -1207,7 +1215,9 @@ defmodule PhoenixGenApi.TracerTest do
       assert line =~ "message="
     end
 
-    test "handles events without a :pid in meta by using the current process", %{snapshot: snapshot} do
+    test "handles events without a :pid in meta by using the current process", %{
+      snapshot: snapshot
+    } do
       meta = traced_meta(snapshot, %{pid: nil})
       event = %{level: :info, meta: meta, msg: {:info, {:string, "no pid"}}}
 
@@ -1381,7 +1391,8 @@ defmodule PhoenixGenApi.TracerTest do
     end
 
     test "write_line/1 reports and survives a failure to open the trace file", %{request: request} do
-      bad_dir = Path.join(System.tmp_dir!(), "tracer_bad_dir_#{System.unique_integer([:positive])}")
+      bad_dir =
+        Path.join(System.tmp_dir!(), "tracer_bad_dir_#{System.unique_integer([:positive])}")
 
       File.write!(bad_dir, "this is a file, not a dir")
       on_exit(fn -> File.rm(bad_dir) end)
@@ -1421,7 +1432,7 @@ defmodule PhoenixGenApi.TracerTest do
             {"bogus_level", :debug},
             {:bogus_atom, :debug}
           ] do
-        Application.put_env(:phoenix_gen_api, :tracer, [enabled: false, log_level: level])
+        Application.put_env(:phoenix_gen_api, :tracer, enabled: false, log_level: level)
 
         {:ok, state} = PhoenixGenApi.Tracer.init([])
         assert state.capture_level == expected

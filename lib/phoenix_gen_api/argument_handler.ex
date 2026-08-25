@@ -248,8 +248,8 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
   defp get_default_value_from_arg_config(_), do: nil
 
-  alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.Errors.InvalidType
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   require Logger
 

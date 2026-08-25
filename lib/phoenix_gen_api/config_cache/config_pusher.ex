@@ -58,7 +58,7 @@ defmodule PhoenixGenApi.ConfigPusher do
       end
   """
 
-  alias PhoenixGenApi.Structs.{PushConfig, FunConfig}
+  alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
 
   require Logger
 

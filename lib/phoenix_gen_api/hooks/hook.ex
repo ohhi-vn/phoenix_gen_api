@@ -57,7 +57,7 @@ defmodule PhoenixGenApi.Hooks do
 
       # Hook module:
       defmodule MyApp.Hooks do
-        alias PhoenixGenApi.Structs.{Request, FunConfig}
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
         def validate_quota(request, fun_config) do
           # Check rate quota, enrich request, etc.

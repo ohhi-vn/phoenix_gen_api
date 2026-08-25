@@ -185,7 +185,9 @@ defmodule PhoenixGenApi.NodeSelectorTest do
                NodeSelector.resolve_nodes(%FunConfig{nodes: :local})
 
       nodes = ["node1@localhost", "node2@localhost"]
-      assert {:ok, %FunConfig{nodes: ^nodes}} = NodeSelector.resolve_nodes(%FunConfig{nodes: nodes})
+
+      assert {:ok, %FunConfig{nodes: ^nodes}} =
+               NodeSelector.resolve_nodes(%FunConfig{nodes: nodes})
 
       assert {:error, {:invalid_nodes_configuration, :bogus}} =
                NodeSelector.resolve_nodes(%FunConfig{nodes: :bogus})
@@ -196,7 +198,9 @@ defmodule PhoenixGenApi.NodeSelectorTest do
                NodeSelector.resolve_nodes(%FunConfig{nodes: {__MODULE__, :get_raising_nodes, []}})
 
       assert {:error, {:dynamic_node_resolution_failed, {:throw, :caught}}} =
-               NodeSelector.resolve_nodes(%FunConfig{nodes: {__MODULE__, :get_throwing_nodes, []}})
+               NodeSelector.resolve_nodes(%FunConfig{
+                 nodes: {__MODULE__, :get_throwing_nodes, []}
+               })
     end
 
     test "resolve_nodes/1 with a malformed dynamic MFA" do
@@ -268,7 +272,11 @@ defmodule PhoenixGenApi.NodeSelectorTest do
     end
 
     test "returns :ok after the counter table exists" do
-      config = %FunConfig{nodes: ["node1@localhost", "node2@localhost"], choose_node_mode: :round_robin}
+      config = %FunConfig{
+        nodes: ["node1@localhost", "node2@localhost"],
+        choose_node_mode: :round_robin
+      }
+
       assert {:ok, _node} = NodeSelector.get_node(config, %Request{request_id: "r"})
       assert :ok = NodeSelector.reset_round_robin()
     end

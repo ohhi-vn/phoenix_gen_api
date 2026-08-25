@@ -217,7 +217,11 @@ defmodule PhoenixGenApi.Structs.ResponseExtraTest do
     end
 
     test "returns {:error, reason} when the result cannot be converted to a map" do
-      response = %Response{request_id: "req_enc_err", result: Stream.map([1, 2], & &1), success: true}
+      response = %Response{
+        request_id: "req_enc_err",
+        result: Stream.map([1, 2], & &1),
+        success: true
+      }
 
       assert {:error, "cannot convert to map type"} = Response.encode(response, [])
     end

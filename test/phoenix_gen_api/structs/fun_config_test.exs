@@ -1586,4 +1586,162 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       assert true == FunConfig.valid?(fun)
     end
   end
+
+  describe "arg_types datetime, naive_datetime and list types" do
+    test "valid with :datetime type in simple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"created_at" => :datetime},
+        arg_orders: ["created_at"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :datetime type in extended format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"created_at" => [type: :datetime, allow_nil?: true]},
+        arg_orders: ["created_at"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :naive_datetime type in simple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"local_time" => :naive_datetime},
+        arg_orders: ["local_time"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :naive_datetime type in extended format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"local_time" => [type: :naive_datetime]},
+        arg_orders: ["local_time"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :list type in simple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"items" => :list},
+        arg_orders: ["items"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with :list type with max_items" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"items" => [type: :list, max_items: 20]},
+        arg_orders: ["items"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with datetime types in old tuple format" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "created_at" => {:datetime, 0},
+          "local_time" => {:naive_datetime, 0}
+        },
+        arg_orders: ["created_at", "local_time"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "valid with previously rejected types combined with map types" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "created_at" => :datetime,
+          "local_time" => :naive_datetime,
+          "items" => [type: :list, max_items: 100],
+          "metadata" => [type: :map, required: ["name"]]
+        },
+        arg_orders: ["created_at", "local_time", "items", "metadata"],
+        response_type: :async
+      }
+
+      assert true == FunConfig.valid?(fun)
+    end
+
+    test "validate_with_details accepts configs using these types" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{
+          "from" => :datetime,
+          "until" => [type: :naive_datetime],
+          "tags" => [type: :list]
+        },
+        arg_orders: ["from", "until", "tags"],
+        response_type: :async
+      }
+
+      assert {:ok, ^fun} = FunConfig.validate_with_details(fun)
+    end
+  end
 end

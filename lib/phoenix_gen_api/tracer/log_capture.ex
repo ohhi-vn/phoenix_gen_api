@@ -111,7 +111,10 @@ defmodule PhoenixGenApi.Tracer.LogCapture do
   end
 
   defp message({_, {:report, report}}), do: Tracer.format_value(report)
-  defp message({_, {:format, format, args}}), do: safe_chardata_to_string(:io_lib.format(format, args))
+
+  defp message({_, {:format, format, args}}),
+    do: safe_chardata_to_string(:io_lib.format(format, args))
+
   defp message({_, other}), do: Tracer.format_value(other)
 
   defp safe_chardata_to_string(chardata) do

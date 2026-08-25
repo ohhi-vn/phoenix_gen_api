@@ -245,7 +245,7 @@ defmodule PhoenixGenApi.RateLimiter do
   @doc """
   Returns the number of active rate limiter instances.
   """
-  def instance_count() do
+  def instance_count do
     if Process.whereis(instance_name(0)) do
       get_instance_count()
     else
@@ -256,7 +256,7 @@ defmodule PhoenixGenApi.RateLimiter do
   @doc """
   Returns the routing strategy being used.
   """
-  def routing_strategy() do
+  def routing_strategy do
     get_routing_strategy()
   end
 
@@ -266,7 +266,7 @@ defmodule PhoenixGenApi.RateLimiter do
   end
 
   # Get instance count from config or default to online schedulers
-  defp get_instance_count() do
+  defp get_instance_count do
     case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:instance_count] do
       :auto -> :erlang.system_info(:schedulers_online)
       count when is_integer(count) and count > 0 -> count
@@ -275,7 +275,7 @@ defmodule PhoenixGenApi.RateLimiter do
   end
 
   # Get routing strategy from config
-  defp get_routing_strategy() do
+  defp get_routing_strategy do
     case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:routing_strategy] do
       :random -> :random
       :hash -> :hash
@@ -512,7 +512,7 @@ defmodule PhoenixGenApi.RateLimiter do
   Gets all configured rate limits.
   """
   @spec get_configured_limits() :: %{global: list(), api: list()}
-  def get_configured_limits() do
+  def get_configured_limits do
     # This is a global config, can query any instance
     instance = instance_name(0)
     GenServer.call(instance, :get_configured_limits)
@@ -531,7 +531,7 @@ defmodule PhoenixGenApi.RateLimiter do
       # => [%{key: :user_id, max_requests: 2000, window_ms: 60_000}]
   """
   @spec get_global_limits() :: [map()]
-  def get_global_limits() do
+  def get_global_limits do
     # This is a global config, can query any instance
     instance = instance_name(0)
     GenServer.call(instance, :get_global_limits)
@@ -664,7 +664,7 @@ defmodule PhoenixGenApi.RateLimiter do
   Returns a status snapshot for all rate limiter instances.
   """
   @spec status() :: map()
-  def status() do
+  def status do
     instance_count = instance_count()
 
     statuses =
@@ -686,7 +686,7 @@ defmodule PhoenixGenApi.RateLimiter do
   Useful for testing or resetting rate limit counters.
   """
   @spec clear() :: :ok
-  def clear() do
+  def clear do
     broadcast_to_all_instances(:clear)
   end
 
@@ -1155,11 +1155,11 @@ defmodule PhoenixGenApi.RateLimiter do
     end
   end
 
-  defp schedule_cleanup() do
+  defp schedule_cleanup do
     Process.send_after(self(), :cleanup, @default_cleanup_interval)
   end
 
-  defp load_global_limits() do
+  defp load_global_limits do
     case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:global_limits] do
       nil -> []
       limits when is_list(limits) -> limits
@@ -1167,7 +1167,7 @@ defmodule PhoenixGenApi.RateLimiter do
     end
   end
 
-  defp load_api_limits() do
+  defp load_api_limits do
     case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:api_limits] do
       nil -> []
       limits when is_list(limits) -> limits
@@ -1175,19 +1175,19 @@ defmodule PhoenixGenApi.RateLimiter do
     end
   end
 
-  defp enabled?() do
+  defp enabled? do
     Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:enabled] != false
   end
 
-  defp fail_open?() do
+  defp fail_open? do
     Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:fail_open] != false
   end
 
-  defp rate_limit_timeout() do
+  defp rate_limit_timeout do
     Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:timeout] || 1000
   end
 
-  defp cleanup_interval() do
+  defp cleanup_interval do
     Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:cleanup_interval] ||
       @default_cleanup_interval
   end

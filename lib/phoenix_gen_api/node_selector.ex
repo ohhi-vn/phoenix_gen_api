@@ -115,8 +115,8 @@ defmodule PhoenixGenApi.NodeSelector do
   - Returns `{:ok, node}` on success or `{:error, reason}` on failure
   """
 
-  alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.Helpers.Shared
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   require Logger
 
@@ -371,21 +371,19 @@ defmodule PhoenixGenApi.NodeSelector do
   # --- Private Functions ---
 
   defp resolve_dynamic_nodes(m, f, a) when is_atom(m) and is_atom(f) and is_list(a) do
-    try do
-      case apply(m, f, a) do
-        nodes when is_list(nodes) ->
-          {:ok, nodes}
+    case apply(m, f, a) do
+      nodes when is_list(nodes) ->
+        {:ok, nodes}
 
-        other ->
-          {:error, {:invalid_return_type, other}}
-      end
-    rescue
-      error ->
-        {:error, {:exception, Exception.message(error)}}
-    catch
-      kind, value ->
-        {:error, {kind, value}}
+      other ->
+        {:error, {:invalid_return_type, other}}
     end
+  rescue
+    error ->
+      {:error, {:exception, Exception.message(error)}}
+  catch
+    kind, value ->
+      {:error, {kind, value}}
   end
 
   defp resolve_dynamic_nodes(_, _, _) do

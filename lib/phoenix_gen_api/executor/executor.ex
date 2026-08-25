@@ -55,11 +55,11 @@ defmodule PhoenixGenApi.Executor do
   metadata containing the `request_id`, retry `mode`, and the last error result.
   """
 
-  alias PhoenixGenApi.Structs.{Request, FunConfig, Response}
-  alias PhoenixGenApi.ConfigDb
-  alias PhoenixGenApi.StreamCall
   alias PhoenixGenApi.ArgumentHandler
+  alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.Permission
+  alias PhoenixGenApi.StreamCall
+  alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
   alias PhoenixGenApi.Permission.PermissionDenied
   alias PhoenixGenApi.RateLimiter
   alias PhoenixGenApi.Hooks
@@ -345,52 +345,50 @@ defmodule PhoenixGenApi.Executor do
     # Security: Permission check runs FIRST (cheap, no ETS writes).
     # Unauthenticated requests are rejected before consuming rate limit resources.
     # Execution order: Permission check → Rate limit check → Argument validation → Execution
-    try do
-      if needs_remote_permission_check?(fun_config) do
-        # Pre-resolve the target node so permission check and execution use the same node
-        case NodeSelector.get_node(fun_config, request) do
-          {:ok, node} ->
-            Permission.check_permission_remote!(request, fun_config, node)
+    if needs_remote_permission_check?(fun_config) do
+      # Pre-resolve the target node so permission check and execution use the same node
+      case NodeSelector.get_node(fun_config, request) do
+        {:ok, node} ->
+          Permission.check_permission_remote!(request, fun_config, node)
 
-          {:error, reason} ->
-            Logger.error(
-              "[Executor] node selection failed for remote permission callback: #{inspect(reason)}"
-            )
+        {:error, reason} ->
+          Logger.error(
+            "[Executor] node selection failed for remote permission callback: #{inspect(reason)}"
+          )
 
-            raise PermissionDenied.exception(
-                    user_id: request.user_id,
-                    request_id: request.request_id,
-                    request_type: request.request_type,
-                    permission_mode: {:callback, fun_config.permission_callback}
-                  )
-        end
-      else
-        Permission.check_permission!(request, fun_config)
+          raise PermissionDenied.exception(
+                  user_id: request.user_id,
+                  request_id: request.request_id,
+                  request_type: request.request_type,
+                  permission_mode: {:callback, fun_config.permission_callback}
+                )
       end
-
-      PhoenixGenApi.Tracer.trace_permission(request, fun_config, :allowed)
-    rescue
-      _e in PermissionDenied ->
-        PhoenixGenApi.Tracer.trace_permission(request, fun_config, :denied)
-        error_response = Response.error_response(request.request_id, "Permission denied")
-        run_after_hook(request, fun_config, error_response)
-        error_response
     else
-      _ ->
-        case RateLimiter.check_rate_limit(request) do
-          :ok ->
-            PhoenixGenApi.Tracer.trace_event("rate_limit", %{"status" => "allowed"})
-
-            result = execute_request(request, fun_config)
-            run_after_hook(request, fun_config, result)
-            result
-
-          error ->
-            result = handle_rate_limit_error(error, request, fun_config)
-            run_after_hook(request, fun_config, result)
-            result
-        end
+      Permission.check_permission!(request, fun_config)
     end
+
+    PhoenixGenApi.Tracer.trace_permission(request, fun_config, :allowed)
+  rescue
+    _e in PermissionDenied ->
+      PhoenixGenApi.Tracer.trace_permission(request, fun_config, :denied)
+      error_response = Response.error_response(request.request_id, "Permission denied")
+      run_after_hook(request, fun_config, error_response)
+      error_response
+  else
+    _ ->
+      case RateLimiter.check_rate_limit(request) do
+        :ok ->
+          PhoenixGenApi.Tracer.trace_event("rate_limit", %{"status" => "allowed"})
+
+          result = execute_request(request, fun_config)
+          run_after_hook(request, fun_config, result)
+          result
+
+        error ->
+          result = handle_rate_limit_error(error, request, fun_config)
+          run_after_hook(request, fun_config, result)
+          result
+      end
   end
 
   # Determines if the permission callback must run on a remote target node.
@@ -398,7 +396,7 @@ defmodule PhoenixGenApi.Executor do
   # is not local (the callback module only exists on remote nodes).
   defp needs_remote_permission_check?(%FunConfig{permission_callback: nil}), do: false
 
-  defp needs_remote_permission_check?(%FunConfig{permission_callback: {_, _, _}} = fun_config) do
+  defp needs_remote_permission_check?(fun_config = %FunConfig{permission_callback: {_, _, _}}) do
     not FunConfig.local_service?(fun_config)
   end
 
@@ -471,51 +469,49 @@ defmodule PhoenixGenApi.Executor do
   end
 
   def sync_call(request, fun_config) do
-    try do
-      do_call(request, fun_config)
-    rescue
-      e ->
-        PhoenixGenApi.Tracer.trace_event("error", %{
-          "kind" => "error",
-          "error" => Exception.message(e)
-        })
+    do_call(request, fun_config)
+  rescue
+    e ->
+      PhoenixGenApi.Tracer.trace_event("error", %{
+        "kind" => "error",
+        "error" => Exception.message(e)
+      })
 
-        Logger.error(
-          "[Executor] sync_call rescued error: #{Exception.message(e)}, request_id: #{request.request_id}"
-        )
+      Logger.error(
+        "[Executor] sync_call rescued error: #{Exception.message(e)}, request_id: #{request.request_id}"
+      )
 
-        Response.error_response(request.request_id, get_error_message(e))
-    catch
-      :exit, reason ->
-        PhoenixGenApi.Tracer.trace_event("error", %{"kind" => "exit", "error" => inspect(reason)})
+      Response.error_response(request.request_id, get_error_message(e))
+  catch
+    :exit, reason ->
+      PhoenixGenApi.Tracer.trace_event("error", %{"kind" => "exit", "error" => inspect(reason)})
 
-        Logger.error(
-          "[Executor] sync_call exit: #{inspect(reason)}, request_id: #{request.request_id}"
-        )
+      Logger.error(
+        "[Executor] sync_call exit: #{inspect(reason)}, request_id: #{request.request_id}"
+      )
 
-        Response.error_response(request.request_id, get_error_message(reason))
+      Response.error_response(request.request_id, get_error_message(reason))
 
-      :throw, reason ->
-        PhoenixGenApi.Tracer.trace_event("error", %{"kind" => "throw", "error" => inspect(reason)})
+    :throw, reason ->
+      PhoenixGenApi.Tracer.trace_event("error", %{"kind" => "throw", "error" => inspect(reason)})
 
-        Logger.error(
-          "[Executor] sync_call throw: #{inspect(reason)}, request_id: #{request.request_id}"
-        )
+      Logger.error(
+        "[Executor] sync_call throw: #{inspect(reason)}, request_id: #{request.request_id}"
+      )
 
-        Response.error_response(request.request_id, get_error_message(reason))
+      Response.error_response(request.request_id, get_error_message(reason))
 
-      kind, reason ->
-        PhoenixGenApi.Tracer.trace_event("error", %{
-          "kind" => inspect(kind),
-          "error" => inspect(reason)
-        })
+    kind, reason ->
+      PhoenixGenApi.Tracer.trace_event("error", %{
+        "kind" => inspect(kind),
+        "error" => inspect(reason)
+      })
 
-        Logger.error(
-          "[Executor] sync_call caught #{inspect(kind)}: #{inspect(reason)}, request_id: #{request.request_id}"
-        )
+      Logger.error(
+        "[Executor] sync_call caught #{inspect(kind)}: #{inspect(reason)}, request_id: #{request.request_id}"
+      )
 
-        Response.error_response(request.request_id, get_error_message(reason))
-    end
+      Response.error_response(request.request_id, get_error_message(reason))
   end
 
   defp do_call(request, fun_config) do

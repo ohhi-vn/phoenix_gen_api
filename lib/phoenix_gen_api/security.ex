@@ -193,7 +193,7 @@ defmodule PhoenixGenApi.Security do
       allowlist explicitly includes them.
   """
   @spec validate_mfa({module(), atom(), list()}) :: :ok | {:error, {:mfa_not_allowed, term()}}
-  def validate_mfa({module, function, _args} = mfa) do
+  def validate_mfa(mfa = {module, function, _args}) do
     # Check hardcoded denylist first — always enforced
     if module in @hardcoded_denylist do
       Logger.warning(

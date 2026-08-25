@@ -100,12 +100,12 @@ defmodule PhoenixGenApi.ConfigPusherExtraTest do
 
   describe "push/3 and verify/4 against an unreachable node" do
     test "push returns {:error, {:badrpc, :nodedown}}" do
-      result = ConfigPusher.push(:"nonexistent_pgapi@nohost", push_config(), timeout: 100)
+      result = ConfigPusher.push(:nonexistent_pgapi@nohost, push_config(), timeout: 100)
       assert {:error, {:badrpc, :nodedown}} = result
     end
 
     test "verify returns {:error, {:badrpc, :nodedown}}" do
-      result = ConfigPusher.verify(:"nonexistent_pgapi@nohost", :push_svc, "1.0.0", timeout: 100)
+      result = ConfigPusher.verify(:nonexistent_pgapi@nohost, :push_svc, "1.0.0", timeout: 100)
       assert {:error, {:badrpc, :nodedown}} = result
     end
   end
@@ -144,13 +144,16 @@ defmodule PhoenixGenApi.ConfigPusherExtraTest do
     end
 
     test "logs skip when pushing same version twice" do
-      assert ConfigPusher.push_on_startup(Node.self(), push_config("6.0.0"), []) == {:ok, :accepted}
-      assert {:ok, :skipped, _} = ConfigPusher.push_on_startup(Node.self(), push_config("6.0.0"), [])
+      assert ConfigPusher.push_on_startup(Node.self(), push_config("6.0.0"), []) ==
+               {:ok, :accepted}
+
+      assert {:ok, :skipped, _} =
+               ConfigPusher.push_on_startup(Node.self(), push_config("6.0.0"), [])
     end
 
     test "returns badrpc error for an unreachable node" do
       assert {:error, {:badrpc, :nodedown}} =
-               ConfigPusher.push_on_startup(:"nonexistent_pgapi@nohost", push_config(),
+               ConfigPusher.push_on_startup(:nonexistent_pgapi@nohost, push_config(),
                  timeout: 100
                )
     end

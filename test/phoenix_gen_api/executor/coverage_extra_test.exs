@@ -854,7 +854,14 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
         id: :async_pool_coverage,
         start:
           {PhoenixGenApi.WorkerPool, :start_link,
-           [[name: :async_pool, pool_size: pool_size, max_queue_size: max_queue_size, task_timeout: 5000]]}
+           [
+             [
+               name: :async_pool,
+               pool_size: pool_size,
+               max_queue_size: max_queue_size,
+               task_timeout: 5000
+             ]
+           ]}
       })
 
     :ok
@@ -901,7 +908,14 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
 
   def error3, do: {:error, :timeout, %{message: "detail"}}
   def error2, do: {:error, "boom"}
-  def slow_remote, do: (Process.sleep(1500); :ok)
+
+  def slow_remote,
+    do:
+      (
+        Process.sleep(1500)
+        :ok
+      )
+
   def exit_remote, do: exit(:boom)
   def remote_function, do: {:ok, "remote result"}
   def node_resolver_fail, do: :error

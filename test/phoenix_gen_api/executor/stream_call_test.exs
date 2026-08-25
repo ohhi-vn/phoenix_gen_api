@@ -1,8 +1,8 @@
 defmodule PhoenixGenApi.StreamCallTest do
   use ExUnit.Case, async: true
 
-  alias PhoenixGenApi.Structs.{FunConfig, Request}
   alias PhoenixGenApi.StreamCall
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   # ConfigDb is already started by the application
 
@@ -162,7 +162,8 @@ defmodule PhoenixGenApi.StreamCallTest do
         request_info: true
       }
 
-      {:ok, pid} = StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
+      {:ok, pid} =
+        StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
 
       receive do
         {:stream_response, response} ->
@@ -176,14 +177,18 @@ defmodule PhoenixGenApi.StreamCallTest do
       refute Process.alive?(pid)
     end
 
-    test "includes the error details when detail_error is enabled", %{request: request, config: config} do
+    test "includes the error details when detail_error is enabled", %{
+      request: request,
+      config: config
+    } do
       Application.put_env(:phoenix_gen_api, :detail_error, true)
 
       on_exit(fn ->
         Application.delete_env(:phoenix_gen_api, :detail_error)
       end)
 
-      {:ok, pid} = StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
+      {:ok, pid} =
+        StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
 
       # Wait for init
       receive do
@@ -207,7 +212,8 @@ defmodule PhoenixGenApi.StreamCallTest do
     end
 
     test "ignores unknown messages", %{request: request, config: config} do
-      {:ok, pid} = StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
+      {:ok, pid} =
+        StreamCall.start_link(%{request: request, fun_config: config, receiver: self()})
 
       # Wait for init
       receive do

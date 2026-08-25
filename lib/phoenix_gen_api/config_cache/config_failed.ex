@@ -32,7 +32,7 @@ defmodule PhoenixGenApi.ConfigFailed do
   Initializes the ETS table. Called by the application supervisor.
   """
   @spec init() :: :ok
-  def init() do
+  def init do
     :ets.new(@table, [
       :set,
       :public,
@@ -196,7 +196,7 @@ defmodule PhoenixGenApi.ConfigFailed do
   defp normalize_reason(reason) when is_binary(reason), do: [reason]
   defp normalize_reason(reason) when is_list(reason), do: reason
 
-  defp config_to_map(%PhoenixGenApi.Structs.FunConfig{} = config) do
+  defp config_to_map(config = %PhoenixGenApi.Structs.FunConfig{}) do
     Map.from_struct(config)
   end
 
