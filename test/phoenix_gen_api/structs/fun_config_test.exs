@@ -371,6 +371,84 @@ defmodule PhoenixGenApi.Structs.FunConfigTest do
       {:error, errors} = FunConfig.validate_with_details(fun)
       assert Enum.any?(errors, &(&1 == "argument validation failed"))
     end
+
+    test "accepts a valid result_encoder" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => :string},
+        arg_orders: ["name"],
+        response_type: :sync,
+        result_encoder: {SomeCodec, :encode_result, [:map]}
+      }
+
+      assert {:ok, _} = FunConfig.validate_with_details(fun)
+    end
+
+    test "rejects an invalid result_encoder (wrong tuple shape)" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => :string},
+        arg_orders: ["name"],
+        response_type: :sync,
+        result_encoder: {:list, :map}
+      }
+
+      {:error, errors} = FunConfig.validate_with_details(fun)
+
+      assert Enum.any?(
+               errors,
+               &(&1 == "result_encoder must be nil or a valid {module, function, args} tuple")
+             )
+    end
+
+    test "rejects a non-tuple result_encoder" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => :string},
+        arg_orders: ["name"],
+        response_type: :sync,
+        result_encoder: "not_a_tuple"
+      }
+
+      {:error, errors} = FunConfig.validate_with_details(fun)
+
+      assert Enum.any?(
+               errors,
+               &(&1 == "result_encoder must be nil or a valid {module, function, args} tuple")
+             )
+    end
+
+    test "defaults result_encoder to nil when unset" do
+      fun = %FunConfig{
+        request_type: "test",
+        service: "chat",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5_000,
+        mfa: {Test, :test, []},
+        arg_types: %{"name" => :string},
+        arg_orders: ["name"],
+        response_type: :sync
+      }
+
+      assert fun.result_encoder == nil
+      assert {:ok, _} = FunConfig.validate_with_details(fun)
+    end
   end
 
   describe "retry validation" do

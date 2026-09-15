@@ -60,7 +60,9 @@ defmodule PhoenixGenApi.Diagnostics do
   """
 
   alias PhoenixGenApi.{ConfigDb, ConfigPuller, ConfigReceiver, RateLimiter}
+  alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.RelayServer
+  alias PhoenixGenApi.Structs.FunConfig
 
   require Logger
 
@@ -562,7 +564,7 @@ defmodule PhoenixGenApi.Diagnostics do
   end
 
   defp build_call_flow({:ok, config}, service, request_type) do
-    local? = PhoenixGenApi.Structs.FunConfig.local_service?(config)
+    local? = FunConfig.local_service?(config)
     nodes = resolve_nodes(config)
     reachable = Enum.filter(nodes, &node_reachable?/1)
 
@@ -991,7 +993,7 @@ defmodule PhoenixGenApi.Diagnostics do
         status: :ok,
         count: ConfigDb.count(),
         services: ConfigDb.get_all_services(),
-        ets: ets_table_info(ConfigDb)
+        ets: Shared.ets_table_info(ConfigDb)
       }
     else
       %{status: :error, reason: :not_started}
@@ -1198,23 +1200,8 @@ defmodule PhoenixGenApi.Diagnostics do
       PhoenixGenApi.RelayRegistry,
       RelayServer.table()
     ]
-    |> Enum.map(&{inspect(&1), ets_table_info(&1)})
+    |> Enum.map(&{inspect(&1), Shared.ets_table_info(&1)})
     |> Map.new()
-  end
-
-  defp ets_table_info(table) do
-    case :ets.info(table) do
-      :undefined ->
-        %{exists: false}
-
-      info when is_list(info) ->
-        info
-        |> Map.new()
-        |> Map.put(:exists, true)
-
-      other ->
-        %{exists: true, info: other}
-    end
   end
 
   # ──────────────────────────────────────────────────────────────────────

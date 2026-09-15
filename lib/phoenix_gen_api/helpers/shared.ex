@@ -146,4 +146,32 @@ defmodule PhoenixGenApi.Helpers.Shared do
   end
 
   def validate_nodes(_), do: []
+
+  @doc """
+  Returns information about an ETS table.
+
+  ## Parameters
+
+    - `table` - The ETS table identifier (name or reference)
+
+  ## Returns
+
+    - `%{exists: false}` when the table does not exist
+    - A map of table info attributes with `exists: true` when it does
+  """
+  @spec ets_table_info(atom() | :ets.tid()) :: map()
+  def ets_table_info(table) do
+    case :ets.info(table) do
+      :undefined ->
+        %{exists: false}
+
+      info when is_list(info) ->
+        info
+        |> Map.new()
+        |> Map.put(:exists, true)
+
+      other ->
+        %{exists: true, info: other}
+    end
+  end
 end

@@ -75,6 +75,9 @@ defmodule PhoenixGenApi.WorkerPool do
 
   use GenServer
 
+  alias PhoenixGenApi.WorkerPool.CircuitBreaker
+  alias PhoenixGenApi.WorkerPool.Worker
+
   require Logger
 
   @type pool_name :: :async_pool | :stream_pool
@@ -176,7 +179,7 @@ defmodule PhoenixGenApi.WorkerPool do
       for _i <- 1..pool_size, reduce: {%{}, MapSet.new(), []} do
         {workers_acc, idle_acc, list_acc} ->
           {:ok, pid} =
-            PhoenixGenApi.WorkerPool.Worker.start_link(
+            Worker.start_link(
               pool_name: pool_name,
               task_timeout: task_timeout
             )
@@ -241,7 +244,7 @@ defmodule PhoenixGenApi.WorkerPool do
   end
 
   defp execute_on_worker(worker_pid, task, state) do
-    PhoenixGenApi.WorkerPool.Worker.execute(worker_pid, task)
+    Worker.execute(worker_pid, task)
     new_workers = Map.put(state.workers, worker_pid, :busy)
     new_idle = MapSet.delete(state.idle_workers, worker_pid)
     new_idle_list = List.delete(state.idle_workers_list, worker_pid)
@@ -281,7 +284,7 @@ defmodule PhoenixGenApi.WorkerPool do
     case :queue.out(state.queue) do
       {{:value, task}, new_queue} ->
         # Execute queued task on the now-idle worker
-        PhoenixGenApi.WorkerPool.Worker.execute(worker_pid, task)
+        Worker.execute(worker_pid, task)
         final_workers = Map.put(new_workers, worker_pid, :busy)
         final_idle = MapSet.delete(new_idle, worker_pid)
         final_idle_list = List.delete(new_idle_list, worker_pid)
@@ -323,7 +326,7 @@ defmodule PhoenixGenApi.WorkerPool do
     new_idle_list = List.delete(state.idle_workers_list, worker_pid)
 
     {:ok, new_pid} =
-      PhoenixGenApi.WorkerPool.Worker.start_link(
+      Worker.start_link(
         pool_name: state.pool_name,
         task_timeout: state.task_timeout
       )
@@ -371,7 +374,7 @@ defmodule PhoenixGenApi.WorkerPool do
   end
 
   defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
-    PhoenixGenApi.WorkerPool.CircuitBreaker.circuit_open?(
+    CircuitBreaker.circuit_open?(
       circuit_open_at,
       circuit_breaker_cooldown()
     )

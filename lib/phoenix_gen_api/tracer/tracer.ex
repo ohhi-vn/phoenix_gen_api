@@ -138,6 +138,7 @@ defmodule PhoenixGenApi.Tracer do
   use GenServer
 
   alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
+  alias PhoenixGenApi.Tracer.LogCapture
 
   require Logger
 
@@ -900,7 +901,7 @@ defmodule PhoenixGenApi.Tracer do
   defp install_console_suppress(app_level) do
     :logger.remove_handler_filter(:default, @console_suppress_filter_id)
 
-    filter = {&PhoenixGenApi.Tracer.LogCapture.console_filter/2, %{level: app_level}}
+    filter = {&LogCapture.console_filter/2, %{level: app_level}}
     :logger.add_handler_filter(:default, @console_suppress_filter_id, filter)
     :ok
   end

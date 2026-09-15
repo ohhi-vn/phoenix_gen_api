@@ -96,6 +96,21 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   Hooks emit telemetry events at `[:phoenix_gen_api, :hook, :before|:after, :start|:stop|:exception]`.
 
+  ## Result Encoder
+
+  The `result_encoder` field is an optional MFA tuple `{module, function, args}`
+  that transforms the successful response payload before it is returned to the
+  caller. When the mfa returns `{:ok, data}`, the encoder is called as
+  `apply(module, function, [data | args])` and its return value becomes the
+  response result. The encoder sees only `data` — not the `{:ok, data}` envelope.
+
+  Contract: the encoder MUST return the encoded value; raise to signal failure.
+  Encoder failures are turned into error responses and never crash the channel.
+  `{:error, reason}` results and other shapes are NOT encoded (pass through
+  untouched), and `:stream` responses are not encoded. The encoder MFA is
+  validated by `PhoenixGenApi.Security.validate_mfa/1` like the endpoint's
+  own mfa.
+
   ## Permission Callback
 
   The `permission_callback` field allows a custom MFA to override the built-in
@@ -117,6 +132,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   """
 
   alias PhoenixGenApi.ArgumentHandler
+  alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.NodeSelector
   alias PhoenixGenApi.Permission
   alias PhoenixGenApi.Structs.Request
@@ -163,7 +179,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
           retry: {:same_node, number()} | {:all_nodes, number()} | number() | nil,
           before_execute: {module(), atom()} | {module(), atom(), args :: list()} | nil,
           after_execute: {module(), atom()} | {module(), atom(), args :: list()} | nil,
-          hook_timeout: pos_integer()
+          hook_timeout: pos_integer(),
+          result_encoder: {module(), atom(), [any()]} | nil
         }
 
   @no_version_sentinel "0.0.0"
@@ -186,7 +203,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
     retry: nil,
     before_execute: nil,
     after_execute: nil,
-    hook_timeout: 5000
+    hook_timeout: 5000,
+    result_encoder: nil
   ]
 
   @doc """
@@ -297,7 +315,9 @@ defmodule PhoenixGenApi.Structs.FunConfig do
        "before_execute must be nil or a valid {module, function} or {module, function, args} tuple"},
       {valid_hook?(config.after_execute),
        "after_execute must be nil or a valid {module, function} or {module, function, args} tuple"},
-      {valid_hook_timeout?(config.hook_timeout), "hook_timeout must be a positive integer"}
+      {valid_hook_timeout?(config.hook_timeout), "hook_timeout must be a positive integer"},
+      {valid_result_encoder?(config.result_encoder),
+       "result_encoder must be nil or a valid {module, function, args} tuple"}
     ]
 
     errors =
@@ -434,7 +454,7 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   @doc false
   defp valid_nodes?(nodes) when is_list(nodes) do
-    nodes != [] and Enum.all?(nodes, &PhoenixGenApi.Helpers.Shared.valid_node?/1)
+    nodes != [] and Enum.all?(nodes, &Shared.valid_node?/1)
   end
 
   defp valid_nodes?(nodes) when is_tuple(nodes) do
@@ -546,4 +566,12 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
   defp valid_hook_timeout?(timeout) when is_integer(timeout) and timeout > 0, do: true
   defp valid_hook_timeout?(_), do: false
+
+  defp valid_result_encoder?(nil), do: true
+
+  defp valid_result_encoder?({module, function, args})
+       when is_atom(module) and is_atom(function) and is_list(args),
+       do: true
+
+  defp valid_result_encoder?(_), do: false
 end

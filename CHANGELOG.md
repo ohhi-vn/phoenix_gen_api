@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.24.0]
+
+### Fixed
+
+- **ImplHelper encoder contract**: Generated encoder protocol implementations
+  (`PhoenixGenApi.ImplHelper.gen_impl/2` and `use PhoenixGenApi` in channels) now
+  conform to the encoder protocol contract: `encode/2` applies the struct's
+  `encode!/2` and then recursively encodes the result via the encoder protocol,
+  returning valid iodata. Previously the impl returned the raw `encode!/2` map,
+  which crashed the channel process when pushing responses over a real websocket
+  with standard configs (`config :phoenix, :json_library, Jason` or OTP `JSON`);
+  Phoenix channel tests bypass wire serialization and did not catch this.
+  Apps using a **custom** encoder protocol must re-verify that it implements
+  the protocol for plain maps (any real encoder protocol does).
+
+### Changed
+
+- **Guides restructured for newcomers**: `Getting Started` now starts with a
+  single-node setup (`nodes: [Node.self()]` + browser client) before splitting
+  into a gateway + service cluster, documents the `require_verified_user_id`
+  default, and gains Testing and Troubleshooting sections. A new `Concepts`
+  guide covers the mental model. Feature sections from the Step-by-Step Guide
+  moved into the FunConfig Reference; Execute Flow merged into Architecture;
+  Tracing merged into Diagnostics.
+- **Deleted guide pages** (old Hexdoc URLs no longer resolve; content lives in
+  the files below): `step_by_step_guide.html` (→ FunConfig Reference, Getting
+  Started), `execute_flow.html` (→ Architecture), `tracing.html` (→ Diagnostics).
+
+### Added
+
+- **FunConfig `result_encoder`**: New optional per-endpoint field
+  `result_encoder: {module, function, args}` (defaults to `nil`). When set, the
+  executor applies the encoder to **successful** results only — the `{:ok, data}`
+  tuple is unwrapped and the encoder receives only `data` as its first argument
+  followed by the tuple's args (`apply(mod, fun, [data | args])`), and its return
+  value is re-wrapped as `{:ok, encoded}`. This lets endpoints shape payloads at
+  the framework boundary (e.g. convert structs to JSON-safe maps) without
+  duplicating encoding logic per endpoint.
+- Encoder failures (`raise`/`throw`/`exit`) are rescued and become
+  `{:error, "result encoding failed: ..."}` → error response; the channel process
+  never crashes.
+- The encoder MFA passes through `Security.validate_mfa` like the endpoint's own
+  mfa (hardcoded denylist + optional `:mfa_allowlist`). Deployments using
+  `:mfa_allowlist` must include the encoder MFA or requests fail visibly with
+  an `mfa_not_allowed` error.
+- Error results and other result shapes pass through untouched. `:stream`
+  endpoints are not encoded — streaming behavior is unchanged.
+- Structural validation mirrors the hook validator (`nil` or a valid
+  `{module, function, args}` tuple); invalid values are rejected with a message
+  naming `result_encoder`.
+- Tests: new `test/phoenix_gen_api/executor/result_encoder_test.exs` covering the
+  application contract, pass-through, failure handling, and security checks, plus
+  validation tests in the FunConfig test suite.
+
 ## [2.23.1]
 
 ### Added

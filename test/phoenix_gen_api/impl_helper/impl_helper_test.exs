@@ -4,6 +4,13 @@ defprotocol PhoenixGenApi.ImplHelperTest.TestEncoder do
   def encode(data, opts)
 end
 
+# Encoder protocol implementations must handle every value the structs' encode!/2
+# can return — including plain maps (the contract requires recursion, so the
+# generated impl calls TestEncoder.encode on the encode!/2 result).
+defimpl PhoenixGenApi.ImplHelperTest.TestEncoder, for: Map do
+  def encode(data, opts), do: {:encoded_map, data, opts}
+end
+
 # Test struct with simple encode!/2
 defmodule PhoenixGenApi.ImplHelperTest.SimpleStruct do
   defstruct [:name, :value]
@@ -112,35 +119,38 @@ defmodule PhoenixGenApi.ImplHelperTest do
   }
 
   describe "gen_impl/2" do
-    test "generates protocol implementation that delegates to encode!/2" do
+    # The generated impl applies encode!/2 and then recursively encodes the
+    # result through the encoder protocol itself (contract conformance).
+    test "generates protocol implementation that delegates to encode!/2 then the encoder" do
       struct = %SimpleStruct{name: "hello", value: 42}
       result = TestEncoder.encode(struct, [])
-      assert result == %{name: "hello", value: 42}
+      assert result == {:encoded_map, %{name: "hello", value: 42}, []}
     end
 
     test "generates implementation for different struct types" do
       struct = %OptsStruct{id: "abc", content: "world"}
       result = TestEncoder.encode(struct, [])
-      assert result == %{id: "abc", content: "world", format: :default}
+      assert result == {:encoded_map, %{id: "abc", content: "world", format: :default}, []}
     end
 
     test "forwards opts to encode!/2" do
       struct = %OptsStruct{id: "xyz", content: "test"}
       result = TestEncoder.encode(struct, format: :json)
-      assert result == %{id: "xyz", content: "test", format: :json}
+      assert result == {:encoded_map, %{id: "xyz", content: "test", format: :json}, format: :json}
     end
 
     test "encode!/2 receives the struct data correctly" do
       struct = %SimpleStruct{name: "encoded", value: 99}
       result = TestEncoder.encode(struct, [])
-      assert result.name == "encoded"
-      assert result.value == 99
+      assert {:encoded_map, map, []} = result
+      assert map.name == "encoded"
+      assert map.value == 99
     end
 
     test "works with nil struct fields" do
       struct = %SimpleStruct{name: nil, value: nil}
       result = TestEncoder.encode(struct, [])
-      assert result == %{name: nil, value: nil}
+      assert result == {:encoded_map, %{name: nil, value: nil}, []}
     end
 
     test "raises UndefinedFunctionError when struct does not implement encode!/2" do
@@ -155,10 +165,10 @@ defmodule PhoenixGenApi.ImplHelperTest do
   describe "__using__/1" do
     test "generates implementations for multiple modules via use" do
       result1 = TestEncoder.encode(%UseStruct1{field1: "a"}, [])
-      assert result1 == %{field1: "a"}
+      assert result1 == {:encoded_map, %{field1: "a"}, []}
 
       result2 = TestEncoder.encode(%UseStruct2{field2: "b"}, [])
-      assert result2 == %{field2: "b"}
+      assert result2 == {:encoded_map, %{field2: "b"}, []}
     end
 
     test "handles empty impl list without error" do
@@ -182,7 +192,7 @@ defmodule PhoenixGenApi.ImplHelperTest do
 
     test "generates single implementation when impl list has one module" do
       result = TestEncoder.encode(%SingleImplStruct{single: "only"}, [])
-      assert result == %{single: "only"}
+      assert result == {:encoded_map, %{single: "only"}, []}
     end
   end
 end

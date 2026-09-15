@@ -101,9 +101,11 @@ defmodule PhoenixGenApi.Structs.Response do
 
   # special impl for JSON library
   defimpl JSON.Encoder, for: PhoenixGenApi.Structs.Response do
+    alias PhoenixGenApi.Structs.Response
+
     def encode(data, opts) do
       data
-      |> PhoenixGenApi.Structs.Response.encode!(opts)
+      |> Response.encode!(opts)
       |> JSON.encode!()
     end
   end

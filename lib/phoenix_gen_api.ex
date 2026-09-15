@@ -737,7 +737,14 @@ defmodule PhoenixGenApi do
     IO.puts("Node: #{stats.node}")
     IO.puts("Collected at: #{DateTime.from_unix!(stats.collected_at_ms, :millisecond)}")
 
-    vm = stats.vm
+    print_vm_stats(stats.vm)
+    print_pga_stats(stats.phoenix_gen_api)
+
+    IO.puts("")
+    :ok
+  end
+
+  defp print_vm_stats(vm) do
     IO.puts("\n--- VM ---")
     IO.puts("  Processes:     #{vm.process_count} / #{vm.process_limit}")
     IO.puts("  Ports:         #{vm.port_count}")
@@ -768,87 +775,85 @@ defmodule PhoenixGenApi do
     {cs_count, _} = vm.context_switches
     IO.puts("  Context sw:    #{cs_count}")
     IO.puts("  Uptime:        #{format_uptime(vm.uptime)}")
+    print_scheduler_wall_time(vm.scheduler_wall_time)
+  end
 
-    if vm.scheduler_wall_time && vm.scheduler_wall_time != :undefined do
-      IO.puts("  Scheduler wall time:")
+  defp print_scheduler_wall_time(:undefined), do: :ok
 
-      Enum.each(vm.scheduler_wall_time, fn {id, active, total} ->
-        pct = if total > 0, do: Float.round(active / total * 100, 1), else: 0.0
-        IO.puts("    Scheduler #{id}: #{pct}% active (#{active}ms / #{total}ms)")
-      end)
-    end
+  defp print_scheduler_wall_time(scheduler_wall_time) do
+    IO.puts("  Scheduler wall time:")
 
-    pga = stats.phoenix_gen_api
+    Enum.each(scheduler_wall_time, fn {id, active, total} ->
+      pct = if total > 0, do: Float.round(active / total * 100, 1), else: 0.0
+      IO.puts("    Scheduler #{id}: #{pct}% active (#{active}ms / #{total}ms)")
+    end)
+  end
+
+  defp print_pga_stats(pga) do
     IO.puts("\n--- PhoenixGenApi ---")
     IO.puts("  Client mode:   #{pga.client_mode}")
     IO.puts("  Telemetry events: #{pga.telemetry_events}")
 
-    case pga do
-      %{config_db: db} ->
-        IO.puts("\n  ConfigDb:")
-        IO.puts("    Status:    #{db.status}")
-        IO.puts("    Count:     #{db.count}")
-        IO.puts("    Services:  #{inspect(db.services)}")
-
-      %{} ->
-        :ok
-    end
-
-    case pga do
-      %{rate_limiter: rl} ->
-        IO.puts("\n  Rate Limiter:")
-        IO.puts("    Status:    #{rl.status}")
-
-        if rl.data do
-          IO.puts("    Instances: #{length(rl.data.instances)}")
-        end
-
-      %{} ->
-        :ok
-    end
-
-    case pga do
-      %{worker_pool: worker_pool} ->
-        IO.puts("\n  Worker Pools:")
-
-        Enum.each(worker_pool, fn {name, pool} ->
-          IO.puts("    #{name}:")
-          IO.puts("      Status:   #{pool.status}")
-
-          if pool.data do
-            d = pool.data
-
-            IO.puts(
-              "      Idle: #{d.idle_workers}  Busy: #{d.busy_workers}  Queued: #{d.queued_tasks}"
-            )
-
-            IO.puts(
-              "      Circuit: #{d.circuit_open}  Executed: #{d.total_tasks_executed}  Failed: #{d.total_tasks_failed}"
-            )
-          end
-        end)
-
-      %{} ->
-        :ok
-    end
-
-    case pga do
-      %{relay: relay} ->
-        IO.puts("\n  Relay:")
-        IO.puts("    Status:  #{relay.status}")
-
-        if relay.data do
-          IO.puts("    Groups:  #{relay.data.group_count}")
-          IO.puts("    Monitored memberships: #{relay.data.monitored_memberships}")
-        end
-
-      %{} ->
-        :ok
-    end
-
-    IO.puts("")
-    :ok
+    print_config_db_stats(pga)
+    print_rate_limiter_stats(pga)
+    print_worker_pool_stats(pga)
+    print_relay_stats(pga)
   end
+
+  defp print_config_db_stats(%{config_db: db}) do
+    IO.puts("\n  ConfigDb:")
+    IO.puts("    Status:    #{db.status}")
+    IO.puts("    Count:     #{db.count}")
+    IO.puts("    Services:  #{inspect(db.services)}")
+  end
+
+  defp print_config_db_stats(_), do: :ok
+
+  defp print_rate_limiter_stats(%{rate_limiter: rl}) do
+    IO.puts("\n  Rate Limiter:")
+    IO.puts("    Status:    #{rl.status}")
+
+    if rl.data do
+      IO.puts("    Instances: #{length(rl.data.instances)}")
+    end
+  end
+
+  defp print_rate_limiter_stats(_), do: :ok
+
+  defp print_worker_pool_stats(%{worker_pool: worker_pool}) do
+    IO.puts("\n  Worker Pools:")
+
+    Enum.each(worker_pool, fn {name, pool} ->
+      IO.puts("    #{name}:")
+      IO.puts("      Status:   #{pool.status}")
+
+      if pool.data do
+        d = pool.data
+
+        IO.puts(
+          "      Idle: #{d.idle_workers}  Busy: #{d.busy_workers}  Queued: #{d.queued_tasks}"
+        )
+
+        IO.puts(
+          "      Circuit: #{d.circuit_open}  Executed: #{d.total_tasks_executed}  Failed: #{d.total_tasks_failed}"
+        )
+      end
+    end)
+  end
+
+  defp print_worker_pool_stats(_), do: :ok
+
+  defp print_relay_stats(%{relay: relay}) do
+    IO.puts("\n  Relay:")
+    IO.puts("    Status:  #{relay.status}")
+
+    if relay.data do
+      IO.puts("    Groups:  #{relay.data.group_count}")
+      IO.puts("    Monitored memberships: #{relay.data.monitored_memberships}")
+    end
+  end
+
+  defp print_relay_stats(_), do: :ok
 
   @doc """
   [Shell Helper] Print a formatted debug report to the console.
@@ -1553,6 +1558,11 @@ defmodule PhoenixGenApi do
 
       require Logger
 
+      alias PhoenixGenApi.Errors.DecodeError
+      alias PhoenixGenApi.Executor
+      alias PhoenixGenApi.Structs.Request
+      alias PhoenixGenApi.Structs.Response
+
       @impl true
       @doc false
       def handle_in(@phoenix_gen_api_event, payload, socket) do
@@ -1594,7 +1604,7 @@ defmodule PhoenixGenApi do
                 )
 
                 error_response =
-                  PhoenixGenApi.Structs.Response.error_response(
+                  Response.error_response(
                     request_id,
                     "Authentication required"
                   )
@@ -1613,17 +1623,17 @@ defmodule PhoenixGenApi do
       end
 
       defp do_handle_request(payload, _socket) do
-        request = PhoenixGenApi.Structs.Request.decode!(payload)
+        request = Request.decode!(payload)
 
-        case PhoenixGenApi.Executor.execute!(request) do
-          %PhoenixGenApi.Structs.Response{} = result ->
+        case Executor.execute!(request) do
+          %Response{} = result ->
             {{:ok, request.request_type}, result}
 
           {:ok, :no_response} ->
             {{:ok, request.request_type}, nil}
         end
       rescue
-        e in PhoenixGenApi.Errors.DecodeError ->
+        e in DecodeError ->
           request_id = Map.get(payload, "request_id", "unknown")
 
           Logger.warning(
@@ -1631,7 +1641,7 @@ defmodule PhoenixGenApi do
           )
 
           error_response =
-            PhoenixGenApi.Structs.Response.error_response(
+            Response.error_response(
               request_id,
               "Invalid request: #{e.message}"
             )
@@ -1646,7 +1656,7 @@ defmodule PhoenixGenApi do
           )
 
           error_response =
-            PhoenixGenApi.Structs.Response.error_response(
+            Response.error_response(
               request_id,
               "Request processing failed"
             )
@@ -1662,29 +1672,10 @@ defmodule PhoenixGenApi do
 
       @doc false
       @impl true
-      def handle_info({:push, result}, socket) do
+      def handle_info({type, result}, socket)
+          when type in [:push, :stream_response, :async_call] do
         Logger.debug(fn ->
-          "[PhoenixGenApi] push result, module: #{__MODULE__}, result: #{inspect(result)}"
-        end)
-
-        push(socket, @phoenix_gen_api_event, result)
-        {:noreply, socket}
-      end
-
-      @doc false
-      def handle_info({:stream_response, result}, socket) do
-        Logger.debug(fn ->
-          "[PhoenixGenApi] stream response, module: #{__MODULE__}, result: #{inspect(result)}"
-        end)
-
-        push(socket, @phoenix_gen_api_event, result)
-        {:noreply, socket}
-      end
-
-      @doc false
-      def handle_info({:async_call, result}, socket) do
-        Logger.debug(fn ->
-          "[PhoenixGenApi] async call result, module: #{__MODULE__}, result: #{inspect(result)}"
+          "[PhoenixGenApi] #{type} result, module: #{__MODULE__}, result: #{inspect(result)}"
         end)
 
         push(socket, @phoenix_gen_api_event, result)

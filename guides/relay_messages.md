@@ -365,7 +365,6 @@ channel.on("chat", (payload) => {
 
 ## What's Next
 
-- **[Step-by-Step Guide](./step_by_step_guide.md)** — Relay setup with code examples (Section 12).
 - **[Architecture Guide](./architecture.md)** — Relay system architecture deep dive (Section 11).
-- **[Execute Flow](./execute_flow.md)** — How relay messages flow through the executor.
+- **[Architecture](./architecture.md)** — How relay messages flow through the executor.
 - **[README](../README.md)** — Full feature reference.

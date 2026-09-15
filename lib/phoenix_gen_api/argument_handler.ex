@@ -362,49 +362,42 @@ defmodule PhoenixGenApi.ArgumentHandler do
     arg_types = config.arg_types || %{}
 
     # Build the final arguments map with default values and type conversion
-    converted_args =
-      Enum.reduce(arg_types, %{}, fn {name, arg_config}, acc ->
-        {type, params} = get_type_with_params(arg_config)
-        allow_nil = get_allow_nil_from_arg_config(arg_config)
-        default_value = get_default_value_from_arg_config(arg_config)
+    converted_args = convert_args_map(args, arg_types)
 
-        # Check if argument is present in request (even if nil)
-        arg_present = Map.has_key?(args, name)
+    format_args!(config, converted_args, arg_types, request)
+  end
 
-        value =
-          if arg_present do
-            # Argument is present in request (could be nil)
-            Map.get(args, name)
-          else
-            # Argument is missing from request
-            if default_value != nil do
-              default_value
-            else
-              nil
-            end
-          end
+  defp convert_args_map(args, arg_types) do
+    Enum.reduce(arg_types, %{}, fn {name, arg_config}, acc ->
+      Map.put(acc, name, convert_single_arg(args, name, arg_config))
+    end)
+  end
 
-        # Handle nil value
-        final_value =
-          if value == nil and not allow_nil do
-            nil
-          else
-            value
-          end
+  defp convert_single_arg(args, name, arg_config) do
+    {type, params} = get_type_with_params(arg_config)
+    allow_nil = get_allow_nil_from_arg_config(arg_config)
+    default_value = get_default_value_from_arg_config(arg_config)
 
-        # Convert the argument with proper type handling
-        converted_value =
-          if final_value == nil and allow_nil do
-            nil
-          else
-            # Build the type with params for convert_arg!
-            type_with_params = build_type_with_params(type, params)
-            convert_arg!(final_value, type_with_params)
-          end
+    # Argument is present in request (could be nil), or missing (use default)
+    value =
+      if Map.has_key?(args, name) do
+        Map.get(args, name)
+      else
+        default_value
+      end
 
-        Map.put(acc, name, converted_value)
-      end)
+    convert_arg_value(value, type, params, allow_nil)
+  end
 
+  defp convert_arg_value(nil, _type, _params, true), do: nil
+
+  defp convert_arg_value(value, type, params, _allow_nil) do
+    # Build the type with params for convert_arg!
+    type_with_params = build_type_with_params(type, params)
+    convert_arg!(value, type_with_params)
+  end
+
+  defp format_args!(config = %FunConfig{}, converted_args, arg_types, request) do
     cond do
       # function has no arguments.
       map_size(arg_types) == 0 ->
@@ -420,37 +413,43 @@ defmodule PhoenixGenApi.ArgumentHandler do
 
       # function has multiple arguments.
       true ->
-        result =
-          Enum.reduce(config.arg_orders, [], fn name, acc ->
-            case Map.get(converted_args, name) do
-              nil ->
-                # Check if this is allowed (allow_nil? or default_value)
-                arg_config = Map.get(arg_types, name)
-                allow_nil = get_allow_nil_from_arg_config(arg_config)
-                default_value = get_default_value_from_arg_config(arg_config)
+        ordered_args!(config, converted_args, arg_types, request)
+    end
+  end
 
-                if allow_nil or default_value != nil do
-                  [nil | acc]
-                else
-                  Logger.error(
-                    "[ArgumentHandler] missing argument #{inspect(name)}, request_type: #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-                  )
+  defp ordered_args!(config, converted_args, arg_types, request) do
+    result =
+      Enum.map(config.arg_orders, &arg_or_raise!(&1, converted_args, arg_types, request))
 
-                  raise ArgumentError,
-                        "missing argument #{inspect(name)} in #{inspect(request.request_type)}"
-                end
+    Logger.debug(
+      "[ArgumentHandler] converted args: #{inspect(result)}, request_type: #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+    )
 
-              arg ->
-                [arg | acc]
-            end
-          end)
-          |> Enum.reverse()
+    result
+  end
 
-        Logger.debug(
-          "[ArgumentHandler] converted args: #{inspect(result)}, request_type: #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
-        )
+  defp arg_or_raise!(name, converted_args, arg_types, request) do
+    case Map.get(converted_args, name) do
+      nil -> nil_arg_or_raise!(name, arg_types, request)
+      arg -> arg
+    end
+  end
 
-        result
+  defp nil_arg_or_raise!(name, arg_types, request) do
+    # Check if this is allowed (allow_nil? or default_value)
+    arg_config = Map.get(arg_types, name)
+    allow_nil = get_allow_nil_from_arg_config(arg_config)
+    default_value = get_default_value_from_arg_config(arg_config)
+
+    if allow_nil or default_value != nil do
+      nil
+    else
+      Logger.error(
+        "[ArgumentHandler] missing argument #{inspect(name)}, request_type: #{inspect(request.request_type)}, request_id: #{inspect(request.request_id)}"
+      )
+
+      raise ArgumentError,
+            "missing argument #{inspect(name)} in #{inspect(request.request_type)}"
     end
   end
 

@@ -41,6 +41,8 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
   use GenServer
 
+  alias PhoenixGenApi.WorkerPool.CircuitBreaker
+
   require Logger
 
   @default_task_timeout 30_000
@@ -335,7 +337,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   end
 
   defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
-    PhoenixGenApi.WorkerPool.CircuitBreaker.circuit_open?(
+    CircuitBreaker.circuit_open?(
       circuit_open_at,
       circuit_breaker_cooldown()
     )

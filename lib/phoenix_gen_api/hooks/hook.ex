@@ -71,7 +71,7 @@ defmodule PhoenixGenApi.Hooks do
       end
   """
 
-  alias PhoenixGenApi.Structs.{Request, FunConfig}
+  alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   require Logger
 

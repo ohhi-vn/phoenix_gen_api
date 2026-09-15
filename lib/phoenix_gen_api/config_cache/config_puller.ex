@@ -75,7 +75,8 @@ defmodule PhoenixGenApi.ConfigPuller do
   use GenServer, restart: :permanent
 
   alias PhoenixGenApi.ConfigDb
-  alias PhoenixGenApi.Structs.{ServiceConfig, FunConfig}
+  alias PhoenixGenApi.Helpers.Shared
+  alias PhoenixGenApi.Structs.{FunConfig, ServiceConfig}
 
   require Logger
 
@@ -700,50 +701,7 @@ defmodule PhoenixGenApi.ConfigPuller do
   # of the previous N individual GenServer.call(:add) invocations.
   defp process_fun_list(service_name, fun_list, node, timeout) do
     valid_configs =
-      Enum.flat_map(fun_list, fn
-        config = %FunConfig{} ->
-          config =
-            config
-            |> enforce_service_name(service_name)
-            |> ensure_version()
-
-          case validate_mfa_safety(config.mfa, node, timeout) do
-            :ok ->
-              if FunConfig.valid?(config) do
-                [config]
-              else
-                Logger.warning(
-                  "[ConfigPuller] invalid config: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, skipping"
-                )
-
-                reasons =
-                  case FunConfig.validate_with_details(config) do
-                    {:error, errors} -> errors
-                    _ -> ["unknown validation error"]
-                  end
-
-                PhoenixGenApi.ConfigFailed.record(config, reasons, :pull, node)
-
-                []
-              end
-
-            {:error, reason} ->
-              Logger.error(
-                "[ConfigPuller] unsafe MFA: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, reason=#{inspect(reason)}, skipping"
-              )
-
-              PhoenixGenApi.ConfigFailed.record(config, to_string(reason), :pull, node)
-
-              []
-          end
-
-        other ->
-          Logger.error(
-            "[ConfigPuller] unexpected item in fun_list: service=#{inspect(service_name)}, node=#{inspect(node)}, item=#{inspect(other)}"
-          )
-
-          []
-      end)
+      Enum.flat_map(fun_list, &validate_fun_config(&1, service_name, node, timeout))
 
     case valid_configs do
       [] ->
@@ -768,12 +726,65 @@ defmodule PhoenixGenApi.ConfigPuller do
     Enum.map(valid_configs, & &1.request_type)
   end
 
+  defp validate_fun_config(config = %FunConfig{}, service_name, node, timeout) do
+    config =
+      config
+      |> enforce_service_name(service_name)
+      |> ensure_version()
+
+    case validate_mfa_safety(config.mfa, node, timeout) do
+      :ok -> keep_valid_config(config, service_name, node)
+      {:error, reason} -> reject_unsafe_config(config, service_name, node, reason)
+    end
+  end
+
+  defp validate_fun_config(other, service_name, node, _timeout) do
+    Logger.error(
+      "[ConfigPuller] unexpected item in fun_list: service=#{inspect(service_name)}, node=#{inspect(node)}, item=#{inspect(other)}"
+    )
+
+    []
+  end
+
+  defp keep_valid_config(config, service_name, node) do
+    if FunConfig.valid?(config) do
+      [config]
+    else
+      reject_invalid_config(config, service_name, node)
+    end
+  end
+
+  defp reject_invalid_config(config, service_name, node) do
+    Logger.warning(
+      "[ConfigPuller] invalid config: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, skipping"
+    )
+
+    PhoenixGenApi.ConfigFailed.record(config, validation_reasons(config), :pull, node)
+    []
+  end
+
+  defp validation_reasons(config) do
+    case FunConfig.validate_with_details(config) do
+      {:error, errors} -> errors
+      _ -> ["unknown validation error"]
+    end
+  end
+
+  defp reject_unsafe_config(config, service_name, node, reason) do
+    Logger.error(
+      "[ConfigPuller] unsafe MFA: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, reason=#{inspect(reason)}, skipping"
+    )
+
+    PhoenixGenApi.ConfigFailed.record(config, to_string(reason), :pull, node)
+    []
+  end
+
   defp enforce_service_name(config = %FunConfig{}, service_name) do
-    PhoenixGenApi.Helpers.Shared.enforce_service_name(config, service_name)
+    Shared.enforce_service_name(config, service_name)
   end
 
   defp ensure_version(config = %FunConfig{}) do
-    PhoenixGenApi.Helpers.Shared.ensure_version(config)
+    Shared.ensure_version(config)
   end
 
   defp validate_mfa_safety({mod, fun, _args}, node, timeout)

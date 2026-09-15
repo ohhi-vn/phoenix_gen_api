@@ -133,49 +133,7 @@ defmodule PhoenixGenApi.ConfigDb do
   """
   @spec batch_add([FunConfig.t()]) :: {:ok, non_neg_integer()} | {:error, :all_invalid}
   def batch_add(configs) when is_list(configs) do
-    entries =
-      Enum.flat_map(configs, fn
-        config = %FunConfig{} ->
-          case Security.validate_mfa(config.mfa) do
-            :ok ->
-              if FunConfig.valid?(config) do
-                version = FunConfig.version(config)
-                [{{config.service, config.request_type, version}, config}]
-              else
-                Logger.error(
-                  "[ConfigDb] batch_add: invalid config, request_type=#{inspect(config.request_type)}, service=#{inspect(config.service)}, version=#{inspect(FunConfig.version(config))}, skipping"
-                )
-
-                reasons =
-                  case FunConfig.validate_with_details(config) do
-                    {:error, errors} -> errors
-                    _ -> ["unknown validation error"]
-                  end
-
-                PhoenixGenApi.ConfigFailed.record(config, reasons, :pull, nil)
-
-                []
-              end
-
-            {:error, {:mfa_not_allowed, mfa}} ->
-              Logger.error(
-                "[ConfigDb] batch_add: MFA not allowed, mfa=#{inspect(mfa)}, service=#{inspect(config.service)}, skipping"
-              )
-
-              PhoenixGenApi.ConfigFailed.record(
-                config,
-                "MFA not allowed: #{inspect(mfa)}",
-                :pull,
-                nil
-              )
-
-              []
-          end
-
-        other ->
-          Logger.error("[ConfigDb] batch_add: unexpected item=#{inspect(other)}, skipping")
-          []
-      end)
+    entries = Enum.flat_map(configs, &batch_add_entry/1)
 
     case entries do
       [] ->
@@ -193,6 +151,52 @@ defmodule PhoenixGenApi.ConfigDb do
         Logger.debug("[ConfigDb] batch_add: inserted count=#{length(entries)}")
         {:ok, length(entries)}
     end
+  end
+
+  defp batch_add_entry(config = %FunConfig{}) do
+    case Security.validate_mfa(config.mfa) do
+      :ok -> valid_batch_entry(config)
+      {:error, {:mfa_not_allowed, mfa}} -> mfa_not_allowed_entry(config, mfa)
+    end
+  end
+
+  defp batch_add_entry(other) do
+    Logger.error("[ConfigDb] batch_add: unexpected item=#{inspect(other)}, skipping")
+    []
+  end
+
+  defp valid_batch_entry(config) do
+    if FunConfig.valid?(config) do
+      version = FunConfig.version(config)
+      [{{config.service, config.request_type, version}, config}]
+    else
+      invalid_batch_entry(config)
+    end
+  end
+
+  defp invalid_batch_entry(config) do
+    Logger.error(
+      "[ConfigDb] batch_add: invalid config, request_type=#{inspect(config.request_type)}, service=#{inspect(config.service)}, version=#{inspect(FunConfig.version(config))}, skipping"
+    )
+
+    PhoenixGenApi.ConfigFailed.record(config, validation_reasons(config), :pull, nil)
+    []
+  end
+
+  defp validation_reasons(config) do
+    case FunConfig.validate_with_details(config) do
+      {:error, errors} -> errors
+      _ -> ["unknown validation error"]
+    end
+  end
+
+  defp mfa_not_allowed_entry(config, mfa) do
+    Logger.error(
+      "[ConfigDb] batch_add: MFA not allowed, mfa=#{inspect(mfa)}, service=#{inspect(config.service)}, skipping"
+    )
+
+    PhoenixGenApi.ConfigFailed.record(config, "MFA not allowed: #{inspect(mfa)}", :pull, nil)
+    []
   end
 
   @doc """
@@ -376,11 +380,7 @@ defmodule PhoenixGenApi.ConfigDb do
   def get_fast(service, request_type) when is_binary(request_type) do
     case :ets.match_object(__MODULE__, {{service, request_type, :"$1"}, :"$2"}) do
       [{_key, config}] ->
-        if Map.get(config, :disabled, false) do
-          {:error, :disabled}
-        else
-          {:ok, config}
-        end
+        enabled_result(config)
 
       [] ->
         {:error, :not_found}
@@ -389,44 +389,51 @@ defmodule PhoenixGenApi.ConfigDb do
         # Multiple versions found, return the latest enabled one.
         # Configs with nil version (no version) are excluded from "latest"
         # resolution — they are only returned when they are the sole match.
-        enabled_configs =
-          Enum.filter(results, fn {_key, config} ->
-            not Map.get(config, :disabled, false)
-          end)
+        latest_enabled_result(results)
+    end
+  end
 
-        case enabled_configs do
-          [] ->
-            {:error, :not_found}
+  defp enabled_result(config) do
+    if Map.get(config, :disabled, false) do
+      {:error, :disabled}
+    else
+      {:ok, config}
+    end
+  end
 
-          [{{_s, _r, nil}, config}] ->
-            # Single result with nil version — return it directly
-            {:ok, config}
+  defp latest_enabled_result(results) do
+    results
+    |> Enum.reject(fn {_key, config} -> Map.get(config, :disabled, false) end)
+    |> latest_config()
+  end
 
-          configs ->
-            # Filter out nil-version configs from "latest" resolution
-            versioned_configs =
-              Enum.filter(configs, fn {{_s, _r, version}, _config} ->
-                is_binary(version) and byte_size(version) > 0
-              end)
+  defp latest_config([]), do: {:error, :not_found}
 
-            case versioned_configs do
-              [] ->
-                # All enabled configs have nil version — return the first one
-                {_key, first} = hd(configs)
-                {:ok, first}
+  # Single result with nil version — return it directly
+  defp latest_config([{{_s, _r, nil}, config}]), do: {:ok, config}
 
-              versioned ->
-                {_key, latest} =
-                  Enum.max_by(versioned, fn {{_s, _r, version}, _config} ->
-                    case Version.parse(version) do
-                      {:ok, v} -> v
-                      :error -> Version.parse!("0.0.0")
-                    end
-                  end)
+  defp latest_config(configs) do
+    versioned_configs =
+      Enum.filter(configs, fn {{_s, _r, version}, _config} ->
+        is_binary(version) and byte_size(version) > 0
+      end)
 
-                {:ok, latest}
-            end
-        end
+    case versioned_configs do
+      # All enabled configs have nil version — return the first one
+      [] ->
+        {_key, first} = hd(configs)
+        {:ok, first}
+
+      versioned ->
+        {_key, latest} = Enum.max_by(versioned, &config_version/1)
+        {:ok, latest}
+    end
+  end
+
+  defp config_version({{_s, _r, version}, _config}) do
+    case Version.parse(version) do
+      {:ok, v} -> v
+      :error -> Version.parse!("0.0.0")
     end
   end
 
@@ -451,33 +458,8 @@ defmodule PhoenixGenApi.ConfigDb do
   def get_latest(service, request_type) when is_binary(request_type) do
     result =
       :ets.foldl(
-        fn {{svc, req_type, _version}, config}, acc ->
-          if svc == service and req_type == request_type and not Map.get(config, :disabled, false) do
-            new_version = FunConfig.version(config)
-
-            # Skip configs with nil version — they are unversioned fallbacks
-            # and should not be considered for "latest" resolution.
-            if is_nil(new_version) do
-              acc
-            else
-              case acc do
-                {:ok, existing_config} ->
-                  existing_version = FunConfig.version(existing_config)
-
-                  # existing_version is guaranteed non-nil by the guard above
-                  if Version.compare(new_version, existing_version) == :gt do
-                    {:ok, config}
-                  else
-                    acc
-                  end
-
-                :not_found ->
-                  {:ok, config}
-              end
-            end
-          else
-            acc
-          end
+        fn entry, acc ->
+          maybe_newer_config(entry, service, request_type, acc)
         end,
         :not_found,
         __MODULE__
@@ -486,6 +468,37 @@ defmodule PhoenixGenApi.ConfigDb do
     case result do
       {:ok, config} -> {:ok, config}
       :not_found -> {:error, :not_found}
+    end
+  end
+
+  defp maybe_newer_config({{svc, req_type, _version}, config}, service, request_type, acc) do
+    if svc == service and req_type == request_type and not Map.get(config, :disabled, false) do
+      newer_version_config(FunConfig.version(config), config, acc)
+    else
+      acc
+    end
+  end
+
+  defp maybe_newer_config(_entry, _service, _request_type, acc), do: acc
+
+  # Skip configs with nil version — they are unversioned fallbacks
+  # and should not be considered for "latest" resolution.
+  defp newer_version_config(nil, _config, acc), do: acc
+
+  defp newer_version_config(new_version, config, acc) do
+    case acc do
+      {:ok, existing_config} ->
+        existing_version = FunConfig.version(existing_config)
+
+        # existing_version is guaranteed non-nil by the clause above
+        if Version.compare(new_version, existing_version) == :gt do
+          {:ok, config}
+        else
+          acc
+        end
+
+      :not_found ->
+        {:ok, config}
     end
   end
 

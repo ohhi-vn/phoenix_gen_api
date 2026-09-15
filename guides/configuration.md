@@ -10,8 +10,7 @@ Complete reference for all application-level configuration options.
 4. [Worker Pool](#worker-pool)
 5. [Security](#security)
 6. [Channel Integration](#channel-integration)
-7. [Function Versioning](#function-versioning)
-8. [ConfigDb Runtime API](#configdb-runtime-api)
+7. [ConfigDb Runtime API](#configdb-runtime-api)
 
 ---
 
@@ -311,37 +310,6 @@ end
 
 ---
 
-## Function Versioning
-
-Multiple versions of the same API can coexist:
-
-```elixir
-# Register v1
-ConfigDb.add(%FunConfig{request_type: "get_user", version: "1.0.0", ...})
-
-# Register v2
-ConfigDb.add(%FunConfig{request_type: "get_user", version: "2.0.0", ...})
-```
-
-Clients request a specific version via the `version` field. If no version is sent, the config with `nil` version is used.
-
-The value `"0.0.0"` is reserved as a sentinel and cannot be explicitly registered.
-
-### Version management
-
-```elixir
-alias PhoenixGenApi.ConfigDb
-
-ConfigDb.get("user_service", "get_user", "1.0.0")     # Specific version
-ConfigDb.get_latest("user_service", "get_user")        # Highest enabled version
-ConfigDb.disable("user_service", "get_user", "1.0.0")  # Soft-delete
-ConfigDb.enable("user_service", "get_user", "1.0.0")   # Re-enable
-ConfigDb.delete("user_service", "get_user", "1.0.0")   # Permanent delete
-ConfigDb.get_all_functions()                            # List all
-```
-
----
-
 ## ConfigDb Runtime API
 
 ```elixir
@@ -375,11 +343,13 @@ ConfigDb.clear()
 PhoenixGenApi.cache_status()
 ```
 
+Function versioning (multiple `version` values per endpoint, the `"0.0.0"` sentinel, and runtime version management) is covered in the [FunConfig Reference](./fun_config.md#function-versioning).
+
 ---
 
 ## What's Next
 
 - **[FunConfig Reference](./fun_config.md)** — Field-by-field reference for the central configuration struct.
-- **[Step-by-Step Guide](./step_by_step_guide.md)** — Code examples for each configuration option.
+- **[Getting Started](./getting_started.md)** — The full walkthrough from a single node to a cluster.
 - **[Architecture](./architecture.md)** — How configuration flows through the system.
 - **[Rate Limiter](../README.md#rate-limiter)** — Feature overview in the README.

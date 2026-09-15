@@ -57,13 +57,13 @@ defmodule PhoenixGenApi.Executor do
 
   alias PhoenixGenApi.ArgumentHandler
   alias PhoenixGenApi.ConfigDb
-  alias PhoenixGenApi.Permission
-  alias PhoenixGenApi.StreamCall
-  alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
-  alias PhoenixGenApi.Permission.PermissionDenied
-  alias PhoenixGenApi.RateLimiter
   alias PhoenixGenApi.Hooks
   alias PhoenixGenApi.NodeSelector
+  alias PhoenixGenApi.Permission
+  alias PhoenixGenApi.Permission.PermissionDenied
+  alias PhoenixGenApi.RateLimiter
+  alias PhoenixGenApi.StreamCall
+  alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
 
   require Logger
 
@@ -558,7 +558,59 @@ defmodule PhoenixGenApi.Executor do
         execute_remote_with_retry(mod, fun, final_args, fun_config, request, retry_config)
       end
 
+    result = apply_result_encoder(fun_config, result)
+
     handle_call_result(result, request.request_id)
+  end
+
+  # Applies the FunConfig's result_encoder to a successful mfa result, if
+  # configured. Only `{:ok, data}` results are encoded — the encoder receives
+  # only `data` as its first argument followed by the tuple's args, and its
+  # return value is re-wrapped as `{:ok, encoded}`. All other result shapes
+  # (including `{:error, reason}`) pass through untouched. Encoder failures are
+  # logged and returned as an error response instead of crashing the channel.
+  defp apply_result_encoder(%FunConfig{result_encoder: nil}, result), do: result
+
+  defp apply_result_encoder(fun_config, {:ok, data}) do
+    case encode_result(fun_config, data) do
+      {:error, _} = error -> error
+      encoded -> {:ok, encoded}
+    end
+  end
+
+  defp apply_result_encoder(_fun_config, result), do: result
+
+  defp encode_result(fun_config = %FunConfig{result_encoder: {mod, fun, args}}, data) do
+    case PhoenixGenApi.Security.validate_mfa({mod, fun, args}) do
+      :ok ->
+        try do
+          apply(mod, fun, [data | args])
+        rescue
+          e ->
+            Logger.error(
+              "[Executor] result_encoder failed: #{inspect(mod)}.#{inspect(fun)}, " <>
+                "reason: #{Exception.message(e)}, request_type: #{inspect(fun_config.request_type)}"
+            )
+
+            {:error, "result encoding failed: #{Exception.message(e)}"}
+        catch
+          kind, value ->
+            Logger.error(
+              "[Executor] result_encoder caught #{inspect(kind)}: #{inspect(value)}, " <>
+                "encoder: #{inspect(mod)}.#{inspect(fun)}, request_type: #{inspect(fun_config.request_type)}"
+            )
+
+            {:error, "result encoding failed: #{inspect({kind, value})}"}
+        end
+
+      {:error, {:mfa_not_allowed, _}} ->
+        Logger.error(
+          "[Executor] result_encoder MFA not allowed: #{inspect(mod)}.#{inspect(fun)}, " <>
+            "request_type: #{inspect(fun_config.request_type)}"
+        )
+
+        {:error, "result encoder mfa not allowed"}
+    end
   end
 
   defp execute_local(mod, fun, args, timeout) do

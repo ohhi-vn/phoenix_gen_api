@@ -42,6 +42,7 @@ defmodule PhoenixGenApi.Structs.PushConfig do
       }
   """
 
+  alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.Structs.{FunConfig, ServiceConfig}
 
   require Logger
@@ -202,7 +203,7 @@ defmodule PhoenixGenApi.Structs.PushConfig do
 
   defp valid_nodes?(_), do: false
 
-  defp valid_node?(node), do: PhoenixGenApi.Helpers.Shared.valid_node?(node)
+  defp valid_node?(node), do: Shared.valid_node?(node)
 
   defp valid_config_version?(version) when is_binary(version) and byte_size(version) > 0 do
     true
@@ -229,7 +230,7 @@ defmodule PhoenixGenApi.Structs.PushConfig do
   defp fun_configs_match_service?(_, _), do: false
 
   defp same_service?(fun_service, push_service),
-    do: PhoenixGenApi.Helpers.Shared.same_service?(fun_service, push_service)
+    do: Shared.same_service?(fun_service, push_service)
 
   defp fun_configs_have_valid_versions?(fun_configs) when is_list(fun_configs) do
     Enum.all?(fun_configs, fn

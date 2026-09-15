@@ -115,6 +115,8 @@ defmodule PhoenixGenApi.RateLimiter do
 
   use GenServer, restart: :permanent
 
+  alias PhoenixGenApi.Helpers.Shared
+
   require Logger
 
   @supervisor :rate_limiter_supervisor
@@ -574,14 +576,6 @@ defmodule PhoenixGenApi.RateLimiter do
     :ok
   end
 
-  defp ets_table_info(table) do
-    case :ets.info(table) do
-      :undefined -> %{exists: false}
-      info when is_list(info) -> info |> Map.new() |> Map.put(:exists, true)
-      other -> %{exists: true, info: other}
-    end
-  end
-
   @doc """
   Updates rate limit configuration at runtime.
   Adds a single global rate limit at runtime.
@@ -812,8 +806,8 @@ defmodule PhoenixGenApi.RateLimiter do
        api_limits: state.api_limits,
        cleanup_interval: state.cleanup_interval,
        ets: %{
-         global: ets_table_info(:rate_limiter_global),
-         api: ets_table_info(:rate_limiter_api)
+         global: Shared.ets_table_info(:rate_limiter_global),
+         api: Shared.ets_table_info(:rate_limiter_api)
        }
      }, state}
   end
@@ -886,23 +880,31 @@ defmodule PhoenixGenApi.RateLimiter do
 
   defp check_api_limits(request, api_limits) do
     Enum.reduce_while(api_limits, :ok, fn limit, _acc ->
-      if limit.service == request.service and limit.request_type == request.request_type do
-        key_value = get_key_value(request, limit.key)
-
-        if is_binary(key_value) and byte_size(key_value) > 0 do
-          scope = {limit.service, limit.request_type}
-
-          case check_and_record(:rate_limiter_api, build_api_key(key_value, scope), limit) do
-            :ok -> {:cont, :ok}
-            {:error, :rate_limited, details} -> {:halt, {:error, :rate_limited, details}}
-          end
-        else
-          {:cont, :ok}
-        end
-      else
-        {:cont, :ok}
-      end
+      check_api_limit(request, limit)
     end)
+  end
+
+  defp check_api_limit(request, limit) do
+    if limit.service == request.service and limit.request_type == request.request_type do
+      check_api_limit_key(request, limit)
+    else
+      {:cont, :ok}
+    end
+  end
+
+  defp check_api_limit_key(request, limit) do
+    key_value = get_key_value(request, limit.key)
+
+    if is_binary(key_value) and byte_size(key_value) > 0 do
+      scope = {limit.service, limit.request_type}
+
+      case check_and_record(:rate_limiter_api, build_api_key(key_value, scope), limit) do
+        :ok -> {:cont, :ok}
+        {:error, :rate_limited, details} -> {:halt, {:error, :rate_limited, details}}
+      end
+    else
+      {:cont, :ok}
+    end
   end
 
   defp check_direct_limit(key_value, scope, rate_limit_key, state) do
@@ -1115,30 +1117,38 @@ defmodule PhoenixGenApi.RateLimiter do
 
     :ets.foldl(
       fn {key, timestamps}, acc ->
-        # Only clean this key if it belongs to our shard
-        if rem(:erlang.phash2(key), total_instances) == shard_index do
-          # Use split_with for single-pass partitioning
-          {valid_timestamps, expired} = Enum.split_with(timestamps, fn ts -> ts > cutoff end)
-
-          if expired == [] do
-            # No expired entries, skip update
-            acc
-          else
-            if valid_timestamps == [] do
-              :ets.delete(table, key)
-            else
-              :ets.insert(table, {key, valid_timestamps})
-            end
-
-            acc + length(expired)
-          end
-        else
-          acc
-        end
+        clean_key_in_shard(table, key, timestamps, cutoff, shard_index, total_instances, acc)
       end,
       0,
       table
     )
+  end
+
+  defp clean_key_in_shard(table, key, timestamps, cutoff, shard_index, total_instances, acc) do
+    # Only clean keys belonging to this instance's shard
+    if rem(:erlang.phash2(key), total_instances) == shard_index do
+      clean_expired_key(table, key, timestamps, cutoff, acc)
+    else
+      acc
+    end
+  end
+
+  defp clean_expired_key(table, key, timestamps, cutoff, acc) do
+    # Use split_with for single-pass partitioning
+    {valid_timestamps, expired} = Enum.split_with(timestamps, fn ts -> ts > cutoff end)
+
+    if expired == [] do
+      # No expired entries, skip update
+      acc
+    else
+      if valid_timestamps == [] do
+        :ets.delete(table, key)
+      else
+        :ets.insert(table, {key, valid_timestamps})
+      end
+
+      acc + length(expired)
+    end
   end
 
   defp get_max_window_for_table(:rate_limiter_global) do

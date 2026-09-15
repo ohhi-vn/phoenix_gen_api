@@ -3,9 +3,16 @@ defprotocol PhoenixGenApi.InternalImplTest.JSON.Encoder do
   def encode(data, opts)
 end
 
+# Contract conformance: the generated impl recursively encodes the encode!/2
+# output, so the protocol must implement maps (like every real JSON encoder).
+defimpl PhoenixGenApi.InternalImplTest.JSON.Encoder, for: Map do
+  def encode(data, opts), do: {:json_map, data, opts}
+end
+
 defmodule PhoenixGenApi.InternalImplTest do
   use ExUnit.Case, async: true
 
+  alias PhoenixGenApi.InternalImplTest.JSON.Encoder
   alias PhoenixGenApi.Structs.Response
 
   describe "use PhoenixGenApi.InternalImpl" do
@@ -30,17 +37,19 @@ defmodule PhoenixGenApi.InternalImplTest do
 
       response = %Response{request_id: "req_1", result: %{ok: true}, success: true}
 
-      encoded = PhoenixGenApi.InternalImplTest.JSON.Encoder.encode(response, [])
+      encoded = Encoder.encode(response, [])
 
-      assert encoded == %{
-               request_id: "req_1",
-               result: %{ok: true},
-               success: true,
-               error: nil,
-               async: false,
-               has_more: false,
-               can_retry: false
-             }
+      assert encoded ==
+               {:json_map,
+                %{
+                  request_id: "req_1",
+                  result: %{ok: true},
+                  success: true,
+                  error: nil,
+                  async: false,
+                  has_more: false,
+                  can_retry: false
+                }, []}
     end
 
     test "forwards encode opts to Response.encode!/2" do
@@ -54,8 +63,9 @@ defmodule PhoenixGenApi.InternalImplTest do
 
       response = %Response{request_id: "req_2", success: true}
 
-      encoded = PhoenixGenApi.InternalImplTest.JSON.Encoder.encode(response, [])
-      assert encoded.request_id == "req_2"
+      encoded = Encoder.encode(response, [])
+      assert {:json_map, map, []} = encoded
+      assert map.request_id == "req_2"
     end
 
     test "delegates to the json library configured via :phoenix json_library" do
@@ -71,8 +81,9 @@ defmodule PhoenixGenApi.InternalImplTest do
       Code.compile_string(code)
 
       response = %Response{request_id: "req_3", success: true}
-      encoded = PhoenixGenApi.InternalImplTest.JSON.Encoder.encode(response, [])
-      assert encoded.success == true
+      encoded = Encoder.encode(response, [])
+      assert {:json_map, map, []} = encoded
+      assert map.success == true
     end
   end
 end

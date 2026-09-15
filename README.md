@@ -5,7 +5,7 @@
 
 A framework for rapidly building backend APIs on top of Phoenix Channels and Erlang clustering. Define your business logic on any node — the framework handles routing, validation, permissions, retries, and observability. No HTTP endpoints to write, no routes to configure, no restarts to deploy.
 
-**Version**: 2.18.0 | **Elixir**: ~> 1.18 | **OTP**: ~> 27 | **License**: MPL-2.0
+**Version**: 2.24.0 | **Elixir**: ~> 1.18 | **OTP**: ~> 27 | **License**: MPL-2.0
 
 ## Why PhoenixGenApi?
 
@@ -56,7 +56,7 @@ Service nodes can register new APIs at any time — the gateway picks them up au
 ```elixir
 def deps do
   [
-    {:phoenix_gen_api, "~> 2.16"}
+    {:phoenix_gen_api, "~> 2.24"}
   ]
 end
 ```
@@ -67,16 +67,14 @@ Use [`:libcluster`](https://hex.pm/packages/libcluster) to form the Erlang clust
 
 | Guide | Description |
 |---|---|
-| [Getting Started](guides/getting_started.md) | Build a working API gateway in 10 minutes with a Phoenix gateway and service node |
-| [Step-by-Step Guide](guides/step_by_step_guide.md) | Every feature explained with copy-paste code examples: validation, permissions, rate limiting, async, streaming, hooks, relay, security, telemetry |
-| [FunConfig Reference](guides/fun_config.md) | Field-by-field reference for the central configuration struct |
+| [Getting Started](guides/getting_started.md) | Build a working API in minutes — single node first, then split into gateway + service nodes |
+| [Concepts](guides/concepts.md) | The mental model: gateway vs service node, FunConfig, supporter, pull/push, Request/Response |
+| [FunConfig Reference](guides/fun_config.md) | Field-by-field reference for the central configuration struct: validation, permissions, retry, hooks, result_encoder |
 | [Configuration](guides/configuration.md) | Full configuration reference: gateway, rate limiter, worker pool, security |
-| [Architecture](guides/architecture.md) | Deep dive into the supervision tree, request lifecycle, config management, execution engine, and all subsystems |
-| [Execute Flow](guides/execute_flow.md) | Line-by-line walkthrough of the complete request execution path with file references |
+| [Architecture](guides/architecture.md) | Deep dive into the supervision tree, request lifecycle, line-by-line execution, config management, and all subsystems |
 | [Relay Messages](guides/relay_messages.md) | Complete reference for group-based messaging: group types, permission matrix, process monitoring |
 | [Telemetry](guides/telemetry.md) | Full event reference, integration patterns, Telemetry.Metrics examples, and best practices |
-| [Diagnostics](guides/diagnostics.md) | Runtime health checks, statistics, call-flow inspection, cluster view, admin-gated tracing, IEx helpers |
-| [Tracing](guides/tracing.md) | Per-request-type / per-user-id request tracing: enable at runtime or via config, trace file format, events, raw log capture, rotation |
+| [Diagnostics](guides/diagnostics.md) | Runtime health checks, statistics, call-flow inspection, per-request tracing, IEx helpers |
 
 ## Quick Start
 

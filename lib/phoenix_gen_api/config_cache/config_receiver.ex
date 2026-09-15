@@ -39,6 +39,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
   use GenServer, restart: :permanent
 
   alias PhoenixGenApi.{ConfigDb, ConfigPuller, Security}
+  alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.Structs.{FunConfig, PushConfig, ServiceConfig}
 
   require Logger
@@ -317,8 +318,8 @@ defmodule PhoenixGenApi.ConfigReceiver do
         %FunConfig{} = config, acc_errors ->
           config =
             config
-            |> PhoenixGenApi.Helpers.Shared.enforce_service_name(service)
-            |> PhoenixGenApi.Helpers.Shared.ensure_version()
+            |> Shared.enforce_service_name(service)
+            |> Shared.ensure_version()
 
           if FunConfig.valid?(config) do
             {[config], acc_errors}
