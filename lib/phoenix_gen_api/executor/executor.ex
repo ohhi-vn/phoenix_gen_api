@@ -574,7 +574,7 @@ defmodule PhoenixGenApi.Executor do
   defp apply_result_encoder(fun_config, {:ok, data}) do
     case encode_result(fun_config, data) do
       {:error, _} = error -> error
-      encoded -> {:ok, encoded}
+      {:ok, _} = result -> result
     end
   end
 
