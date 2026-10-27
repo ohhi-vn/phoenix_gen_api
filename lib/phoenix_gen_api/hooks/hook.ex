@@ -73,6 +73,8 @@ defmodule PhoenixGenApi.Hooks do
 
   alias PhoenixGenApi.Structs.{FunConfig, Request}
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @default_hook_timeout 5_000
@@ -90,7 +92,7 @@ defmodule PhoenixGenApi.Hooks do
   def run_before(nil, request, fun_config), do: {:ok, request, fun_config}
 
   def run_before({mod, fun}, request, fun_config) do
-    case execute_hook(:before, mod, fun, [request, fun_config]) do
+    case execute_hook(:before, mod, fun, [request, fun_config], hook_timeout(fun_config)) do
       {:ok, {:ok, new_request, new_fun_config}} ->
         {:ok, new_request, new_fun_config}
 
@@ -100,13 +102,19 @@ defmodule PhoenixGenApi.Hooks do
       {:ok, _} ->
         {:ok, request, fun_config}
 
-      {:error, reason} ->
+      {:error, reason, _kind, _stacktrace} ->
         {:error, reason}
     end
   end
 
   def run_before({mod, fun, extra_args}, request, fun_config) do
-    case execute_hook(:before, mod, fun, [request, fun_config | extra_args]) do
+    case execute_hook(
+           :before,
+           mod,
+           fun,
+           [request, fun_config | extra_args],
+           hook_timeout(fun_config)
+         ) do
       {:ok, {:ok, new_request, new_fun_config}} ->
         {:ok, new_request, new_fun_config}
 
@@ -116,7 +124,7 @@ defmodule PhoenixGenApi.Hooks do
       {:ok, _} ->
         {:ok, request, fun_config}
 
-      {:error, reason} ->
+      {:error, reason, _kind, _stacktrace} ->
         {:error, reason}
     end
   end
@@ -136,20 +144,63 @@ defmodule PhoenixGenApi.Hooks do
   def run_after(nil, _request, _fun_config, result), do: result
 
   def run_after({mod, fun}, request, fun_config, result) do
-    case execute_hook(:after, mod, fun, [request, fun_config, result]) do
+    case run_after_tagged({mod, fun}, request, fun_config, result) do
       {:ok, new_result} -> new_result
-      {:error, _} -> result
+      {:error, _reason} -> result
     end
   end
 
   def run_after({mod, fun, extra_args}, request, fun_config, result) do
-    case execute_hook(:after, mod, fun, [request, fun_config, result | extra_args]) do
+    case run_after_tagged({mod, fun, extra_args}, request, fun_config, result) do
       {:ok, new_result} -> new_result
-      {:error, _} -> result
+      {:error, _reason} -> result
     end
   end
 
-  defp execute_hook(type, mod, fun, args) do
+  @doc """
+  Runs the after_execute hook and reports whether it succeeded.
+
+  Returns `{:ok, result}` with the hook's (possibly modified) result, or
+  `{:error, %{kind: kind, reason: reason, stacktrace: stacktrace}}` when the
+  hook failed or timed out. Unlike `run_after/4`, a hook that returns the
+  original result unchanged is still a success.
+  """
+  @spec run_after_tagged(
+          nil | {module(), atom()} | {module(), atom(), list()},
+          Request.t(),
+          FunConfig.t(),
+          any()
+        ) :: {:ok, any()} | {:error, map()}
+  def run_after_tagged(nil, _request, _fun_config, result), do: {:ok, result}
+
+  def run_after_tagged({mod, fun}, request, fun_config, result) do
+    execute_hook(:after, mod, fun, [request, fun_config, result], hook_timeout(fun_config))
+    |> tag_result()
+  end
+
+  def run_after_tagged({mod, fun, extra_args}, request, fun_config, result) do
+    execute_hook(
+      :after,
+      mod,
+      fun,
+      [request, fun_config, result | extra_args],
+      hook_timeout(fun_config)
+    )
+    |> tag_result()
+  end
+
+  defp tag_result({:ok, hook_result}), do: {:ok, hook_result}
+
+  defp tag_result({:error, reason, kind, stacktrace}) do
+    {:error, %{kind: kind, reason: reason, stacktrace: stacktrace}}
+  end
+
+  defp hook_timeout(%FunConfig{hook_timeout: timeout}) when is_integer(timeout) and timeout > 0,
+    do: timeout
+
+  defp hook_timeout(_), do: @default_hook_timeout
+
+  defp execute_hook(type, mod, fun, args, timeout) do
     start_time = System.monotonic_time(:microsecond)
 
     :telemetry.execute(
@@ -161,28 +212,28 @@ defmodule PhoenixGenApi.Hooks do
     task =
       Task.async(fn ->
         try do
-          apply(mod, fun, args)
+          {:__hook_ok__, apply(mod, fun, args)}
         rescue
-          e -> {:__hook_exception, Exception.message(e)}
+          e -> {:__hook_exception__, :error, e, __STACKTRACE__}
         catch
-          kind, value -> {:__hook_exception, {kind, value}}
+          kind, value -> {:__hook_exception__, kind, value, __STACKTRACE__}
         end
       end)
 
     result =
-      case Task.yield(task, @default_hook_timeout) do
-        {:ok, {:__hook_exception, reason}} ->
-          {:exit, reason}
-
-        {:ok, hook_result} ->
+      case Task.yield(task, timeout) do
+        {:ok, {:__hook_ok__, hook_result}} ->
           {:ok, hook_result}
+
+        {:ok, {:__hook_exception__, kind, reason, stacktrace}} ->
+          {:error, reason, kind, stacktrace}
 
         nil ->
           Task.shutdown(task, :brutal_kill)
-          {:timeout, "hook timed out after #{@default_hook_timeout}ms"}
+          {:error, "hook timed out after #{timeout}ms", :timeout, nil}
 
         {:exit, reason} ->
-          {:exit, reason}
+          {:error, reason, :exit, nil}
       end
 
     duration = System.monotonic_time(:microsecond) - start_time
@@ -197,7 +248,7 @@ defmodule PhoenixGenApi.Hooks do
 
         {:ok, hook_result}
 
-      {:timeout, reason} ->
+      {:error, reason, :timeout, _stacktrace} ->
         :telemetry.execute(
           [:phoenix_gen_api, :hook, type, :exception],
           %{duration_us: duration},
@@ -206,18 +257,27 @@ defmodule PhoenixGenApi.Hooks do
             function: fun,
             type: type,
             kind: :timeout,
-            reason: reason,
+            reason: inspect(reason),
             stacktrace: nil
           }
         )
 
         Logger.error(
-          "[Hooks] #{type} hook timed out after #{@default_hook_timeout}ms, module: #{inspect(mod)}, function: #{inspect(fun)}"
+          LogContext.line(
+            "Hooks",
+            :hook_timeout,
+            "#{type} hook timed out",
+            LogContext.current(
+              hook_type: type,
+              hook: {mod, fun},
+              timeout_ms: timeout
+            )
+          )
         )
 
-        {:error, reason}
+        {:error, reason, :timeout, nil}
 
-      {:exit, reason} ->
+      {:error, reason, kind, stacktrace} ->
         :telemetry.execute(
           [:phoenix_gen_api, :hook, type, :exception],
           %{duration_us: duration},
@@ -225,17 +285,22 @@ defmodule PhoenixGenApi.Hooks do
             module: mod,
             function: fun,
             type: type,
-            kind: :error,
+            kind: kind,
             reason: inspect(reason),
-            stacktrace: nil
+            stacktrace: stacktrace
           }
         )
 
         Logger.error(
-          "[Hooks] #{type} hook crashed: #{inspect(reason)}, module: #{inspect(mod)}, function: #{inspect(fun)}"
+          LogContext.line(
+            "Hooks",
+            :hook_crashed,
+            "#{type} hook crashed",
+            LogContext.current(hook_type: type, hook: {mod, fun}, reason: reason, kind: kind)
+          )
         )
 
-        {:error, inspect(reason)}
+        {:error, inspect(reason), kind, stacktrace}
     end
   end
 end

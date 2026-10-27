@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.ConfigPusherExtraTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.ConfigPusher
   alias PhoenixGenApi.ConfigReceiver
   alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
@@ -99,14 +101,31 @@ defmodule PhoenixGenApi.ConfigPusherExtraTest do
   end
 
   describe "push/3 and verify/4 against an unreachable node" do
-    test "push returns {:error, {:badrpc, :nodedown}}" do
-      result = ConfigPusher.push(:nonexistent_pgapi@nohost, push_config(), timeout: 100)
-      assert {:error, {:badrpc, :nodedown}} = result
+    test "push returns {:error, {:badrpc, :nodedown}} and logs service + version" do
+      log =
+        capture_log(fn ->
+          result = ConfigPusher.push(:nonexistent_pgapi@nohost, push_config(), timeout: 100)
+          assert {:error, {:badrpc, :nodedown}} = result
+        end)
+
+      assert log =~ "event=rpc_call_failed"
+      assert log =~ "service=:push_svc"
+      assert log =~ "version=\"1.0.0\""
+      assert log =~ "node=:nonexistent_pgapi@nohost"
     end
 
-    test "verify returns {:error, {:badrpc, :nodedown}}" do
-      result = ConfigPusher.verify(:nonexistent_pgapi@nohost, :push_svc, "1.0.0", timeout: 100)
-      assert {:error, {:badrpc, :nodedown}} = result
+    test "verify returns {:error, {:badrpc, :nodedown}} and logs service + version" do
+      log =
+        capture_log(fn ->
+          result =
+            ConfigPusher.verify(:nonexistent_pgapi@nohost, :push_svc, "1.0.0", timeout: 100)
+
+          assert {:error, {:badrpc, :nodedown}} = result
+        end)
+
+      assert log =~ "event=verify_rpc_failed"
+      assert log =~ "service=:push_svc"
+      assert log =~ "version=\"1.0.0\""
     end
   end
 

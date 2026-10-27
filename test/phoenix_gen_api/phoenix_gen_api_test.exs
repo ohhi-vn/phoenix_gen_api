@@ -314,7 +314,7 @@ defmodule PhoenixGenApiTest do
       assert match?({:ok, _}, result) or match?({:error, _}, result)
 
       stop_result = PhoenixGenApi.stop_trace(:all)
-      assert stop_result == :ok or match?({:error, _}, stop_result)
+      assert match?({:ok, _}, stop_result) or match?({:error, _}, stop_result)
     end
 
     test "trace_functions/2, stop_trace_functions/1 and trace_status/0 work" do
@@ -324,7 +324,7 @@ defmodule PhoenixGenApiTest do
       assert match?({:ok, _}, result) or match?({:error, _}, result)
 
       stop_result = PhoenixGenApi.stop_trace_functions()
-      assert stop_result == :ok or match?({:error, _}, stop_result)
+      assert match?({:ok, _}, stop_result) or match?({:error, _}, stop_result)
 
       assert PhoenixGenApi.trace_status() |> is_map()
     end
@@ -654,15 +654,29 @@ defmodule PhoenixGenApiTest do
       channel = PhoenixGenApiTest.Channel
 
       socket = %{ref: self(), assigns: %{user_id: "user_1"}}
-      payload = %{"request_id" => "req_#{unique()}"}
+      request_id = "req_#{unique()}"
+      request_type = "decode_failure_#{unique()}"
 
-      assert {:reply, {:error, message}, ^socket} =
-               channel.handle_in("phoenix_gen_api", payload, socket)
+      payload = %{
+        "request_id" => request_id,
+        "request_type" => request_type
+      }
 
-      assert message =~ "Missing required fields"
+      log =
+        capture_log(fn ->
+          assert {:reply, {:error, message}, ^socket} =
+                   channel.handle_in("phoenix_gen_api", payload, socket)
+
+          assert message =~ "Missing required fields"
+        end)
 
       assert_received {:pushed, "phoenix_gen_api", %Response{success: false, error: error}}
       assert error =~ "Invalid request:"
+
+      assert log =~ "[PhoenixGenApi] event=request_decode_failed"
+      assert log =~ "request_id=\"#{request_id}\""
+      assert log =~ "request_type=\"#{request_type}\""
+      assert log =~ "service=unknown"
     end
 
     test "handle_in/3 returns an error response when permission is denied" do

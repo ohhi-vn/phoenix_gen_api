@@ -118,6 +118,8 @@ defmodule PhoenixGenApi.NodeSelector do
   alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.Structs.{FunConfig, Request}
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   # Atomic counter reference for round-robin. Uses :atomics for lock-free increments.
@@ -243,7 +245,12 @@ defmodule PhoenixGenApi.NodeSelector do
 
       {:error, reason} ->
         Logger.error(
-          "[NodeSelector] resolve_nodes: failed to resolve dynamic nodes via MFA, reason: #{inspect(reason)}"
+          LogContext.line(
+            "NodeSelector",
+            :dynamic_node_resolution_failed,
+            "resolve_nodes: failed to resolve dynamic nodes via MFA",
+            LogContext.current(reason: reason, node: :none)
+          )
         )
 
         {:error, {:dynamic_node_resolution_failed, reason}}
@@ -251,7 +258,14 @@ defmodule PhoenixGenApi.NodeSelector do
   end
 
   def resolve_nodes(%FunConfig{nodes: other}) do
-    Logger.error("[NodeSelector] resolve_nodes: invalid nodes configuration: #{inspect(other)}")
+    Logger.error(
+      LogContext.line(
+        "NodeSelector",
+        :invalid_nodes_configuration,
+        "resolve_nodes: invalid nodes configuration",
+        LogContext.current(config_type: LogContext.type_name(other), node: :none)
+      )
+    )
 
     {:error, {:invalid_nodes_configuration, other}}
   end
@@ -398,7 +412,15 @@ defmodule PhoenixGenApi.NodeSelector do
     validated = Shared.validate_nodes(nodes)
 
     if validated == [] do
-      Logger.error("[NodeSelector] no valid nodes available after filtering")
+      Logger.error(
+        LogContext.line(
+          "NodeSelector",
+          :no_valid_nodes,
+          "no valid nodes available after filtering",
+          LogContext.current(node: :none)
+        )
+      )
+
       {:error, :no_nodes_available}
     else
       {:ok, validated}
@@ -424,7 +446,14 @@ defmodule PhoenixGenApi.NodeSelector do
         sticky_node(request, nodes, hash_key)
 
       _ ->
-        Logger.error("[NodeSelector] invalid choose_node_mode: #{inspect(mode)}")
+        Logger.error(
+          LogContext.line(
+            "NodeSelector",
+            :invalid_choose_node_mode,
+            "invalid choose_node_mode",
+            LogContext.current(choose_node_mode: mode, node: :none)
+          )
+        )
 
         {:error, {:invalid_choose_node_mode, mode}}
     end
@@ -462,7 +491,14 @@ defmodule PhoenixGenApi.NodeSelector do
         {:ok, [primary | fallbacks]}
 
       _ ->
-        Logger.error("[NodeSelector] invalid choose_node_mode: #{inspect(mode)}")
+        Logger.error(
+          LogContext.line(
+            "NodeSelector",
+            :invalid_choose_node_mode,
+            "invalid choose_node_mode",
+            LogContext.current(choose_node_mode: mode, node: :none)
+          )
+        )
 
         {:error, {:invalid_choose_node_mode, mode}}
     end
@@ -479,7 +515,12 @@ defmodule PhoenixGenApi.NodeSelector do
     case value do
       nil ->
         Logger.warning(
-          "[NodeSelector] hash key #{inspect(hash_key)} not found in request args, falling back to random selection"
+          LogContext.line(
+            "NodeSelector",
+            :hash_key_missing,
+            "hash key not found in request args, falling back to random selection",
+            LogContext.current(hash_key: hash_key)
+          )
         )
 
         {:ok, Enum.random(nodes)}
@@ -556,7 +597,12 @@ defmodule PhoenixGenApi.NodeSelector do
 
     if is_nil(value) do
       Logger.warning(
-        "[NodeSelector] sticky hash key #{inspect(hash_key)} not found in request, falling back to random selection"
+        LogContext.line(
+          "NodeSelector",
+          :sticky_hash_key_missing,
+          "sticky hash key not found in request, falling back to random selection",
+          LogContext.current(hash_key: hash_key)
+        )
       )
 
       select_and_store_sticky(nodes, hash_key)
@@ -593,7 +639,7 @@ defmodule PhoenixGenApi.NodeSelector do
 
   defp get_sticky_value(request, hash_key) do
     args_val = Map.get(request.args, hash_key)
-    struct_field = String.to_atom(hash_key)
+    struct_field = String.to_existing_atom(hash_key)
     struct_val = Map.get(request, struct_field)
     args_val || struct_val
   rescue

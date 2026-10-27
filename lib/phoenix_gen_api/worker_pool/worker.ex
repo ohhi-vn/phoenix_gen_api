@@ -43,6 +43,8 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
   alias PhoenixGenApi.WorkerPool.CircuitBreaker
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @default_task_timeout 30_000
@@ -54,6 +56,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
       :current_task,
       :current_task_pid,
       :task_start_time,
+      :timer_ref,
       task_exception: false,
       consecutive_failures: 0,
       circuit_open_at: nil,
@@ -109,7 +112,13 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
     # Check circuit breaker state
     if circuit_open?(state) do
       Logger.warning(
-        "[Worker] circuit breaker open, rejecting task, pool: #{inspect(state.pool_name)}"
+        LogContext.line(
+          "Worker",
+          :circuit_breaker_task_rejected,
+          "circuit breaker open, rejecting task",
+          pool: state.pool_name,
+          node: node()
+        )
       )
 
       :telemetry.execute(
@@ -118,8 +127,9 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
         %{pool_name: state.pool_name, reason: :circuit_open}
       )
 
-      # Notify pool immediately that worker is done (task rejected)
-      send(state.pool_name, {:worker_done, self()})
+      # Notify the pool that this worker could not accept the task. The pool
+      # requeues it and withholds this worker until the cooldown elapses.
+      send(state.pool_name, {:worker_rejected, self(), :circuit_open, task})
       {:noreply, state}
     else
       # Execute task in a separate process with timeout
@@ -154,7 +164,14 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
               )
 
               Logger.error(
-                "[Worker] task failed in pool #{inspect(pool)}: #{Exception.message(error)}"
+                LogContext.line(
+                  "Worker",
+                  :task_failed,
+                  "task failed in pool",
+                  pool: pool,
+                  error: Exception.message(error),
+                  node: node()
+                )
               )
 
               # Notify worker that task failed so it can record the failure
@@ -175,23 +192,36 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
               )
 
               Logger.error(
-                "[Worker] task crashed in pool #{inspect(pool)}: #{kind}: #{inspect(value)}"
+                LogContext.line(
+                  "Worker",
+                  :task_crashed,
+                  "task crashed in pool",
+                  pool: pool,
+                  kind: kind,
+                  value: value,
+                  node: node()
+                )
               )
 
-              # Notify worker that task failed so it can record the failure
+              # Notify worker that task failed so it can record the failure.
+              # The worker's monitor is the single completion source.
               send(parent, {:task_exception, self()})
-          after
-            # Always notify pool that worker is done
-            send(pool, {:worker_done, parent})
           end
         end)
 
       # Monitor task for crash detection and timeout
       ref = Process.monitor(task_pid)
-      Process.send_after(self(), {:task_timeout, task_pid, ref}, timeout)
+      timer_ref = Process.send_after(self(), {:task_timeout, task_pid, ref}, timeout)
 
       {:noreply,
-       %{state | current_task: task, current_task_pid: task_pid, task_start_time: start_time}}
+       %{
+         state
+         | current_task: task,
+           current_task_pid: task_pid,
+           task_start_time: start_time,
+           task_exception: false,
+           timer_ref: timer_ref
+       }}
     end
   end
 
@@ -199,7 +229,14 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   def handle_info({:task_timeout, task_pid, ref}, state) do
     if state.current_task_pid == task_pid and Process.alive?(task_pid) do
       Logger.error(
-        "[Worker] task timed out after #{state.task_timeout}ms, terminating task, pool: #{inspect(state.pool_name)}"
+        LogContext.line(
+          "Worker",
+          :task_timeout,
+          "task timed out, terminating task",
+          pool: state.pool_name,
+          timeout_ms: state.task_timeout,
+          node: node()
+        )
       )
 
       duration = System.monotonic_time(:microsecond) - state.task_start_time
@@ -218,8 +255,17 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
       Process.demonitor(ref, [:flush])
       Process.exit(task_pid, :kill)
       new_state = record_failure(state)
-      send(state.pool_name, {:worker_done, self()})
-      {:noreply, %{new_state | current_task: nil, current_task_pid: nil, task_start_time: nil}}
+      send(state.pool_name, {:worker_done, self(), :error})
+
+      {:noreply,
+       %{
+         new_state
+         | current_task: nil,
+           current_task_pid: nil,
+           task_start_time: nil,
+           task_exception: false,
+           timer_ref: nil
+       }}
     else
       {:noreply, state}
     end
@@ -229,10 +275,9 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   def handle_info({:task_exception, task_pid}, state) do
     if state.current_task_pid == task_pid do
       # Exception telemetry was already emitted from the spawned task process.
-      # Record the failure and mark that we've already handled this exception
-      # so the :DOWN handler doesn't emit duplicate telemetry.
+      # Record the failure and mark it so the :DOWN handler does not count it
+      # twice. Completion itself is still reported by the monitor.
       new_state = record_failure(state)
-      send(state.pool_name, {:worker_done, self()})
       {:noreply, %{new_state | task_exception: true}}
     else
       {:noreply, state}
@@ -243,17 +288,24 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   def handle_info({:DOWN, _ref, :process, task_pid, reason}, state) do
     if state.current_task_pid == task_pid do
       duration = System.monotonic_time(:microsecond) - state.task_start_time
+      cancel_timer(state.timer_ref)
 
-      new_state =
+      {new_state, outcome} =
         cond do
           # Exception telemetry was already emitted from the spawned task process
           state.task_exception ->
-            # Failure was already recorded in handle_info({:task_exception, ...})
-            state
+            {state, :error}
 
           reason != :normal and reason != :shutdown ->
             Logger.warning(
-              "[Worker] task process died: #{inspect(reason)}, pool: #{inspect(state.pool_name)}"
+              LogContext.line(
+                "Worker",
+                :task_process_died,
+                "task process died",
+                pool: state.pool_name,
+                reason: reason,
+                node: node()
+              )
             )
 
             :telemetry.execute(
@@ -267,7 +319,7 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
               }
             )
 
-            record_failure(state)
+            {record_failure(state), :error}
 
           true ->
             :telemetry.execute(
@@ -276,10 +328,10 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
               %{pool_name: state.pool_name}
             )
 
-            record_success(state)
+            {record_success(state), :ok}
         end
 
-      send(state.pool_name, {:worker_done, self()})
+      send(state.pool_name, {:worker_done, self(), outcome})
 
       {:noreply,
        %{
@@ -287,33 +339,8 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
          | current_task: nil,
            current_task_pid: nil,
            task_start_time: nil,
-           task_exception: false
-       }}
-    else
-      {:noreply, state}
-    end
-  end
-
-  @impl true
-  def handle_info({:task_completed, task_pid}, state) do
-    if state.current_task_pid == task_pid do
-      duration = System.monotonic_time(:microsecond) - state.task_start_time
-
-      :telemetry.execute(
-        [:phoenix_gen_api, :worker_pool, :task, :stop],
-        %{duration_us: duration},
-        %{pool_name: state.pool_name}
-      )
-
-      new_state = record_success(state)
-
-      {:noreply,
-       %{
-         new_state
-         | current_task: nil,
-           current_task_pid: nil,
-           task_start_time: nil,
-           task_exception: false
+           task_exception: false,
+           timer_ref: nil
        }}
     else
       {:noreply, state}
@@ -326,6 +353,9 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
     {:noreply, state}
   end
 
+  defp cancel_timer(nil), do: :ok
+  defp cancel_timer(ref), do: Process.cancel_timer(ref, async: true, info: false)
+
   ## Circuit Breaker Functions
 
   defp circuit_breaker_threshold do
@@ -335,6 +365,8 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   defp circuit_breaker_cooldown do
     Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_cooldown] || 60_000
   end
+
+  defp circuit_open?(%State{circuit_open_at: nil}), do: false
 
   defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
     CircuitBreaker.circuit_open?(
@@ -348,7 +380,14 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
 
     if new_failures >= circuit_breaker_threshold() do
       Logger.warning(
-        "[Worker] circuit breaker opened after #{new_failures} consecutive failures, pool: #{inspect(state.pool_name)}"
+        LogContext.line(
+          "Worker",
+          :circuit_breaker_opened,
+          "circuit breaker opened after consecutive failures",
+          pool: state.pool_name,
+          failure_count: new_failures,
+          node: node()
+        )
       )
 
       :telemetry.execute(
@@ -373,7 +412,13 @@ defmodule PhoenixGenApi.WorkerPool.Worker do
   defp record_success(state) do
     if state.consecutive_failures > 0 do
       Logger.info(
-        "[Worker] circuit breaker reset after successful task execution, pool: #{inspect(state.pool_name)}"
+        LogContext.line(
+          "Worker",
+          :circuit_breaker_reset,
+          "circuit breaker reset after successful task execution",
+          pool: state.pool_name,
+          node: node()
+        )
       )
 
       :telemetry.execute(

@@ -5,6 +5,131 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.25.0]
+
+### Fixed
+
+- **Execution isolation**: a raising/throwing/exiting endpoint no longer kills the
+  channel or caller; local calls run in a monitored process. `FunConfig.timeout` is a
+  hard bound even when an endpoint ignores shutdown, and a completion racing the timeout
+  is not reported as a timeout.
+- **Async/stream dispatch**: every worker-pool reply (`:queue_full`, `:circuit_open`,
+  unavailable pool, call exits) produces an error response instead of a
+  `CaseClauseError`/exit. Retry exhaustion now returns the documented
+  `all retry attempts exhausted` for both local and remote paths and keeps the last real
+  failure in telemetry. Node-resolution failures stop retrying immediately.
+- **Streams**: every stream ends with exactly one terminal frame (completion, error, or
+  timeout) and emits `stream stop/exception` telemetry. Timeout ownership moved into
+  `StreamCall`, releasing the pool slot after handoff.
+- **Worker pool**: one completion signal per task (no duplicate dispatch, hard
+  concurrency limit), worker crashes keep the queue, circuit-open workers reject and
+  requeue instead of dropping work, restart failures retry with a logged path, timers are
+  cancelled, and pool status reports real values.
+- **Hooks**: `after_execute` results are returned to the caller, `hook_timeout` is
+  honoured, hook stacktraces reach telemetry, and an unchanged result is not reported as
+  a failure.
+- **Rate limiter**: `fail_open`/fail-closed now applies to exits and timeouts (not just
+  exceptions); cleanup honours `cleanup_interval` and runtime limits and no longer blocks
+  checks; concurrency is race-free; key cardinality/size can be bounded.
+- **Configuration**: `update/1`, pushes, and puller registration apply the same MFA and
+  structural validation as `add/1`; a rejected write keeps the previous config serving.
+  A missing table is reported as `:unavailable` instead of `not_found`, and pull results
+  only report success when configuration was stored.
+- **Relay**: malformed state returns `{:error, :internal_error}` without losing groups,
+  monitors are released on delete/re-join, and an absent server returns a retryable
+  response.
+
+### Security
+
+- Push-token comparison now compares fixed-length SHA-256 digests, so timing does not
+  reveal the secret's length.
+- The built-in MFA denylist now covers `Code`, `File`, `System`, `Node`, `IO`, `:ets`,
+  `:application`, `:persistent_term`, `:logger`, `:gen_server`, `:supervisor`, and
+  `:process`. An explicit `:mfa_allowlist` entry remains the escape hatch. Every MFA a
+  config can invoke (`nodes`, hooks, `permission_callback`, `result_encoder`) is validated
+  at registration.
+- Push administration now enforces the documented `:push_config` admin action when
+  `admin_actions` is configured, supports opt-in source binding (`:config_source_binding`,
+  `:service_owners`) and downgrade rejection (`:reject_config_downgrades`), and can gate
+  puller administration (`:protect_config_puller`).
+- New opt-in channel flags: `require_authenticated_roles` (roles from `socket.assigns`)
+  and `reject_unverified_user_id`. Defaults remain permissive for backward compatibility.
+- `protect_internal_tables` makes internal ETS tables `:protected` with owner-process
+  writes; rate-limiter sharding is disabled in that mode.
+- Tracing control is admin-gated when `admin_actions` is configured, and
+  `trace_capture_args: false` omits payload args from trace files.
+- Configuration- and client-driven atom creation removed from sticky node selection.
+
+### Performance
+
+- Un-versioned config resolution no longer scans every stored version (`ConfigDb` is an
+  `:ordered_set`); measured ~343µs → ~3µs on a 5 000-row cache.
+- Rate limiting skips the limiter process entirely when no limits are configured, sends
+  only the key material it needs, uses per-timestamp ordered rows instead of copying the
+  whole window, and indexes per-API limits.
+- Argument validation hoists per-element config reads: a 1 000-item list validates in
+  ~8µs instead of ~400-800µs of env lookups.
+- Worker dispatch uses the maintained idle list; stream tasks use `:stream_pool` and stop
+  occupying async capacity; trace maps are only built for traced requests.
+- Local benchmark (single node, 1 000 requests): async calls ~25k → ~40-47k req/sec,
+  sync calls at parity or better.
+
+### Added
+
+- `PhoenixGenApi.Errors.Classify` failure classes (`:invalid_request`,
+  `:permission_denied`, `:rate_limited`, `:unavailable`, `:timeout`, `:internal`) in
+  telemetry metadata.
+- Telemetry: `request decode_error`, `stream stop/exception`, `permission denied/error`,
+  `config pull error`, `config push rejected`, `relay accepted/delivered/rejected`, and
+  `worker_pool worker restart`.
+- Configuration: `push_token` enforcement remains, plus `config_source_binding`,
+  `service_owners`, `reject_config_downgrades`, `allow_client_version`,
+  `max_configs_per_service`, `config_failed_cleanup_interval`, `protect_config_puller`,
+  `pull_node_allowlist`, `max_rate_limit_keys`, `max_rate_limit_key_bytes`,
+  `ip_address_source`, `relay_trust_mode`, `relay_limits`, `protect_internal_tables`, and
+  `trace_capture_args`.
+- `Relay.delete_group/2` for actor-verified deletion.
+
+### Changed
+
+- **Hardening pass (`harden-library-runtime`)**: fixes are classified as Tier A (always
+  on, behaviour-preserving for valid input), Tier B (opt-in flag, default = current
+  behaviour), or Tier C (deferred secure default for a breaking release). See
+  "Compatibility and Hardening Tiers" in `guides/architecture.md`.
+- Worker-pool `busy_workers` includes circuit-paused workers, and `total_tasks_failed`
+  now increments. Relay responses distinguish `targeted_count` from `recipients_count`.
+- `routing_strategy: :random` is accepted but ignored (and logged) because it cannot keep
+  a key's counters consistent.
+
+### Deferred (next breaking release)
+
+- Defaulting `require_authenticated_roles`, `reject_unverified_user_id`, a required push
+  token, and `relay_trust_mode: :strict` on. These remain opt-in in this release.
+
+- **Logging context enrichment (backward compatible)**: every log line now follows
+  `[Module] event=<snake_case> <existing message> key=value ...`, carrying
+  `request_id`, `request_type`, `service`, `user_id`, `node`, `origin_node`, and
+  `version` where relevant. Request-scoped Logger metadata is installed during request
+  handling and propagated into async, stream, and worker-pool processes, then restored.
+  Existing `[Module]` prefixes and message wording are preserved, so current greps and
+  dashboards keep working.
+
+- **Log level review**: retry attempts and per-request conversion dumps moved from
+  `info`/`error` to `debug`; caller argument-schema violations moved from `error` to
+  `warning`. Configuration, dispatch, and security failures stay at `warning`/`error`.
+  Operators that relied on `info` retry lines must enable `debug` for the relevant
+  module.
+
+### Security
+
+- Push tokens are never logged. `PhoenixGenApi.Structs.PushConfig` now redacts
+  `push_token` from `inspect/1`, and token rejections log only that the token was
+  rejected.
+
+- Full request payloads, argument values, and function results are redacted by default.
+  Enable the new `log_verbose_payloads: true` config option (default `false`) to emit
+  them at `debug` level outside production.
+
 ## [2.24.1]
 
 ### Fixed

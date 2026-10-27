@@ -3,6 +3,8 @@ defmodule PhoenixGenApi.Application do
 
   use Application
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @impl true
@@ -39,7 +41,14 @@ defmodule PhoenixGenApi.Application do
       end
 
     Logger.info(
-      "[Application] starting, client_mode: #{inspect(client_mode)}, children: #{length(children)}"
+      LogContext.line(
+        "Application",
+        :starting,
+        "starting",
+        client_mode: client_mode,
+        children: length(children),
+        node: node()
+      )
     )
 
     opts = [strategy: :rest_for_one, name: PhoenixGenApi.Supervisor]

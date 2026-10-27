@@ -218,4 +218,13 @@ defmodule PhoenixGenApi.PushConfigTest do
       assert result.version_args == [:varg1]
     end
   end
+
+  describe "inspect/1" do
+    test "never includes the push token" do
+      config = valid_push_config(%{push_token: "super-secret-token"})
+
+      refute inspect(config) =~ "super-secret-token"
+      refute inspect(config) =~ "push_token"
+    end
+  end
 end

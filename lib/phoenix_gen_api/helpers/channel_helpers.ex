@@ -36,10 +36,21 @@ defmodule PhoenixGenApi.ChannelHelpers do
 
       require Logger
 
+      alias PhoenixGenApi.LogContext
+
       @doc false
       def handle_info({:push, result}, socket) do
         Logger.debug(fn ->
-          "[ChannelHelpers] push result: #{inspect(result)}, module: #{__MODULE__}"
+          LogContext.line(
+            "ChannelHelpers",
+            :push_result,
+            "push result",
+            [
+              module: __MODULE__,
+              payload: LogContext.payload_summary(result),
+              result: LogContext.payload(result)
+            ] ++ LogContext.result_context(result)
+          )
         end)
 
         push(socket, @phoenix_gen_api_channel_event, result)
@@ -49,7 +60,16 @@ defmodule PhoenixGenApi.ChannelHelpers do
       @doc false
       def handle_info({:stream_response, result}, socket) do
         Logger.debug(fn ->
-          "[ChannelHelpers] stream response: #{inspect(result)}, module: #{__MODULE__}"
+          LogContext.line(
+            "ChannelHelpers",
+            :stream_response,
+            "stream response",
+            [
+              module: __MODULE__,
+              payload: LogContext.payload_summary(result),
+              result: LogContext.payload(result)
+            ] ++ LogContext.result_context(result)
+          )
         end)
 
         push(socket, @phoenix_gen_api_channel_event, result)
@@ -59,7 +79,16 @@ defmodule PhoenixGenApi.ChannelHelpers do
       @doc false
       def handle_info({:async_call, result}, socket) do
         Logger.debug(fn ->
-          "[ChannelHelpers] async call result: #{inspect(result)}, module: #{__MODULE__}"
+          LogContext.line(
+            "ChannelHelpers",
+            :async_call_result,
+            "async call result",
+            [
+              module: __MODULE__,
+              payload: LogContext.payload_summary(result),
+              result: LogContext.payload(result)
+            ] ++ LogContext.result_context(result)
+          )
         end)
 
         push(socket, @phoenix_gen_api_channel_event, result)
@@ -69,7 +98,14 @@ defmodule PhoenixGenApi.ChannelHelpers do
       @doc false
       def handle_info({:stream_started, request_id, pid}, socket) do
         Logger.debug(fn ->
-          "[ChannelHelpers] stream started: request_id=#{inspect(request_id)}, module: #{__MODULE__}"
+          LogContext.line(
+            "ChannelHelpers",
+            :stream_started,
+            "stream started",
+            module: __MODULE__,
+            request_id: LogContext.value(request_id),
+            stream_pid: inspect(pid)
+          )
         end)
 
         {:noreply, socket}

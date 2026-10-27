@@ -260,14 +260,16 @@ defmodule PhoenixGenApi.SecurityTest do
       assert {:error, {:mfa_not_allowed, 123}} = Security.validate_mfa(123)
     end
 
-    test "returns error for denylisted module even if in allowlist" do
-      # Denylist always takes precedence
+    test "an explicit allowlist entry unblocks a denylisted module" do
+      # The allowlist is the documented escape hatch, including for denylisted modules.
       Application.put_env(:phoenix_gen_api, :mfa_allowlist, [:os])
+
+      assert :ok = Security.validate_mfa({:os, :cmd, ["echo"]})
+
+      Application.delete_env(:phoenix_gen_api, :mfa_allowlist)
 
       assert {:error, {:mfa_not_allowed, _}} =
                Security.validate_mfa({:os, :cmd, ["echo"]})
-
-      Application.delete_env(:phoenix_gen_api, :mfa_allowlist)
     end
 
     test "empty allowlist denies everything except denylist" do

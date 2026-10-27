@@ -36,7 +36,11 @@ defmodule PhoenixGenApi.Security do
   ## Hardcoded Denylist
 
   The following modules are **always blocked** unless explicitly allowed:
-  `:os`, `:file`, `:code`, `:erlang`, `:net`, `:rpc`, `:global`, `:inet`.
+  `:os`, `:file`, `:code`, `:erlang`, `:net`, `:rpc`, `:global`, `:inet`, plus the
+  Elixir wrappers of those surfaces (`Code`, `File`, `System`, `Node`, `IO`) and the
+  high-risk runtime modules (`:ets`, `:application`, `:persistent_term`, `:logger`,
+  `:gen_server`, `:supervisor`, `:process`). Add an explicit `:mfa_allowlist` entry to
+  use one of them.
 
   ## Environment Recommendations
 
@@ -46,6 +50,8 @@ defmodule PhoenixGenApi.Security do
   """
 
   import Bitwise
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @type admin_action ::
@@ -85,10 +91,27 @@ defmodule PhoenixGenApi.Security do
     allowed = Application.get_env(:phoenix_gen_api, :admin_actions, [])
 
     if action in allowed do
-      Logger.info("[Security] admin action allowed: #{action}")
+      Logger.info(
+        LogContext.event("Security", :admin_action_allowed,
+          action: action,
+          actor: :admin,
+          node: node()
+        )
+      )
+
       true
     else
-      Logger.warning("[Security] admin action denied: #{action}, not in allowlist")
+      Logger.warning(
+        LogContext.line(
+          "Security",
+          :admin_action_denied,
+          "admin action denied, not in allowlist",
+          action: action,
+          actor: :admin,
+          node: node()
+        )
+      )
+
       false
     end
   end
@@ -132,24 +155,36 @@ defmodule PhoenixGenApi.Security do
 
   def valid_push_token?(_), do: false
 
-  # Constant-time binary comparison to prevent timing attacks.
-  # Always does the full comparison regardless of length to avoid leaking
-  # length info via timing.
+  # Constant-time comparison over fixed-size digests. Hashing both inputs first
+  # makes the number of compared bytes constant (32), so the work cannot reveal
+  # the configured secret's length.
   defp constant_time_compare(a, b) when is_binary(a) and is_binary(b) do
-    size_eq = byte_size(a) == byte_size(b)
-    result = constant_time_compare_bin(a, b, 0)
-    size_eq and result == 0
+    compare_digests(:crypto.hash(:sha256, a), :crypto.hash(:sha256, b))
   end
 
-  defp constant_time_compare_bin(<<>>, <<>>, acc), do: acc
+  defp compare_digests(a, b) when byte_size(a) == byte_size(b) do
+    compare_digest_bytes(a, b, 0) == 0
+  end
 
-  defp constant_time_compare_bin(<<>>, _, acc) when acc != 0, do: acc
-  defp constant_time_compare_bin(_, <<>>, acc) when acc != 0, do: acc
-  defp constant_time_compare_bin(<<>>, _, _acc), do: 1
-  defp constant_time_compare_bin(_, <<>>, _acc), do: 1
+  defp compare_digest_bytes(<<>>, <<>>, acc), do: acc
 
-  defp constant_time_compare_bin(<<x, rest_a::binary>>, <<y, rest_b::binary>>, acc) do
-    constant_time_compare_bin(rest_a, rest_b, acc ||| Bitwise.bxor(x, y))
+  defp compare_digest_bytes(<<x, rest_a::binary>>, <<y, rest_b::binary>>, acc) do
+    compare_digest_bytes(rest_a, rest_b, acc ||| Bitwise.bxor(x, y))
+  end
+
+  @doc """
+  Returns the ETS access mode for the library's internal named tables.
+
+  `:protected` when `:protect_internal_tables` is enabled (writes only from the
+  owning process), otherwise `:public` (the historical behaviour).
+  """
+  @spec internal_table_access() :: :public | :protected
+  def internal_table_access do
+    if Application.get_env(:phoenix_gen_api, :protect_internal_tables, false) == true do
+      :protected
+    else
+      :public
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -157,6 +192,7 @@ defmodule PhoenixGenApi.Security do
   # ---------------------------------------------------------------------------
 
   @hardcoded_denylist [
+    # Operating system, filesystem, and code-evaluation surfaces
     :os,
     :file,
     :code,
@@ -164,7 +200,20 @@ defmodule PhoenixGenApi.Security do
     :net,
     :rpc,
     :global,
-    :inet
+    :inet,
+    Code,
+    File,
+    System,
+    Node,
+    IO,
+    # Runtime and process-control surfaces
+    :ets,
+    :application,
+    :persistent_term,
+    :logger,
+    :gen_server,
+    :supervisor,
+    :process
   ]
 
   @doc """
@@ -194,10 +243,18 @@ defmodule PhoenixGenApi.Security do
   """
   @spec validate_mfa({module(), atom(), list()}) :: :ok | {:error, {:mfa_not_allowed, term()}}
   def validate_mfa(mfa = {module, function, _args}) do
-    # Check hardcoded denylist first — always enforced
-    if module in @hardcoded_denylist do
+    # An explicit allowlist entry is the documented escape hatch, including for
+    # modules on the built-in denylist.
+    if module in @hardcoded_denylist and not mfa_allowlisted?(mfa) do
       Logger.warning(
-        "[Security] MFA denied by hardcoded denylist: module=#{inspect(module)}, function=#{inspect(function)}"
+        LogContext.line(
+          "Security",
+          :mfa_denied_denylist,
+          "MFA denied by hardcoded denylist",
+          module: module,
+          function: function,
+          node: node()
+        )
       )
 
       {:error, {:mfa_not_allowed, mfa}}
@@ -208,6 +265,13 @@ defmodule PhoenixGenApi.Security do
 
   def validate_mfa(invalid) do
     {:error, {:mfa_not_allowed, invalid}}
+  end
+
+  defp mfa_allowlisted?({module, function, _args}) do
+    case Application.get_env(:phoenix_gen_api, :mfa_allowlist) do
+      allowlist when is_list(allowlist) -> mfa_in_allowlist?({module, function}, allowlist)
+      _ -> false
+    end
   end
 
   # MFA allowlist check
@@ -222,7 +286,14 @@ defmodule PhoenixGenApi.Security do
         :ok
       else
         Logger.warning(
-          "[Security] MFA not in allowlist: module=#{inspect(module)}, function=#{inspect(function)}"
+          LogContext.line(
+            "Security",
+            :mfa_not_in_allowlist,
+            "MFA not in allowlist",
+            module: module,
+            function: function,
+            node: node()
+          )
         )
 
         {:error, {:mfa_not_allowed, mfa}}

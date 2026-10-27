@@ -64,6 +64,8 @@ defmodule PhoenixGenApi.Diagnostics do
   alias PhoenixGenApi.RelayServer
   alias PhoenixGenApi.Structs.FunConfig
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @trace_process_targets [
@@ -419,7 +421,14 @@ defmodule PhoenixGenApi.Diagnostics do
           if Code.ensure_loaded?(t) do
             true
           else
-            Logger.warning("[Diagnostics] Trace target module not loaded: #{inspect(t)}")
+            Logger.warning(
+              LogContext.event("Diagnostics", :trace_target_not_loaded,
+                message: "Trace target module not loaded",
+                target: t,
+                node: node()
+              )
+            )
+
             false
           end
 
@@ -482,7 +491,14 @@ defmodule PhoenixGenApi.Diagnostics do
         if Code.ensure_loaded?(mod) do
           true
         else
-          Logger.warning("[Diagnostics] Trace MFA module not loaded: #{inspect(mod)}")
+          Logger.warning(
+            LogContext.event("Diagnostics", :trace_mfa_module_not_loaded,
+              message: "Trace MFA module not loaded",
+              module: mod,
+              node: node()
+            )
+          )
+
           false
         end
       end)
@@ -613,9 +629,15 @@ defmodule PhoenixGenApi.Diagnostics do
       {mod, fun, args} = nodes
 
       if function_exported?(mod, fun, length(args)) do
-        case apply(mod, fun, args) do
-          list when is_list(list) -> list
-          _ -> []
+        try do
+          case apply(mod, fun, args) do
+            list when is_list(list) -> list
+            _ -> []
+          end
+        rescue
+          _error -> []
+        catch
+          _kind, _reason -> []
         end
       else
         []

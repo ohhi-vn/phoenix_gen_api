@@ -37,7 +37,7 @@ defmodule PhoenixGenApi.ConfigDb do
 
   use GenServer, restart: :permanent
 
-  alias PhoenixGenApi.Security
+  alias PhoenixGenApi.LogContext
   alias PhoenixGenApi.Structs.FunConfig
 
   require Logger
@@ -70,10 +70,10 @@ defmodule PhoenixGenApi.ConfigDb do
   @spec add(FunConfig.t()) ::
           :ok | {:error, :invalid_config} | {:error, {:mfa_not_allowed, term()}}
   def add(config = %FunConfig{}) do
-    with :ok <- Security.validate_mfa(config.mfa),
+    with :ok <- FunConfig.validate_security(config),
          true <- FunConfig.valid?(config) do
       version = FunConfig.version(config)
-      :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
+      write_entries([{{config.service, config.request_type, version}, config}])
 
       :telemetry.execute(
         [:phoenix_gen_api, :config, :add],
@@ -85,36 +85,62 @@ defmodule PhoenixGenApi.ConfigDb do
         }
       )
 
-      Logger.debug(
-        "[ConfigDb] added: service=#{inspect(config.service)} request_type=#{inspect(config.request_type)} version=#{version}"
-      )
+      Logger.debug(fn ->
+        LogContext.line("ConfigDb", :config_added, "added", config_fields(config))
+      end)
 
       :ok
     else
-      {:error, {:mfa_not_allowed, _}} = error ->
-        Logger.error("[ConfigDb] add failed: MFA not allowed, config=#{inspect(config)}")
+      {:error, {:mfa_not_allowed, field, mfa}} ->
+        Logger.error(
+          LogContext.line(
+            "ConfigDb",
+            :add_mfa_not_allowed,
+            "add failed: MFA not allowed",
+            config_fields(config, field: field, mfa: mfa)
+          )
+        )
 
         PhoenixGenApi.ConfigFailed.record(
           config,
-          "MFA not allowed: #{inspect(config.mfa)}",
+          "MFA not allowed in #{field}: #{inspect(mfa)}",
           :pull,
           nil
         )
 
-        error
+        {:error, {:mfa_not_allowed, mfa}}
 
       false ->
-        Logger.error("[ConfigDb] add failed: invalid config=#{inspect(config)}")
-
         reasons =
           case FunConfig.validate_with_details(config) do
             {:error, errors} -> errors
             _ -> ["unknown validation error"]
           end
 
+        Logger.error(
+          LogContext.line(
+            "ConfigDb",
+            :add_invalid_config,
+            "add failed: invalid config",
+            config_fields(config, reason: reasons)
+          )
+        )
+
         PhoenixGenApi.ConfigFailed.record(config, reasons, :pull, nil)
         {:error, :invalid_config}
     end
+  rescue
+    error in ArgumentError ->
+      Logger.error(
+        LogContext.line(
+          "ConfigDb",
+          :ets_unavailable,
+          "config store unavailable",
+          LogContext.current(error: Exception.message(error))
+        )
+      )
+
+      {:error, :unavailable}
   end
 
   @doc """
@@ -140,7 +166,7 @@ defmodule PhoenixGenApi.ConfigDb do
         {:error, :all_invalid}
 
       _ ->
-        :ets.insert(__MODULE__, entries)
+        write_entries(entries)
 
         :telemetry.execute(
           [:phoenix_gen_api, :config, :batch_add],
@@ -148,20 +174,31 @@ defmodule PhoenixGenApi.ConfigDb do
           %{service: List.first(entries) |> elem(1) |> Map.get(:service)}
         )
 
-        Logger.debug("[ConfigDb] batch_add: inserted count=#{length(entries)}")
+        Logger.debug(fn ->
+          LogContext.event("ConfigDb", :batch_add_inserted, count: length(entries))
+        end)
+
         {:ok, length(entries)}
     end
   end
 
   defp batch_add_entry(config = %FunConfig{}) do
-    case Security.validate_mfa(config.mfa) do
+    case FunConfig.validate_security(config) do
       :ok -> valid_batch_entry(config)
-      {:error, {:mfa_not_allowed, mfa}} -> mfa_not_allowed_entry(config, mfa)
+      {:error, {:mfa_not_allowed, _field, mfa}} -> mfa_not_allowed_entry(config, mfa)
     end
   end
 
   defp batch_add_entry(other) do
-    Logger.error("[ConfigDb] batch_add: unexpected item=#{inspect(other)}, skipping")
+    Logger.error(
+      LogContext.line(
+        "ConfigDb",
+        :batch_add_invalid_item_type,
+        "batch_add: unexpected item, skipping",
+        item_type: LogContext.type_name(other)
+      )
+    )
+
     []
   end
 
@@ -176,11 +213,33 @@ defmodule PhoenixGenApi.ConfigDb do
 
   defp invalid_batch_entry(config) do
     Logger.error(
-      "[ConfigDb] batch_add: invalid config, request_type=#{inspect(config.request_type)}, service=#{inspect(config.service)}, version=#{inspect(FunConfig.version(config))}, skipping"
+      LogContext.line(
+        "ConfigDb",
+        :batch_add_invalid_config,
+        "batch_add: invalid config, skipping",
+        config_fields(config)
+      )
     )
 
     PhoenixGenApi.ConfigFailed.record(config, validation_reasons(config), :pull, nil)
     []
+  end
+
+  defp write_entries(entries) do
+    if PhoenixGenApi.Security.internal_table_access() == :protected do
+      GenServer.call(__MODULE__, {:insert_entries, entries})
+    else
+      :ets.insert(__MODULE__, entries)
+      enforce_caps(entries)
+      :ok
+    end
+  end
+
+  defp enforce_caps(entries) do
+    entries
+    |> Enum.map(fn {{service, request_type, _version}, _config} -> {service, request_type} end)
+    |> Enum.uniq()
+    |> Enum.each(fn {service, request_type} -> enforce_version_cap(service, request_type) end)
   end
 
   defp validation_reasons(config) do
@@ -190,13 +249,68 @@ defmodule PhoenixGenApi.ConfigDb do
     end
   end
 
+  # Keeps the number of stored versions per service/request_type bounded by
+  # deleting the oldest versions when the configured cap is exceeded.
+  defp enforce_version_cap(service, request_type) do
+    case Application.get_env(:phoenix_gen_api, :max_configs_per_service) do
+      cap when is_integer(cap) and cap > 0 ->
+        versions =
+          :ets.match(__MODULE__, {{service, request_type, :"$1"}, :_})
+          |> Enum.map(fn [version] -> version end)
+
+        excess = length(versions) - cap
+
+        if excess > 0 do
+          versions
+          |> Enum.sort_by(&version_sort_key/1)
+          |> Enum.take(excess)
+          |> Enum.each(fn version ->
+            :ets.delete(__MODULE__, {service, request_type, version})
+          end)
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp version_sort_key(nil), do: {0, 0, 0}
+
+  defp version_sort_key(version) when is_binary(version) do
+    case Version.parse(version) do
+      {:ok, parsed} -> parsed
+      :error -> {0, 0, 0}
+    end
+  end
+
+  defp version_sort_key(_version), do: {0, 0, 0}
+
   defp mfa_not_allowed_entry(config, mfa) do
     Logger.error(
-      "[ConfigDb] batch_add: MFA not allowed, mfa=#{inspect(mfa)}, service=#{inspect(config.service)}, skipping"
+      LogContext.line(
+        "ConfigDb",
+        :batch_add_mfa_not_allowed,
+        "batch_add: MFA not allowed, skipping",
+        config_fields(config, mfa: mfa)
+      )
     )
 
     PhoenixGenApi.ConfigFailed.record(config, "MFA not allowed: #{inspect(mfa)}", :pull, nil)
     []
+  rescue
+    error in ArgumentError ->
+      Logger.error(
+        LogContext.line(
+          "ConfigDb",
+          :ets_unavailable,
+          "config store unavailable",
+          LogContext.current(error: Exception.message(error))
+        )
+      )
+
+      {:error, :unavailable}
   end
 
   @doc """
@@ -253,9 +367,10 @@ defmodule PhoenixGenApi.ConfigDb do
   """
   @spec update(FunConfig.t()) :: :ok | {:error, :invalid_config}
   def update(config = %FunConfig{}) do
-    if FunConfig.valid?(config) do
+    with :ok <- FunConfig.validate_security(config),
+         true <- FunConfig.valid?(config) do
       version = FunConfig.version(config)
-      :ets.insert(__MODULE__, {{config.service, config.request_type, version}, config})
+      write_entries([{{config.service, config.request_type, version}, config}])
 
       :telemetry.execute(
         [:phoenix_gen_api, :config, :add],
@@ -267,15 +382,36 @@ defmodule PhoenixGenApi.ConfigDb do
         }
       )
 
-      Logger.debug(
-        "[ConfigDb] updated: service=#{inspect(config.service)} request_type=#{inspect(config.request_type)} version=#{version}"
-      )
+      Logger.debug(fn ->
+        LogContext.line("ConfigDb", :config_updated, "updated", config_fields(config))
+      end)
 
       :ok
     else
-      Logger.error("[ConfigDb] update failed: invalid config=#{inspect(config)}")
-      {:error, :invalid_config}
+      _error ->
+        Logger.error(
+          LogContext.line(
+            "ConfigDb",
+            :update_invalid_config,
+            "update failed: invalid config",
+            config_fields(config)
+          )
+        )
+
+        {:error, :invalid_config}
     end
+  rescue
+    error in ArgumentError ->
+      Logger.error(
+        LogContext.line(
+          "ConfigDb",
+          :ets_unavailable,
+          "config store unavailable",
+          LogContext.current(error: Exception.message(error))
+        )
+      )
+
+      {:error, :unavailable}
   end
 
   @doc """
@@ -347,8 +483,11 @@ defmodule PhoenixGenApi.ConfigDb do
     end
   rescue
     ArgumentError ->
-      # Key not found in ETS
-      {:error, :not_found}
+      if :ets.whereis(__MODULE__) == :undefined do
+        {:error, :unavailable}
+      else
+        {:error, :not_found}
+      end
   end
 
   @doc """
@@ -391,6 +530,9 @@ defmodule PhoenixGenApi.ConfigDb do
         # resolution — they are only returned when they are the sole match.
         latest_enabled_result(results)
     end
+  rescue
+    ArgumentError ->
+      {:error, :unavailable}
   end
 
   defp enabled_result(config) do
@@ -616,17 +758,17 @@ defmodule PhoenixGenApi.ConfigDb do
 
   @impl true
   def init(_opts) do
-    access = :public
+    access = PhoenixGenApi.Security.internal_table_access()
 
     :ets.new(__MODULE__, [
       access,
-      :set,
+      :ordered_set,
       :named_table,
       read_concurrency: true,
       write_concurrency: true
     ])
 
-    Logger.info("[ConfigDb] initialized ETS table with read/write concurrency")
+    Logger.info(LogContext.event("ConfigDb", :ets_initialized, node: node()))
     {:ok, %{}}
   end
 
@@ -636,12 +778,26 @@ defmodule PhoenixGenApi.ConfigDb do
   # and avoids serialising bulk inserts through the GenServer mailbox.
 
   @impl true
+  def handle_call({:insert_entries, entries}, _from, state) do
+    :ets.insert(__MODULE__, entries)
+    enforce_caps(entries)
+    {:reply, :ok, state}
+  end
+
+  @impl true
   def handle_call({:delete, {service, request_type, version}}, _from, state) do
     :ets.delete(__MODULE__, {service, request_type, version})
 
-    Logger.debug(
-      "[ConfigDb] deleted: service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
-    )
+    Logger.debug(fn ->
+      LogContext.line(
+        "ConfigDb",
+        :config_deleted,
+        "deleted",
+        service: LogContext.value(service),
+        request_type: LogContext.value(request_type),
+        version: LogContext.value(version)
+      )
+    end)
 
     {:reply, :ok, state}
   end
@@ -663,14 +819,28 @@ defmodule PhoenixGenApi.ConfigDb do
         )
 
         Logger.info(
-          "[ConfigDb] disabled: service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
+          LogContext.line(
+            "ConfigDb",
+            :config_disabled,
+            "disabled",
+            service: LogContext.value(service),
+            request_type: LogContext.value(request_type),
+            version: LogContext.value(version)
+          )
         )
 
         {:reply, :ok, state}
 
       [] ->
         Logger.warning(
-          "[ConfigDb] disable failed: not found service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
+          LogContext.line(
+            "ConfigDb",
+            :disable_not_found,
+            "disable failed: not found",
+            service: LogContext.value(service),
+            request_type: LogContext.value(request_type),
+            version: LogContext.value(version)
+          )
         )
 
         {:reply, {:error, :not_found}, state}
@@ -694,14 +864,28 @@ defmodule PhoenixGenApi.ConfigDb do
         )
 
         Logger.info(
-          "[ConfigDb] enabled: service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
+          LogContext.line(
+            "ConfigDb",
+            :config_enabled,
+            "enabled",
+            service: LogContext.value(service),
+            request_type: LogContext.value(request_type),
+            version: LogContext.value(version)
+          )
         )
 
         {:reply, :ok, state}
 
       [] ->
         Logger.warning(
-          "[ConfigDb] enable failed: not found service=#{inspect(service)} request_type=#{inspect(request_type)} version=#{version}"
+          LogContext.line(
+            "ConfigDb",
+            :enable_not_found,
+            "enable failed: not found",
+            service: LogContext.value(service),
+            request_type: LogContext.value(request_type),
+            version: LogContext.value(version)
+          )
         )
 
         {:reply, {:error, :not_found}, state}
@@ -710,7 +894,7 @@ defmodule PhoenixGenApi.ConfigDb do
 
   def handle_call(:clear, _from, state) do
     :ets.delete_all_objects(__MODULE__)
-    Logger.info("[ConfigDb] cleared all configurations")
+    Logger.info(LogContext.event("ConfigDb", :configs_cleared, node: node()))
     {:reply, :ok, state}
   end
 
@@ -718,11 +902,19 @@ defmodule PhoenixGenApi.ConfigDb do
   def terminate(_reason, _state) do
     try do
       :ets.delete(__MODULE__)
-      Logger.debug("[ConfigDb] ETS table deleted on terminate")
+      Logger.debug(fn -> LogContext.event("ConfigDb", :ets_deleted, node: node()) end)
     catch
       :error, :badarg -> :ok
     end
 
     :ok
+  end
+
+  defp config_fields(%FunConfig{} = config, extra \\ []) do
+    [
+      service: LogContext.value(config.service),
+      request_type: LogContext.value(config.request_type),
+      version: LogContext.value(FunConfig.version(config))
+    ] ++ extra
   end
 end

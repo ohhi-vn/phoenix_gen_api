@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.ExecutorTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.Executor
   alias PhoenixGenApi.Structs.{FunConfig, Request}
@@ -26,6 +28,31 @@ defmodule PhoenixGenApi.ExecutorTest do
   end
 
   describe "execute!/1" do
+    test "installs request context as metadata and restores it afterwards" do
+      request_id = "meta_req_#{System.unique_integer([:positive])}"
+      request_type = "missing_meta_#{System.unique_integer([:positive])}"
+
+      request = %Request{
+        request_id: request_id,
+        request_type: request_type,
+        service: "meta_service",
+        user_id: "user_meta",
+        args: %{}
+      }
+
+      log = capture_log(fn -> assert %{success: false} = Executor.execute!(request) end)
+
+      assert log =~ "event=unsupported_function"
+      assert log =~ "request_id=\"#{request_id}\""
+      assert log =~ "request_type=\"#{request_type}\""
+      assert log =~ "service=\"meta_service\""
+      assert log =~ "user_id=\"user_meta\""
+
+      assert Logger.metadata()[:request_id] == nil
+      assert Logger.metadata()[:request_type] == nil
+      assert Logger.metadata()[:service] == nil
+    end
+
     test "returns error when function config not found" do
       unique = System.unique_integer([:positive])
 

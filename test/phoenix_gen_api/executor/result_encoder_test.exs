@@ -173,12 +173,26 @@ defmodule PhoenixGenApi.Executor.ResultEncoderTest do
       request_type = "test_encoder_deny_#{unique}"
       service = "test_service_#{unique}"
 
-      add_config(
-        request_type,
-        service,
-        {__MODULE__, :ok_string_function, []},
-        {:code, :where_is_file, []}
-      )
+      config = %FunConfig{
+        request_type: request_type,
+        service: service,
+        nodes: :local,
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {__MODULE__, :ok_string_function, []},
+        arg_types: nil,
+        arg_orders: nil,
+        response_type: :sync,
+        check_permission: false,
+        request_info: false,
+        result_encoder: {:code, :where_is_file, []}
+      }
+
+      on_exit(fn -> ConfigDb.delete(service, request_type) end)
+
+      # The denylisted encoder is rejected when the configuration is registered,
+      # so it can never be applied later.
+      assert {:error, {:mfa_not_allowed, _mfa}} = ConfigDb.add(config)
 
       request = %{request | request_type: request_type, service: service}
 
@@ -186,7 +200,7 @@ defmodule PhoenixGenApi.Executor.ResultEncoderTest do
         result = Executor.execute!(request)
 
         assert %Response{success: false} = result
-        assert result.error =~ "mfa not allowed"
+        assert result.error =~ "unsupported function"
         # The denylisted encoder must never have been applied
         refute_receive {:encoder_called, _}
       end)

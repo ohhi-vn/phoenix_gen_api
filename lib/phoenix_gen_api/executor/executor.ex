@@ -57,7 +57,9 @@ defmodule PhoenixGenApi.Executor do
 
   alias PhoenixGenApi.ArgumentHandler
   alias PhoenixGenApi.ConfigDb
+  alias PhoenixGenApi.Errors.Classify
   alias PhoenixGenApi.Hooks
+  alias PhoenixGenApi.LogContext
   alias PhoenixGenApi.NodeSelector
   alias PhoenixGenApi.Permission
   alias PhoenixGenApi.Permission.PermissionDenied
@@ -99,6 +101,7 @@ defmodule PhoenixGenApi.Executor do
   end
 
   @default_rpc_timeout 5000
+  @task_supervisor PhoenixGenApi.TaskSupervisor
 
   @doc """
   Attaches a telemetry handler to executor events.
@@ -173,6 +176,12 @@ defmodule PhoenixGenApi.Executor do
   """
   @spec execute!(Request.t()) :: Response.t()
   def execute!(request = %Request{}) do
+    LogContext.with_context(LogContext.request_context(request), fn ->
+      do_execute!(request)
+    end)
+  end
+
+  defp do_execute!(request = %Request{}) do
     start_time = System.monotonic_time(:microsecond)
 
     :telemetry.execute(
@@ -203,6 +212,37 @@ defmodule PhoenixGenApi.Executor do
 
             execute_with_config!(request, fun_config)
 
+          {:error, :unavailable} ->
+            Logger.error(
+              LogContext.line(
+                "Executor",
+                :config_cache_unavailable,
+                "configuration cache unavailable",
+                LogContext.current(failure_class: :unavailable, node: node())
+              )
+            )
+
+            :telemetry.execute(
+              [:phoenix_gen_api, :executor, :request, :exception],
+              %{duration_us: System.monotonic_time(:microsecond) - start_time},
+              %{
+                request_id: request.request_id,
+                request_type: request.request_type,
+                service: request.service,
+                user_id: request.user_id,
+                kind: :error,
+                reason: :config_cache_unavailable,
+                failure_class: :unavailable,
+                stacktrace: nil
+              }
+            )
+
+            Response.error_response(
+              request.request_id,
+              "Service temporarily unavailable",
+              true
+            )
+
           {:error, :not_found} ->
             version = request.version || "latest"
 
@@ -212,7 +252,12 @@ defmodule PhoenixGenApi.Executor do
             })
 
             Logger.warning(
-              "[Executor] unsupported function: #{request.request_type}, version: #{version}, request_id: #{request.request_id}"
+              LogContext.line(
+                "Executor",
+                :unsupported_function,
+                "unsupported function",
+                LogContext.current(version: version, node: node())
+              )
             )
 
             Response.error_response(
@@ -229,7 +274,12 @@ defmodule PhoenixGenApi.Executor do
             })
 
             Logger.warning(
-              "[Executor] disabled function: #{request.request_type}, version: #{version}, request_id: #{request.request_id}"
+              LogContext.line(
+                "Executor",
+                :disabled_function,
+                "disabled function",
+                LogContext.current(version: version, node: node())
+              )
             )
 
             Response.error_response(
@@ -276,6 +326,7 @@ defmodule PhoenixGenApi.Executor do
             user_id: request.user_id,
             kind: :error,
             reason: Exception.message(e),
+            failure_class: Classify.classify(:error, e),
             stacktrace: __STACKTRACE__
           }
         )
@@ -287,15 +338,44 @@ defmodule PhoenixGenApi.Executor do
         )
 
         reraise e, __STACKTRACE__
+    catch
+      kind, reason ->
+        duration = System.monotonic_time(:microsecond) - start_time
+
+        :telemetry.execute(
+          [:phoenix_gen_api, :executor, :request, :exception],
+          %{duration_us: duration},
+          %{
+            request_id: request.request_id,
+            request_type: request.request_type,
+            service: request.service,
+            user_id: request.user_id,
+            kind: kind,
+            reason: inspect(reason),
+            failure_class: Classify.classify(kind, reason),
+            stacktrace: __STACKTRACE__
+          }
+        )
+
+        :erlang.raise(kind, reason, __STACKTRACE__)
     after
       PhoenixGenApi.Tracer.end_trace(trace_ctx)
     end
   end
 
   def execute_with_config!(request = %Request{}, fun_config = %FunConfig{}) do
-    Logger.debug(
-      "[Executor] executing request_id: #{request.request_id}, response_type: #{fun_config.response_type}"
-    )
+    Logger.debug(fn ->
+      LogContext.line(
+        "Executor",
+        :executing_request,
+        "executing request",
+        LogContext.current(
+          response_type: fun_config.response_type,
+          version: LogContext.value(fun_config.version),
+          node: node()
+        )
+      )
+    end)
 
     # Run before_execute hook
     case Hooks.run_before(fun_config.before_execute, request, fun_config) do
@@ -310,34 +390,37 @@ defmodule PhoenixGenApi.Executor do
         })
 
         Logger.warning(
-          "[Executor] before_execute hook aborted, request_id: #{request.request_id}, reason: #{inspect(reason)}"
+          LogContext.line(
+            "Executor",
+            :before_hook_aborted,
+            "before_execute hook aborted",
+            LogContext.current(reason: reason)
+          )
         )
 
         response =
           Response.error_response(request.request_id, "hook rejected: #{inspect(reason)}")
 
         run_after_hook(request, fun_config, response)
-        response
     end
   end
 
-  # Runs the configured after_execute hook and emits a `hook_after` trace event.
-  # `Hooks.run_after/4` swallows hook errors and returns the original response,
-  # so an identical response is treated as an error signal (the detailed reason
-  # is still available via the hook's own Logger error and raw log capture).
+  # Runs the configured after_execute hook. A failed hook keeps the original
+  # response, but the failure is distinct from a hook that returned it unchanged.
   defp run_after_hook(request, fun_config, response) do
-    if is_nil(fun_config.after_execute) do
-      response
-    else
-      case Hooks.run_after(fun_config.after_execute, request, fun_config, response) do
-        ^response ->
-          PhoenixGenApi.Tracer.trace_event("hook_after", %{"status" => "error"})
-          response
+    case Hooks.run_after_tagged(fun_config.after_execute, request, fun_config, response) do
+      {:ok, new_response} ->
+        PhoenixGenApi.Tracer.trace_event("hook_after", %{"status" => "ok"})
+        new_response
 
-        new_response ->
-          PhoenixGenApi.Tracer.trace_event("hook_after", %{"status" => "ok"})
-          new_response
-      end
+      {:error, %{kind: kind, reason: reason}} ->
+        PhoenixGenApi.Tracer.trace_event("hook_after", %{
+          "status" => "error",
+          "kind" => inspect(kind),
+          "reason" => inspect(reason)
+        })
+
+        response
     end
   end
 
@@ -353,7 +436,12 @@ defmodule PhoenixGenApi.Executor do
 
         {:error, reason} ->
           Logger.error(
-            "[Executor] node selection failed for remote permission callback: #{inspect(reason)}"
+            LogContext.line(
+              "Executor",
+              :permission_node_selection_failed,
+              "node selection failed for remote permission callback",
+              LogContext.current(reason: reason, node: :none)
+            )
           )
 
           raise PermissionDenied.exception(
@@ -382,12 +470,10 @@ defmodule PhoenixGenApi.Executor do
 
           result = execute_request(request, fun_config)
           run_after_hook(request, fun_config, result)
-          result
 
         error ->
           result = handle_rate_limit_error(error, request, fun_config)
           run_after_hook(request, fun_config, result)
-          result
       end
   end
 
@@ -416,7 +502,12 @@ defmodule PhoenixGenApi.Executor do
 
       other ->
         Logger.error(
-          "[Executor] unsupported response_type: #{inspect(other)}, request_id: #{request.request_id}"
+          LogContext.line(
+            "Executor",
+            :unsupported_response_type,
+            "unsupported response_type",
+            LogContext.current(response_type: other)
+          )
         )
 
         Response.error_response(
@@ -449,7 +540,12 @@ defmodule PhoenixGenApi.Executor do
     })
 
     Logger.error(
-      "[Executor] rate_limiter_error: #{inspect(error_details)}, request_id: #{request.request_id}, rejecting request (fail-closed)"
+      LogContext.line(
+        "Executor",
+        :rate_limiter_error,
+        "rate_limiter_error, rejecting request (fail-closed)",
+        LogContext.current(error: error_details)
+      )
     )
 
     Response.error_response(request.request_id, "Rate limit service unavailable", true)
@@ -462,7 +558,12 @@ defmodule PhoenixGenApi.Executor do
     })
 
     Logger.error(
-      "[Executor] unexpected rate_limit error: #{inspect(error)}, request_id: #{request.request_id}, rejecting request (fail-closed)"
+      LogContext.line(
+        "Executor",
+        :unexpected_rate_limit_error,
+        "unexpected rate_limit error, rejecting request (fail-closed)",
+        LogContext.current(error: error)
+      )
     )
 
     Response.error_response(request.request_id, "Rate limit service unavailable", true)
@@ -478,7 +579,12 @@ defmodule PhoenixGenApi.Executor do
       })
 
       Logger.error(
-        "[Executor] sync_call rescued error: #{Exception.message(e)}, request_id: #{request.request_id}"
+        LogContext.line(
+          "Executor",
+          :sync_call_error,
+          "sync_call rescued error",
+          LogContext.current(error: Exception.message(e), kind: :error)
+        )
       )
 
       Response.error_response(request.request_id, get_error_message(e))
@@ -487,7 +593,12 @@ defmodule PhoenixGenApi.Executor do
       PhoenixGenApi.Tracer.trace_event("error", %{"kind" => "exit", "error" => inspect(reason)})
 
       Logger.error(
-        "[Executor] sync_call exit: #{inspect(reason)}, request_id: #{request.request_id}"
+        LogContext.line(
+          "Executor",
+          :sync_call_exit,
+          "sync_call exit",
+          LogContext.current(reason: reason)
+        )
       )
 
       Response.error_response(request.request_id, get_error_message(reason))
@@ -496,7 +607,12 @@ defmodule PhoenixGenApi.Executor do
       PhoenixGenApi.Tracer.trace_event("error", %{"kind" => "throw", "error" => inspect(reason)})
 
       Logger.error(
-        "[Executor] sync_call throw: #{inspect(reason)}, request_id: #{request.request_id}"
+        LogContext.line(
+          "Executor",
+          :sync_call_throw,
+          "sync_call throw",
+          LogContext.current(reason: reason)
+        )
       )
 
       Response.error_response(request.request_id, get_error_message(reason))
@@ -508,7 +624,12 @@ defmodule PhoenixGenApi.Executor do
       })
 
       Logger.error(
-        "[Executor] sync_call caught #{inspect(kind)}: #{inspect(reason)}, request_id: #{request.request_id}"
+        LogContext.line(
+          "Executor",
+          :sync_call_caught,
+          "sync_call caught",
+          LogContext.current(kind: kind, reason: reason)
+        )
       )
 
       Response.error_response(request.request_id, get_error_message(reason))
@@ -528,7 +649,10 @@ defmodule PhoenixGenApi.Executor do
           reraise e, __STACKTRACE__
       end
 
-    PhoenixGenApi.Tracer.trace_event("arguments", %{"status" => "ok", "count" => length(args)})
+    if PhoenixGenApi.Tracer.traced?() do
+      PhoenixGenApi.Tracer.trace_event("arguments", %{"status" => "ok", "count" => length(args)})
+    end
+
     {mod, fun, predefined_args} = fun_config.mfa
 
     final_args = predefined_args ++ args ++ info_args(request, fun_config)
@@ -536,10 +660,12 @@ defmodule PhoenixGenApi.Executor do
 
     result =
       if FunConfig.local_service?(fun_config) do
-        PhoenixGenApi.Tracer.trace_event("execution", %{
-          "mode" => "local",
-          "mfa" => "#{inspect(mod)}.#{fun}/#{length(final_args)}"
-        })
+        if PhoenixGenApi.Tracer.traced?() do
+          PhoenixGenApi.Tracer.trace_event("execution", %{
+            "mode" => "local",
+            "mfa" => "#{inspect(mod)}.#{fun}/#{length(final_args)}"
+          })
+        end
 
         execute_local_with_retry(
           mod,
@@ -550,10 +676,12 @@ defmodule PhoenixGenApi.Executor do
           request.request_id
         )
       else
-        PhoenixGenApi.Tracer.trace_event("execution", %{
-          "mode" => "remote",
-          "mfa" => "#{inspect(mod)}.#{fun}/#{length(final_args)}"
-        })
+        if PhoenixGenApi.Tracer.traced?() do
+          PhoenixGenApi.Tracer.trace_event("execution", %{
+            "mode" => "remote",
+            "mfa" => "#{inspect(mod)}.#{fun}/#{length(final_args)}"
+          })
+        end
 
         execute_remote_with_retry(mod, fun, final_args, fun_config, request, retry_config)
       end
@@ -575,12 +703,13 @@ defmodule PhoenixGenApi.Executor do
     case encode_result(fun_config, data) do
       {:error, _} = error -> error
       {:ok, _} = result -> result
+      encoded -> {:ok, encoded}
     end
   end
 
   defp apply_result_encoder(_fun_config, result), do: result
 
-  defp encode_result(fun_config = %FunConfig{result_encoder: {mod, fun, args}}, data) do
+  defp encode_result(%FunConfig{result_encoder: {mod, fun, args}}, data) do
     case PhoenixGenApi.Security.validate_mfa({mod, fun, args}) do
       :ok ->
         try do
@@ -588,16 +717,31 @@ defmodule PhoenixGenApi.Executor do
         rescue
           e ->
             Logger.error(
-              "[Executor] result_encoder failed: #{inspect(mod)}.#{inspect(fun)}, " <>
-                "reason: #{Exception.message(e)}, request_type: #{inspect(fun_config.request_type)}"
+              LogContext.line(
+                "Executor",
+                :result_encoder_failed,
+                "result_encoder failed",
+                LogContext.current(
+                  encoder: "#{inspect(mod)}.#{fun}",
+                  reason: Exception.message(e)
+                )
+              )
             )
 
             {:error, "result encoding failed: #{Exception.message(e)}"}
         catch
           kind, value ->
             Logger.error(
-              "[Executor] result_encoder caught #{inspect(kind)}: #{inspect(value)}, " <>
-                "encoder: #{inspect(mod)}.#{inspect(fun)}, request_type: #{inspect(fun_config.request_type)}"
+              LogContext.line(
+                "Executor",
+                :result_encoder_caught,
+                "result_encoder caught",
+                LogContext.current(
+                  encoder: "#{inspect(mod)}.#{fun}",
+                  kind: kind,
+                  value: value
+                )
+              )
             )
 
             {:error, "result encoding failed: #{inspect({kind, value})}"}
@@ -605,8 +749,12 @@ defmodule PhoenixGenApi.Executor do
 
       {:error, {:mfa_not_allowed, _}} ->
         Logger.error(
-          "[Executor] result_encoder MFA not allowed: #{inspect(mod)}.#{inspect(fun)}, " <>
-            "request_type: #{inspect(fun_config.request_type)}"
+          LogContext.line(
+            "Executor",
+            :result_encoder_mfa_not_allowed,
+            "result_encoder MFA not allowed",
+            LogContext.current(encoder: "#{inspect(mod)}.#{fun}")
+          )
         )
 
         {:error, "result encoder mfa not allowed"}
@@ -617,32 +765,81 @@ defmodule PhoenixGenApi.Executor do
     # Validate MFA before calling to prevent arbitrary code execution
     with :ok <- PhoenixGenApi.Security.validate_mfa({mod, fun, args}),
          true <- function_exported?(mod, fun, length(args)) do
-      task = Task.async(fn -> apply(mod, fun, args) end)
-
-      case Task.yield(task, timeout) || Task.shutdown(task) do
+      case run_isolated(fn -> apply(mod, fun, args) end, timeout) do
         {:ok, result} -> result
-        nil -> {:error, "local execution timed out after #{timeout}ms"}
+        {:error, :timeout} -> {:error, "local execution timed out after #{inspect(timeout)}ms"}
         {:exit, reason} -> {:error, "local execution failed: #{inspect(reason)}"}
       end
     else
       {:error, {:mfa_not_allowed, _}} = error ->
         Logger.error(
-          "[Executor] local MFA not allowed: #{inspect(mod)}.#{inspect(fun)}/#{length(args)}"
+          LogContext.line(
+            "Executor",
+            :local_mfa_not_allowed,
+            "local MFA not allowed",
+            LogContext.current(mfa: "#{inspect(mod)}.#{fun}/#{length(args)}")
+          )
         )
 
         error
 
       false ->
         Logger.error(
-          "[Executor] MFA not exported: #{inspect(mod)}.#{inspect(fun)}/#{length(args)}"
+          LogContext.line(
+            "Executor",
+            :mfa_not_exported,
+            "MFA not exported",
+            LogContext.current(mfa: "#{inspect(mod)}.#{fun}/#{length(args)}")
+          )
         )
 
         {:error, :function_not_found}
     end
   end
 
-  # Retry helpers for local execution
+  # Runs `fun` in an isolated process so a raise, throw, or exit in endpoint code
+  # cannot take down the caller. Prefers the supervised task supervisor; falls
+  # back to a monitored process when it is not running.
+  defp run_isolated(fun, timeout) when is_function(fun, 0) do
+    # A monitored spawn is the fastest isolation primitive: no supervisor round
+    # trip on the request path, and the caller is never linked to endpoint code.
+    run_monitored(fun, timeout)
+  end
 
+  defp run_monitored(fun, timeout) do
+    parent = self()
+    tag = make_ref()
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        send(parent, {tag, fun.()})
+        exit(:normal)
+      end)
+
+    receive do
+      {^tag, result} ->
+        Process.demonitor(ref, [:flush])
+        {:ok, result}
+
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        {:exit, reason}
+    after
+      normalize_timeout(timeout) ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _reason} -> {:error, :timeout}
+        after
+          5_000 -> {:error, :timeout}
+        end
+    end
+  end
+
+  defp normalize_timeout(:infinity), do: :infinity
+  defp normalize_timeout(timeout) when is_integer(timeout) and timeout >= 0, do: timeout
+  defp normalize_timeout(_timeout), do: @default_rpc_timeout
+
+  # Retry helpers for local execution
   defp execute_local_with_retry(mod, fun, args, timeout, retry_config, request_id) do
     result = execute_local(mod, fun, args, timeout)
     apply_local_retry(result, mod, fun, args, timeout, retry_config, request_id, retry_config)
@@ -673,9 +870,19 @@ defmodule PhoenixGenApi.Executor do
         "result" => inspect(result)
       })
 
-      Logger.info(
-        "[Executor] local retry mode: #{mode}, remaining: #{n}, backoff: #{backoff_ms}ms, mfa: #{inspect(mod)}.#{inspect(fun)}/#{length(args)}"
-      )
+      Logger.debug(fn ->
+        LogContext.line(
+          "Executor",
+          :local_retry,
+          "local retry",
+          LogContext.current(
+            mode: mode,
+            remaining: n,
+            backoff_ms: backoff_ms,
+            mfa: "#{inspect(mod)}.#{fun}/#{length(args)}"
+          )
+        )
+      end)
 
       Process.sleep(backoff_ms)
 
@@ -698,7 +905,7 @@ defmodule PhoenixGenApi.Executor do
         effective_config
       )
     else
-      if retryable_error?(result) and request_id do
+      if retryable_error?(result) and is_tuple(effective_config) do
         PhoenixGenApi.Tracer.trace_event("retry_exhausted", %{
           "mode" => inspect(effective_config),
           "type" => "local",
@@ -706,7 +913,12 @@ defmodule PhoenixGenApi.Executor do
         })
 
         Logger.warning(
-          "[Executor] all local retry attempts exhausted, mode: #{inspect(effective_config)}, request_id: #{request_id}"
+          LogContext.line(
+            "Executor",
+            :local_retry_exhausted,
+            "all local retry attempts exhausted",
+            LogContext.current(mode: effective_config)
+          )
         )
 
         :telemetry.execute(
@@ -718,9 +930,11 @@ defmodule PhoenixGenApi.Executor do
             last_error: inspect(result)
           }
         )
-      end
 
-      result
+        {:error, {:retry_exhausted, result}}
+      else
+        result
+      end
     end
   end
 
@@ -757,7 +971,12 @@ defmodule PhoenixGenApi.Executor do
 
       {:error, reason} ->
         Logger.error(
-          "[Executor] node_selection failed: #{inspect(reason)}, request_id: #{request.request_id}"
+          LogContext.line(
+            "Executor",
+            :node_selection_failed,
+            "node_selection failed",
+            LogContext.current(reason: reason, node: :none)
+          )
         )
 
         {:error, "node selection failed: #{inspect(reason)}"}
@@ -777,9 +996,20 @@ defmodule PhoenixGenApi.Executor do
         "result" => inspect(state.result)
       })
 
-      Logger.info(
-        "[Executor] remote retry mode: same_node, remaining: #{n}, backoff: #{backoff_ms}ms, nodes: #{inspect(state.nodes)}, mfa: #{inspect(state.mod)}.#{inspect(state.fun)}/#{length(state.args)}, request_id: #{state.request.request_id}"
-      )
+      Logger.debug(fn ->
+        LogContext.line(
+          "Executor",
+          :remote_retry,
+          "remote retry",
+          LogContext.current(
+            mode: :same_node,
+            remaining: n,
+            backoff_ms: backoff_ms,
+            nodes: state.nodes,
+            mfa: "#{inspect(state.mod)}.#{state.fun}/#{length(state.args)}"
+          )
+        )
+      end)
 
       Process.sleep(backoff_ms)
 
@@ -808,51 +1038,32 @@ defmodule PhoenixGenApi.Executor do
 
   defp apply_remote_retry(state = %RetryState{retry_config: {:all_nodes, n}}) do
     if retryable_error?(state.result) and n > 0 do
-      all_nodes =
-        case NodeSelector.resolve_nodes_list(state.fun_config) do
-          {:ok, nodes} -> nodes
-          {:error, _} -> []
-        end
+      case NodeSelector.resolve_nodes_list(state.fun_config) do
+        {:ok, all_nodes} ->
+          retry_all_nodes(state, all_nodes, n)
 
-      backoff_ms = NodeSelector.calculate_backoff(n)
+        {:error, reason} ->
+          Logger.error(
+            LogContext.line(
+              "Executor",
+              :retry_node_resolution_failed,
+              "node resolution failed, stopping retries",
+              LogContext.current(reason: reason)
+            )
+          )
 
-      PhoenixGenApi.Tracer.trace_event("retry", %{
-        "attempt" => n,
-        "mode" => :all_nodes,
-        "backoff_ms" => backoff_ms,
-        "type" => "remote",
-        "result" => inspect(state.result)
-      })
+          :telemetry.execute(
+            [:phoenix_gen_api, :executor, :retry, :exhausted],
+            %{},
+            %{
+              request_id: state.request.request_id,
+              mode: state.retry_config,
+              last_error: inspect({:node_resolution_failed, reason})
+            }
+          )
 
-      Logger.info(
-        "[Executor] remote retry mode: all_nodes, remaining: #{n}, backoff: #{backoff_ms}ms, nodes: #{inspect(all_nodes)}, mfa: #{inspect(state.mod)}.#{inspect(state.fun)}/#{length(state.args)}, request_id: #{state.request.request_id}"
-      )
-
-      Process.sleep(backoff_ms)
-
-      :telemetry.execute(
-        [:phoenix_gen_api, :executor, :retry],
-        %{attempt: n, backoff_ms: backoff_ms},
-        %{mode: :all_nodes, type: :remote, nodes: all_nodes}
-      )
-
-      new_result =
-        execute_remote_with_fallback(
-          all_nodes,
-          state.mod,
-          state.fun,
-          state.args,
-          state.rpc_timeout,
-          state.request.request_id,
-          nil
-        )
-
-      apply_remote_retry(%{
-        state
-        | result: new_result,
-          nodes: all_nodes,
-          retry_config: {:all_nodes, n - 1}
-      })
+          {:error, {:retry_exhausted, {:node_resolution_failed, reason}}}
+      end
     else
       finalize_retry(state)
     end
@@ -860,6 +1071,59 @@ defmodule PhoenixGenApi.Executor do
 
   defp apply_remote_retry(state = %RetryState{}) do
     finalize_retry(state)
+  end
+
+  defp retry_all_nodes(state, all_nodes, n) do
+    backoff_ms = NodeSelector.calculate_backoff(n)
+
+    PhoenixGenApi.Tracer.trace_event("retry", %{
+      "attempt" => n,
+      "mode" => :all_nodes,
+      "backoff_ms" => backoff_ms,
+      "type" => "remote",
+      "result" => inspect(state.result)
+    })
+
+    Logger.debug(fn ->
+      LogContext.line(
+        "Executor",
+        :remote_retry,
+        "remote retry",
+        LogContext.current(
+          mode: :all_nodes,
+          remaining: n,
+          backoff_ms: backoff_ms,
+          nodes: all_nodes,
+          mfa: "#{inspect(state.mod)}.#{state.fun}/#{length(state.args)}"
+        )
+      )
+    end)
+
+    Process.sleep(backoff_ms)
+
+    :telemetry.execute(
+      [:phoenix_gen_api, :executor, :retry],
+      %{attempt: n, backoff_ms: backoff_ms},
+      %{mode: :all_nodes, type: :remote, nodes: all_nodes}
+    )
+
+    new_result =
+      execute_remote_with_fallback(
+        all_nodes,
+        state.mod,
+        state.fun,
+        state.args,
+        state.rpc_timeout,
+        state.request.request_id,
+        nil
+      )
+
+    apply_remote_retry(%{
+      state
+      | result: new_result,
+        nodes: all_nodes,
+        retry_config: {:all_nodes, n - 1}
+    })
   end
 
   # Common retry finalization logic
@@ -874,7 +1138,12 @@ defmodule PhoenixGenApi.Executor do
       })
 
       Logger.warning(
-        "[Executor] all retry attempts exhausted, mode: #{inspect(config)}, request_id: #{state.request.request_id}"
+        LogContext.line(
+          "Executor",
+          :retry_exhausted,
+          "all retry attempts exhausted",
+          LogContext.current(mode: config)
+        )
       )
 
       :telemetry.execute(
@@ -887,7 +1156,7 @@ defmodule PhoenixGenApi.Executor do
         }
       )
 
-      {:error, :retry_exhausted}
+      {:error, {:retry_exhausted, state.result}}
     else
       state.result
     end
@@ -901,8 +1170,16 @@ defmodule PhoenixGenApi.Executor do
   defp has_retry_remaining?({:all_nodes, n}) when n > 0, do: true
   defp has_retry_remaining?(_), do: false
 
-  defp execute_remote_with_fallback([], _mod, _fun, _args, _timeout, _request_id, last_error) do
-    Logger.error("[Executor] no nodes available for remote execution")
+  defp execute_remote_with_fallback([], mod, fun, args, _timeout, _request_id, last_error) do
+    Logger.error(
+      LogContext.line(
+        "Executor",
+        :no_nodes_available,
+        "no nodes available for remote execution",
+        LogContext.current(node: :none, mfa: "#{inspect(mod)}.#{fun}/#{length(args)}")
+      )
+    )
+
     last_error || {:error, "no target nodes available"}
   end
 
@@ -923,7 +1200,17 @@ defmodule PhoenixGenApi.Executor do
         })
 
         Logger.warning(
-          "[Executor] RPC timeout on node: #{inspect(node)}, request_id: #{request_id}, trying fallback"
+          LogContext.line(
+            "Executor",
+            :rpc_timeout,
+            "RPC timeout, trying fallback",
+            LogContext.current(
+              failed_node: node,
+              node: node,
+              reason: :timeout,
+              mfa: "#{inspect(mod)}.#{fun}/#{length(args)}"
+            )
+          )
         )
 
         execute_remote_with_fallback(
@@ -945,7 +1232,17 @@ defmodule PhoenixGenApi.Executor do
         })
 
         Logger.warning(
-          "[Executor] RPC exit on node: #{inspect(node)}, reason: #{inspect(reason)}, request_id: #{request_id}, trying fallback"
+          LogContext.line(
+            "Executor",
+            :rpc_exit,
+            "RPC exit, trying fallback",
+            LogContext.current(
+              failed_node: node,
+              node: node,
+              reason: reason,
+              mfa: "#{inspect(mod)}.#{fun}/#{length(args)}"
+            )
+          )
         )
 
         execute_remote_with_fallback(
@@ -965,7 +1262,17 @@ defmodule PhoenixGenApi.Executor do
         })
 
         Logger.warning(
-          "[Executor] RPC failed on node: #{inspect(node)}, reason: #{inspect(reason)}, request_id: #{request_id}, trying fallback"
+          LogContext.line(
+            "Executor",
+            :rpc_failed,
+            "RPC failed, trying fallback",
+            LogContext.current(
+              failed_node: node,
+              node: node,
+              reason: reason,
+              mfa: "#{inspect(mod)}.#{fun}/#{length(args)}"
+            )
+          )
         )
 
         execute_remote_with_fallback(
@@ -1009,10 +1316,19 @@ defmodule PhoenixGenApi.Executor do
   rescue
     e ->
       Logger.error(
-        "[Executor] failed to build info_args: #{Exception.message(e)}, request_id: #{request.request_id}"
+        LogContext.line(
+          "Executor",
+          :info_args_failed,
+          "failed to build info_args",
+          LogContext.current(error: Exception.message(e))
+        )
       )
 
       []
+  end
+
+  defp handle_call_result({:error, {:retry_exhausted, _reason}}, request_id) do
+    Response.error_response(request_id, "all retry attempts exhausted")
   end
 
   defp handle_call_result(result = {:error, _reason}, request_id) do
@@ -1026,7 +1342,12 @@ defmodule PhoenixGenApi.Executor do
   # Only treat plain values (non-tuples or non-error tuples) as success.
   defp handle_call_result(result, request_id) when not is_tuple(result) do
     Logger.warning(
-      "[Executor] handle_call_result non-tuple result: #{inspect(result)}, request_id: #{request_id}"
+      LogContext.line(
+        "Executor",
+        :non_tuple_result,
+        "handle_call_result non-tuple result",
+        LogContext.current(result: LogContext.payload(result))
+      )
     )
 
     Response.sync_response(request_id, result)
@@ -1034,7 +1355,12 @@ defmodule PhoenixGenApi.Executor do
 
   defp handle_call_result(result, request_id) do
     Logger.error(
-      "[Executor] handle_call_result unexpected result: #{inspect(result)}, request_id: #{request_id}"
+      LogContext.line(
+        "Executor",
+        :unexpected_result,
+        "handle_call_result unexpected result",
+        LogContext.current(result: LogContext.payload(result))
+      )
     )
 
     Response.error_response(request_id, "Unexpected execution result")
@@ -1043,33 +1369,41 @@ defmodule PhoenixGenApi.Executor do
   defp async_call(request, fun_config) do
     receiver = self()
 
-    # Re-apply the caller's metadata (including trace context) in the worker
-    # process so its Logger output is captured for traced requests.
-    trace_metadata = Logger.metadata()
+    # Copy the caller's metadata (request context plus trace context) into the
+    # worker process so its Logger output is attributable, then restore it
+    # afterwards so a reused worker cannot leak the identity.
+    metadata = Logger.metadata()
 
     task = fn ->
-      Logger.metadata(trace_metadata)
+      LogContext.with_metadata(metadata, fn ->
+        try do
+          result = sync_call(request, fun_config)
 
-      try do
-        result = sync_call(request, fun_config)
-
-        if fun_config.response_type != :none do
-          send(receiver, {:async_call, result})
-        end
-      catch
-        kind, reason ->
-          Logger.error(
-            "[Executor] async_call task failed: #{inspect(kind)}: #{inspect(reason)}, request_id: #{request.request_id}"
-          )
-
-          if Process.alive?(receiver) do
-            error_response = Response.error_response(request.request_id, "Async execution failed")
-            send(receiver, {:async_call, error_response})
+          if fun_config.response_type != :none do
+            send(receiver, {:async_call, result})
           end
-      end
+        catch
+          kind, reason ->
+            Logger.error(
+              LogContext.line(
+                "Executor",
+                :async_task_failed,
+                "async_call task failed",
+                LogContext.current(kind: kind, reason: reason)
+              )
+            )
+
+            if Process.alive?(receiver) do
+              error_response =
+                Response.error_response(request.request_id, "Async execution failed")
+
+              send(receiver, {:async_call, error_response})
+            end
+        end
+      end)
     end
 
-    case PhoenixGenApi.WorkerPool.execute_async(:async_pool, task) do
+    case submit_to_pool(:async_pool, task) do
       :ok ->
         PhoenixGenApi.Tracer.trace_event("async", %{"status" => "queued"})
 
@@ -1083,88 +1417,193 @@ defmodule PhoenixGenApi.Executor do
         PhoenixGenApi.Tracer.trace_event("async", %{"status" => "queue_full"})
 
         Logger.warning(
-          "[Executor] async_call worker_pool queue_full, request_id: #{request.request_id}"
+          LogContext.line(
+            "Executor",
+            :async_queue_full,
+            "async_call worker_pool queue_full",
+            LogContext.current(pool: :async_pool)
+          )
         )
 
         Response.error_response(request.request_id, "Service temporarily unavailable", true)
+
+      {:error, reason} ->
+        reject_unavailable_pool(:async, :async_pool, reason, request.request_id)
     end
   end
+
+  defp monitor_stream(pid, receiver, request) do
+    spawn(fn ->
+      ref = Process.monitor(pid)
+
+      receive do
+        {:DOWN, ^ref, :process, ^pid, reason} ->
+          handle_stream_down(request, reason, receiver)
+      end
+    end)
+
+    :ok
+  end
+
+  defp handle_stream_down(request, reason, receiver) do
+    normal? = reason == :normal or reason == :shutdown or match?({:shutdown, _}, reason)
+
+    if normal? do
+      :telemetry.execute(
+        [:phoenix_gen_api, :stream, :stop],
+        %{duration_us: 0},
+        %{
+          request_id: request.request_id,
+          request_type: request.request_type,
+          service: request.service,
+          chunks: 0,
+          reason: :completed
+        }
+      )
+
+      :ok
+    else
+      Logger.error(
+        LogContext.line(
+          "Executor",
+          :stream_terminated,
+          "stream_call terminated abnormally",
+          LogContext.current(reason: reason, pool: :async_pool)
+        )
+      )
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :stream, :exception],
+        %{duration_us: 0},
+        %{
+          request_id: request.request_id,
+          request_type: request.request_type,
+          service: request.service,
+          failure_class: Classify.classify(:exit, reason),
+          reason: reason
+        }
+      )
+
+      send_terminal_stream_error(receiver, request.request_id, "Stream terminated unexpectedly")
+    end
+  end
+
+  defp send_terminal_stream_error(receiver, request_id, message) do
+    if Process.alive?(receiver) do
+      send(receiver, {:stream_response, Response.error_response(request_id, message)})
+    end
+
+    :ok
+  end
+
+  defp submit_to_pool(pool, task) do
+    try do
+      PhoenixGenApi.WorkerPool.execute_async(pool, task)
+    catch
+      :exit, reason -> {:error, {:unavailable, reason}}
+    end
+  end
+
+  defp reject_unavailable_pool(kind, pool, reason, request_id) do
+    failure_class = Classify.classify(:error, pool_failure_reason(reason))
+
+    PhoenixGenApi.Tracer.trace_event("#{kind}", %{
+      "status" => "unavailable",
+      "reason" => inspect(reason)
+    })
+
+    Logger.warning(
+      LogContext.line(
+        "Executor",
+        :pool_unavailable,
+        "#{kind} pool unavailable",
+        LogContext.current(pool: pool, kind: kind, reason: reason, failure_class: failure_class)
+      )
+    )
+
+    Response.error_response(request_id, "Service temporarily unavailable", true)
+  end
+
+  defp pool_failure_reason({:unavailable, _reason}), do: :unavailable
+  defp pool_failure_reason(reason), do: reason
 
   defp stream_call(request = %Request{}, fun_config = %FunConfig{}) do
     receiver = self()
     request_id = request.request_id
 
-    # Re-apply the caller's metadata (including trace context) in the worker
-    # process so its Logger output is captured for traced requests.
-    trace_metadata = Logger.metadata()
+    # Copy the caller's metadata (request context plus trace context) into the
+    # worker and stream processes so their Logger output is attributable.
+    metadata = Logger.metadata()
 
     task = fn ->
-      Logger.metadata(trace_metadata)
+      LogContext.with_metadata(metadata, fn ->
+        try do
+          case StreamCall.start_link(%{
+                 request: request,
+                 fun_config: fun_config,
+                 receiver: receiver,
+                 log_metadata: metadata
+               }) do
+            {:ok, pid} ->
+              # Store the stream PID for potential cancellation
+              if Process.alive?(receiver) do
+                send(receiver, {:stream_started, request_id, pid})
+              end
 
-      try do
-        case StreamCall.start_link(%{
-               request: request,
-               fun_config: fun_config,
-               receiver: receiver
-             }) do
-          {:ok, pid} ->
-            # Store the stream PID for potential cancellation
-            if Process.alive?(receiver) do
-              send(receiver, {:stream_started, request_id, pid})
-            end
+              # The stream process owns its lifetime and timeout, so the pool
+              # slot is released as soon as ownership is handed off. A tiny
+              # monitor process reports abnormal producer exits.
+              monitor_stream(pid, receiver, request)
 
-            # Wait for stream to complete with timeout
-            ref = Process.monitor(pid)
+            {:error, reason} ->
+              PhoenixGenApi.Tracer.trace_event("stream", %{
+                "status" => "error",
+                "error" => inspect(reason)
+              })
 
-            receive do
-              {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
-            after
-              fun_config.timeout ->
-                PhoenixGenApi.Tracer.trace_event("stream", %{
-                  "status" => "timeout",
-                  "timeout_ms" => fun_config.timeout
-                })
-
-                Logger.warning(
-                  "[Executor] stream_call timeout after #{fun_config.timeout}ms, request_id: #{request_id}"
+              Logger.error(
+                LogContext.line(
+                  "Executor",
+                  :stream_start_failed,
+                  "stream_call start_link failed",
+                  LogContext.current(pool: :stream_pool, reason: reason)
                 )
+              )
 
-                GenServer.stop(pid, :timeout)
-            end
-
-          {:error, reason} ->
-            PhoenixGenApi.Tracer.trace_event("stream", %{
-              "status" => "error",
-              "error" => inspect(reason)
-            })
-
+              if Process.alive?(receiver) do
+                send(
+                  receiver,
+                  {:stream_response,
+                   Response.error_response(request_id, "Failed to start stream")}
+                )
+              end
+          end
+        catch
+          kind, reason ->
             Logger.error(
-              "[Executor] stream_call start_link failed: #{inspect(reason)}, request_id: #{request_id}"
+              LogContext.line(
+                "Executor",
+                :stream_task_failed,
+                "stream_call task failed",
+                LogContext.current(
+                  pool: :stream_pool,
+                  kind: kind,
+                  reason: reason
+                )
+              )
             )
 
             if Process.alive?(receiver) do
               send(
                 receiver,
-                {:stream_response, Response.error_response(request_id, "Failed to start stream")}
+                {:stream_response, Response.error_response(request_id, "Stream execution failed")}
               )
             end
         end
-      catch
-        kind, reason ->
-          Logger.error(
-            "[Executor] stream_call task failed: #{inspect(kind)}: #{inspect(reason)}, request_id: #{request_id}"
-          )
-
-          if Process.alive?(receiver) do
-            send(
-              receiver,
-              {:stream_response, Response.error_response(request_id, "Stream execution failed")}
-            )
-          end
-      end
+      end)
     end
 
-    case PhoenixGenApi.WorkerPool.execute_async(:async_pool, task) do
+    case submit_to_pool(:stream_pool, task) do
       :ok ->
         PhoenixGenApi.Tracer.trace_event("stream", %{"status" => "started"})
         Response.stream_response(request_id, :init)
@@ -1172,9 +1611,19 @@ defmodule PhoenixGenApi.Executor do
       {:error, :queue_full} ->
         PhoenixGenApi.Tracer.trace_event("stream", %{"status" => "queue_full"})
 
-        Logger.warning("[Executor] stream_call worker_pool queue_full, request_id: #{request_id}")
+        Logger.warning(
+          LogContext.line(
+            "Executor",
+            :stream_queue_full,
+            "stream_call worker_pool queue_full",
+            LogContext.current(pool: :stream_pool)
+          )
+        )
 
         Response.error_response(request_id, "Service temporarily unavailable", true)
+
+      {:error, reason} ->
+        reject_unavailable_pool(:stream, :stream_pool, reason, request_id)
     end
   end
 
@@ -1184,8 +1633,14 @@ defmodule PhoenixGenApi.Executor do
   # Falls back to get/3 when an explicit version is specified.
   # The reserved sentinel "0.0.0" is treated as no version (uses get_fast).
   defp resolve_config(request) do
-    if request.version && request.version != "0.0.0" do
-      ConfigDb.get(request.service, request.request_type, request.version)
+    allow_client_version? =
+      Application.get_env(:phoenix_gen_api, :allow_client_version, true) != false
+
+    client_version =
+      if allow_client_version?, do: request.version, else: nil
+
+    if client_version && client_version != "0.0.0" do
+      ConfigDb.get(request.service, request.request_type, client_version)
     else
       ConfigDb.get_fast(request.service, request.request_type)
     end
@@ -1216,14 +1671,15 @@ defmodule PhoenixGenApi.Executor do
   """
   @spec execute_with_timeout!(Request.t(), non_neg_integer()) :: Response.t()
   def execute_with_timeout!(request, timeout \\ @default_rpc_timeout) do
-    task = Task.async(fn -> execute!(request) end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task) do
+    case run_isolated(fn -> execute!(request) end, timeout) do
       {:ok, result} ->
         result
 
-      nil ->
-        Response.error_response(request.request_id, "Request timed out after #{timeout}ms")
+      {:error, :timeout} ->
+        Response.error_response(
+          request.request_id,
+          "Request timed out after #{inspect(timeout)}ms"
+        )
 
       {:exit, reason} ->
         Response.error_response(request.request_id, "Request failed: #{inspect(reason)}")

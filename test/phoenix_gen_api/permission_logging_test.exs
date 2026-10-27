@@ -24,12 +24,12 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           assert Permission.check_permission(@request, config) == false
         end)
 
-      assert log =~ "[Permission] callback check denied"
+      assert log =~ "event=check_denied callback check denied"
       assert log =~ "callback {PhoenixGenApi.PermissionLoggingTest, :deny} returned false"
-      assert log =~ "user_id: \"user_123\""
-      assert log =~ "request_id: \"perm_log_req_1\""
-      assert log =~ "request_type: \"get_profile\""
-      assert log =~ "service: \"profile_service\""
+      assert log =~ "user_id=\"user_123\""
+      assert log =~ "request_id=\"perm_log_req_1\""
+      assert log =~ "request_type=\"get_profile\""
+      assert log =~ "service=\"profile_service\""
     end
 
     test "callback raising logs the exception message" do
@@ -40,10 +40,10 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           assert Permission.check_permission(@request, config) == false
         end)
 
-      assert log =~ "[Permission] callback check denied"
+      assert log =~ "event=check_denied callback check denied"
       assert log =~ "raised: boom"
-      assert log =~ "request_type: \"get_profile\""
-      assert log =~ "service: \"profile_service\""
+      assert log =~ "request_type=\"get_profile\""
+      assert log =~ "service=\"profile_service\""
     end
 
     test "arg mismatch logs the expected vs actual values" do
@@ -54,12 +54,13 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           assert Permission.check_permission(@request, config) == false
         end)
 
-      assert log =~ "[Permission] arg check denied"
-      assert log =~ "mismatch for \"user_id\""
-      assert log =~ "expected: \"user_123\""
-      assert log =~ "got: \"user_999\""
-      assert log =~ "request_type: \"get_profile\""
-      assert log =~ "service: \"profile_service\""
+      assert log =~ "event=check_denied arg check denied"
+      assert log =~ "mismatch for"
+      assert log =~ "user_999"
+      assert log =~ "user_123"
+      assert log =~ "user_999"
+      assert log =~ "request_type=\"get_profile\""
+      assert log =~ "service=\"profile_service\""
     end
 
     test "missing arg logs the missing argument name" do
@@ -71,8 +72,9 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           assert Permission.check_permission(request, config) == false
         end)
 
-      assert log =~ "[Permission] arg check denied"
-      assert log =~ "missing argument \"user_id\""
+      assert log =~ "event=check_denied arg check denied"
+      assert log =~ "missing argument"
+      assert log =~ "user_id"
     end
 
     test "role check denial logs required and actual roles" do
@@ -84,9 +86,10 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           assert Permission.check_permission(request, config) == false
         end)
 
-      assert log =~ "[Permission] role check denied"
-      assert log =~ "required: [\"admin\", \"moderator\"]"
-      assert log =~ "has: [\"viewer\"]"
+      assert log =~ "event=check_denied role check denied"
+      assert log =~ "required:"
+      assert log =~ "moderator"
+      assert log =~ "viewer"
     end
 
     test ":any_authenticated denial with nil user_id logs the user_id" do
@@ -98,9 +101,9 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           assert Permission.check_permission(request, config) == false
         end)
 
-      assert log =~ "[Permission] :any_authenticated denied"
+      assert log =~ "event=check_denied :any_authenticated denied"
       assert log =~ "user_id is nil"
-      assert log =~ "request_type: \"get_profile\""
+      assert log =~ "request_type=\"get_profile\""
     end
 
     test "arg check with nil/empty user_id logs a warning with request context" do
@@ -114,8 +117,8 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
 
       assert log =~ "{:arg, \"user_id\"} check with nil/empty user_id"
       assert log =~ "require_verified_user_id: true"
-      assert log =~ "request_type: \"get_profile\""
-      assert log =~ "service: \"profile_service\""
+      assert log =~ "request_type=\"get_profile\""
+      assert log =~ "service=\"profile_service\""
     end
   end
 
@@ -130,12 +133,12 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           end
         end)
 
-      assert log =~ "[Permission] denied"
-      assert log =~ "user_id: \"user_123\""
-      assert log =~ "request_id: \"perm_log_req_1\""
-      assert log =~ "request_type: \"get_profile\""
-      assert log =~ "service: \"profile_service\""
-      assert log =~ "mode: {:arg, \"user_id\"}"
+      assert log =~ "event=denied"
+      assert log =~ "user_id=\"user_123\""
+      assert log =~ "request_id=\"perm_log_req_1\""
+      assert log =~ "request_type=\"get_profile\""
+      assert log =~ "service=\"profile_service\""
+      assert log =~ "permission_mode={:arg, \"user_id\"}"
     end
 
     test "callback denial logs the callback permission mode" do
@@ -148,7 +151,8 @@ defmodule PhoenixGenApi.PermissionLoggingTest do
           end
         end)
 
-      assert log =~ "mode: {:callback, {PhoenixGenApi.PermissionLoggingTest, :deny, []}}"
+      assert log =~
+               "permission_mode={:callback, {PhoenixGenApi.PermissionLoggingTest, :deny, []}}"
     end
 
     test "success does not log a warning" do

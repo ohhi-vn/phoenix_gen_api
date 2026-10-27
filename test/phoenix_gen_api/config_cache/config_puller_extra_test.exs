@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.ConfigPullerExtraTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.ConfigPuller
   alias PhoenixGenApi.Structs.{FunConfig, ServiceConfig}
 
@@ -211,7 +213,7 @@ defmodule PhoenixGenApi.ConfigPullerExtraTest do
       # Isolate this test: drop any services left by other tests so the pull
       # only processes our fast-failing service.
       leftover =
-        ConfigPuller.get_all_versions()
+        ConfigPuller.get_services()
         |> Map.keys()
         |> Enum.map(fn key -> %PhoenixGenApi.Structs.ServiceConfig{service: key} end)
 
@@ -312,10 +314,17 @@ defmodule PhoenixGenApi.ConfigPullerExtraTest do
           version_args: []
         )
 
-      ConfigPuller.add([svc])
-      ConfigPuller.pull()
+      log =
+        capture_log(fn ->
+          ConfigPuller.add([svc])
+          ConfigPuller.pull()
 
-      wait_for(fn -> ConfigPuller.get_api_list(service_name) == ["coverage_pull_ok"] end)
+          wait_for(fn -> ConfigPuller.get_api_list(service_name) == ["coverage_pull_ok"] end)
+        end)
+
+      assert log =~ "event=version_check_rpc_failed"
+      assert log =~ "service=\"#{service_name}\""
+      assert log =~ "node=:nonode@unreachable"
     end
 
     test "falls back to full pull when all version RPCs fail" do
@@ -342,10 +351,36 @@ defmodule PhoenixGenApi.ConfigPullerExtraTest do
       svc =
         service(service_name, TestPullService, :get_config, [:nonode@unreachable, Node.self()])
 
-      ConfigPuller.add([svc])
-      ConfigPuller.pull()
+      log =
+        capture_log(fn ->
+          ConfigPuller.add([svc])
+          ConfigPuller.pull()
 
-      wait_for(fn -> ConfigPuller.get_api_list(service_name) == ["coverage_pull_ok"] end)
+          wait_for(fn -> ConfigPuller.get_api_list(service_name) == ["coverage_pull_ok"] end)
+        end)
+
+      assert log =~ "event=rpc_failed"
+      assert log =~ "service=\"#{service_name}\""
+      assert log =~ "node=:nonode@unreachable"
+    end
+
+    test "partial pull reports failed and total counts" do
+      ok_service =
+        service("partial_pull_ok_service", TestPullService, :get_config, [Node.self()])
+
+      failing_service =
+        service("partial_pull_fail_service", TestPullService, :get_config, [:nonode@unreachable])
+
+      log =
+        capture_log(fn ->
+          ConfigPuller.add([ok_service, failing_service])
+          ConfigPuller.pull()
+          Process.sleep(250)
+        end)
+
+      assert log =~ "event=partial_pull"
+      assert log =~ "failed_count="
+      assert log =~ "total_count="
     end
 
     test "handles unexpected RPC result and falls back" do

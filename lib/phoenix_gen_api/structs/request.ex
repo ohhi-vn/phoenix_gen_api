@@ -77,6 +77,8 @@ defmodule PhoenixGenApi.Structs.Request do
 
   alias PhoenixGenApi.Errors.DecodeError
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @typedoc "Request struct for internal using, convert data map from websocket api."
@@ -192,7 +194,13 @@ defmodule PhoenixGenApi.Structs.Request do
       :erlang.external_size(params)
     else
       Logger.warning(
-        "[Request] Using fallback payload_size (term_to_binary). Upgrade OTP for external_size support."
+        LogContext.event(
+          "Request",
+          :payload_size_fallback,
+          message:
+            "using fallback payload_size (term_to_binary); upgrade OTP for external_size support",
+          node: node()
+        )
       )
 
       params |> :erlang.term_to_binary() |> byte_size()

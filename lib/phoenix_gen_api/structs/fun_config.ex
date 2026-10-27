@@ -137,6 +137,8 @@ defmodule PhoenixGenApi.Structs.FunConfig do
   alias PhoenixGenApi.Permission
   alias PhoenixGenApi.Structs.Request
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @max_timeout 300_000
@@ -277,12 +279,61 @@ defmodule PhoenixGenApi.Structs.FunConfig do
 
       {:error, errors} ->
         Logger.error(
-          "[FunConfig] validation failed, errors: #{inspect(errors)}, request_type: #{inspect(config.request_type)}, service: #{inspect(config.service)}, nodes: #{inspect(config.nodes)}, mfa: #{inspect(config.mfa)}, response_type: #{inspect(config.response_type)}, check_permission: #{inspect(config.check_permission)}, retry: #{inspect(config.retry)}, version: #{inspect(config.version)}"
+          LogContext.line(
+            "FunConfig",
+            :validation_failed,
+            "validation failed",
+            request_type: LogContext.value(config.request_type),
+            service: LogContext.value(config.service),
+            version: LogContext.value(config.version),
+            nodes: config.nodes,
+            mfa: config.mfa,
+            response_type: config.response_type,
+            check_permission: config.check_permission,
+            retry: config.retry,
+            errors: errors
+          )
         )
 
         false
     end
   end
+
+  @doc """
+  Validates every MFA the configuration can cause the runtime to invoke.
+
+  Covers the endpoint `mfa`, dynamic `nodes`, before/after hooks,
+  `permission_callback`, and `result_encoder`. Returns `:ok` or
+  `{:error, {:mfa_not_allowed, field, mfa}}`.
+  """
+  def validate_security(config = %__MODULE__{}) do
+    [
+      mfa: config.mfa,
+      nodes: config.nodes,
+      before_execute: config.before_execute,
+      after_execute: config.after_execute,
+      permission_callback: config.permission_callback,
+      result_encoder: config.result_encoder
+    ]
+    |> Enum.reduce_while(:ok, fn {field, value}, _acc ->
+      case normalize_mfa(value) do
+        nil ->
+          {:cont, :ok}
+
+        mfa ->
+          case PhoenixGenApi.Security.validate_mfa(mfa) do
+            :ok -> {:cont, :ok}
+            {:error, {:mfa_not_allowed, _}} -> {:halt, {:error, {:mfa_not_allowed, field, mfa}}}
+          end
+      end
+    end)
+  end
+
+  defp normalize_mfa({mod, fun, args}) when is_atom(mod) and is_atom(fun) and is_list(args),
+    do: {mod, fun, args}
+
+  defp normalize_mfa({mod, fun}) when is_atom(mod) and is_atom(fun), do: {mod, fun, []}
+  defp normalize_mfa(_), do: nil
 
   @doc """
   Validates the function configuration and returns detailed error information.

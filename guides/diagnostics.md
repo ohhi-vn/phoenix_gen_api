@@ -15,6 +15,7 @@ PhoenixGenApi provides a comprehensive diagnostics module (`PhoenixGenApi.Diagno
 9. [Listing All Call Flows](#listing-all-call-flows)
 10. [Tracing](#tracing) (admin-gated process tracing)
 11. [Request Tracing](#request-tracing) (per request-type / user-id tracing)
+12. [Logging Context](#logging-context)
 12. [Integration Patterns](#integration-patterns)
 
 ---
@@ -218,6 +219,24 @@ stats.phoenix_gen_api.relay.data.group_count       # 5
 stats.phoenix_gen_api.telemetry_events             # 31
 ```
 
+### Worker pool status fields
+
+`Pool.status/1` returns:
+
+| Field | Meaning |
+| --- | --- |
+| `idle_workers` | Workers available for immediate dispatch |
+| `busy_workers` | Workers executing a task, plus workers paused by an open circuit |
+| `queued_tasks` | Tasks waiting for an idle worker |
+| `circuit_open` | Pool-level circuit breaker state |
+| `total_tasks_executed` | Successful task completions since start |
+| `total_tasks_failed` | Failed, crashed, or timed-out task completions since start |
+
+Dead workers are excluded from the totals while they are being replaced. A worker that
+rejects a task because its circuit is open is counted as busy until the cooldown expires,
+and the rejected task is requeued rather than dropped.
+
+
 ---
 
 ## Debug Reports
@@ -242,6 +261,17 @@ report.ets_tables
 # Trace status
 report.trace.trace_control_word
 ```
+
+### Rate limiter tables
+
+`":rate_limiter_global"` and `":rate_limiter_api"` are ordered sets with one row per
+admitted request timestamp (`{{key, timestamp, unique}}`). The table size therefore
+tracks *admitted requests inside the window*, not distinct keys, and every key is capped
+at its `max_requests`. Expired rows are swept in the background at `cleanup_interval`;
+`max_rate_limit_keys` and `max_rate_limit_key_bytes` bound key cardinality and key size.
+If a sweep or check cannot reach the table, the failure is reported in
+`[:phoenix_gen_api, :rate_limiter, :check]` telemetry and the configured `fail_open`
+policy decides the request outcome.
 
 ### Options
 
@@ -905,6 +935,83 @@ PhoenixGenApi.disable_trace_user_id("user_123")
 
 Because the file also carries `request_type` and `request_id`, you can correlate a
 single request across the cluster even when it is routed to a service node.
+
+---
+
+## Logging Context
+
+Every PhoenixGenApi log line follows one shape:
+
+```text
+[Module] event=<snake_case> <existing message> key=value key=value ...
+```
+
+The `event=` token is stable and machine-searchable; the message keeps the wording that
+existed before context enrichment, and the trailing fields carry the identity of the
+request, service, or node involved.
+
+### Key vocabulary
+
+| Key | Meaning | Example |
+|-----|---------|---------|
+| `event` | What happened | `event=push_validation_failed` |
+| `request_id` | Originating request id | `request_id="req_123"` |
+| `request_type` | Requested API/function | `request_type="get_user"` |
+| `service` | Owning service | `service="user_service"` |
+| `user_id` | Calling user | `user_id="user_123"` |
+| `node` | Node the line is about (current node when local) | `node=:"api@host"` |
+| `config_version` | Config version carried by a push | `config_version="1.2.3"` |
+| `origin_node` | Node that initiated a config push | `origin_node=:"svc@host"` |
+| `version` | Config version, when relevant | `version="1.2.3"` |
+
+Unknown request values render as `unknown` rather than being omitted. Values are
+inspected, so strings are quoted and atoms keep their `:` prefix.
+
+### Request context as Logger metadata
+
+While a request is handled, the same identity is installed as Logger metadata
+(`request_id`, `request_type`, `service`, `user_id`, `node`) and restored afterwards.
+Async, stream, and worker-pool work copies the originating metadata into the new
+process, so their lines carry the same identity. Inline fields remain authoritative:
+a formatter that ignores metadata still produces a traceable line.
+
+### Recommended formatter
+
+To render metadata after the message, configure Logger's default formatter:
+
+```elixir
+# config/config.exs
+config :logger, :default_formatter,
+  format: "$time $metadata[$level] $message\n",
+  metadata: [:request_id, :request_type, :service, :user_id, :node]
+```
+
+Example output with metadata rendering enabled:
+
+```text
+09:00:17.123 request_id=req_123 request_type=get_user service=user_service node=api@host [error] [ConfigReceiver] event=push_validation_failed ... service="user_service" config_version="1.2.3" origin_node=svc@host
+```
+
+The metadata is additive; do not rely on it alone when writing new log lines.
+
+### Payload redaction
+
+Push tokens are always redacted. Full request payloads, argument values, and function
+results are omitted by default; enable `log_verbose_payloads: true` to emit them at
+`debug` level in non-production environments (see
+[Configuration → Logging](./configuration.md#logging)).
+
+### Log levels
+
+| Level | Used for |
+|-------|----------|
+| `error` | Rejected config, dispatch/node-selection failure, exhausted retries, open circuit breaker |
+| `warning` | Client input rejection, auth/permission denial, rate limit exceeded, token rejection, partial config acceptance, RPC fallback |
+| `info` | Config lifecycle events (push accepted, batch inserted, version changed), startup |
+| `debug` | Per-request steps, argument conversion dumps, retry attempts, cleanup counts |
+
+Retry attempts used to be logged at `info`; they are now `debug`. Use Logger's standard
+level controls to surface them when investigating.
 
 ---
 

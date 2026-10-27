@@ -129,6 +129,8 @@ defmodule PhoenixGenApi.Permission do
 
   alias PhoenixGenApi.Structs.{FunConfig, Request}
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @default_permission_rpc_timeout 5_000
@@ -234,15 +236,17 @@ defmodule PhoenixGenApi.Permission do
   end
 
   # Fallback for {:arg, ...} when user_id is nil or empty
-  def check_permission(request = %Request{user_id: user_id}, %FunConfig{
+  def check_permission(request = %Request{}, %FunConfig{
         permission_callback: nil,
         check_permission: {:arg, arg_name}
       }) do
     Logger.warning(
-      "[Permission] {:arg, #{inspect(arg_name)}} check with nil/empty user_id - " <>
-        "this usually means the socket was not authenticated. " <>
-        "Consider using require_verified_user_id: true in your channel. " <>
-        "user_id: #{inspect(user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}"
+      LogContext.line(
+        "Permission",
+        :arg_check_unauthenticated,
+        "{:arg, #{inspect(arg_name)}} check with nil/empty user_id - this usually means the socket was not authenticated. Consider using require_verified_user_id: true in your channel",
+        LogContext.request_context(request)
+      )
     )
 
     false
@@ -292,9 +296,15 @@ defmodule PhoenixGenApi.Permission do
   # so that invalid callbacks are handled first (they fall back to this via recursion).
   # ──────────────────────────────────────────────
 
-  def check_permission(%Request{}, fun_config = %FunConfig{permission_callback: nil}) do
+  def check_permission(request = %Request{}, fun_config = %FunConfig{permission_callback: nil}) do
     Logger.error(
-      "[Permission] invalid check_permission mode: #{inspect(fun_config.check_permission)}, request_type: #{inspect(fun_config.request_type)}"
+      LogContext.line(
+        "Permission",
+        :invalid_check_permission_mode,
+        "invalid check_permission mode",
+        LogContext.request_context(request, fun_config) ++
+          [permission_mode: fun_config.check_permission]
+      )
     )
 
     false
@@ -307,7 +317,13 @@ defmodule PhoenixGenApi.Permission do
 
   def check_permission(request = %Request{}, fun_config = %FunConfig{permission_callback: other}) do
     Logger.error(
-      "[Permission] invalid permission_callback: #{inspect(other)}, falling back to check_permission: #{inspect(fun_config.check_permission)}"
+      LogContext.line(
+        "Permission",
+        :invalid_permission_callback,
+        "invalid permission_callback, falling back to check_permission",
+        LogContext.request_context(request, fun_config) ++
+          [permission_callback: other, permission_mode: fun_config.check_permission]
+      )
     )
 
     check_permission(request, %FunConfig{fun_config | permission_callback: nil})
@@ -360,7 +376,12 @@ defmodule PhoenixGenApi.Permission do
       permission_mode = determine_permission_mode(fun_config)
 
       Logger.warning(
-        "[Permission] denied, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}, mode: #{inspect(permission_mode)}"
+        LogContext.line(
+          "Permission",
+          :denied,
+          "denied",
+          LogContext.request_context(request) ++ [permission_mode: permission_mode]
+        )
       )
 
       raise PermissionDenied,
@@ -398,7 +419,12 @@ defmodule PhoenixGenApi.Permission do
     case :rpc.call(node, mod, fun, [request | args], timeout) do
       {:badrpc, reason} ->
         Logger.error(
-          "[Permission] permission_callback RPC failed on node #{inspect(node)}: #{inspect(reason)}"
+          LogContext.line(
+            "Permission",
+            :permission_callback_rpc_failed,
+            "permission_callback RPC failed",
+            LogContext.request_context(request) ++ [node: node, reason: reason]
+          )
         )
 
         raise PermissionDenied,
@@ -412,7 +438,13 @@ defmodule PhoenixGenApi.Permission do
 
       false ->
         Logger.warning(
-          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned false on node #{inspect(node)}"
+          LogContext.line(
+            "Permission",
+            :permission_callback_denied,
+            "permission_callback returned false",
+            LogContext.request_context(request) ++
+              [node: node, callback: {mod, fun}]
+          )
         )
 
         raise PermissionDenied,
@@ -423,7 +455,13 @@ defmodule PhoenixGenApi.Permission do
 
       other ->
         Logger.warning(
-          "[Permission] permission_callback {#{inspect(mod)}, #{inspect(fun)}} returned unexpected value: #{inspect(other)} on node #{inspect(node)}"
+          LogContext.line(
+            "Permission",
+            :permission_callback_unexpected_result,
+            "permission_callback returned unexpected value",
+            LogContext.request_context(request) ++
+              [node: node, callback: {mod, fun}, result: other]
+          )
         )
 
         raise PermissionDenied,
@@ -443,7 +481,12 @@ defmodule PhoenixGenApi.Permission do
 
       {:error, reason} ->
         Logger.error(
-          "[Permission] node selection failed for remote permission callback: #{inspect(reason)}"
+          LogContext.line(
+            "Permission",
+            :permission_node_selection_failed,
+            "node selection failed for remote permission callback",
+            LogContext.request_context(request) ++ [node: :none, reason: reason]
+          )
         )
 
         {mod, fun, args} = fun_config.permission_callback
@@ -510,9 +553,14 @@ defmodule PhoenixGenApi.Permission do
   defp execute_permission_callback(mod, fun, args, request) do
     case apply(mod, fun, [request | args]) do
       true ->
-        Logger.debug(
-          "[Permission] callback allowed, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}, callback: {#{inspect(mod)}, #{inspect(fun)}}"
-        )
+        Logger.debug(fn ->
+          LogContext.line(
+            "Permission",
+            :callback_allowed,
+            "callback allowed",
+            LogContext.request_context(request) ++ [callback: {mod, fun}]
+          )
+        end)
 
         true
 
@@ -567,7 +615,12 @@ defmodule PhoenixGenApi.Permission do
 
   defp log_permission_denied(request, check_type, reason) do
     Logger.warning(
-      "[Permission] #{check_type} denied, reason: #{reason}, user_id: #{inspect(request.user_id)}, request_id: #{inspect(request.request_id)}, request_type: #{inspect(request.request_type)}, service: #{inspect(request.service)}"
+      LogContext.line(
+        "Permission",
+        :check_denied,
+        "#{check_type} denied",
+        LogContext.request_context(request) ++ [reason: reason]
+      )
     )
   end
 end

@@ -72,16 +72,21 @@ defmodule PhoenixGenApi.ChannelHelpersTest do
       refute_received {:pushed, _, _}
     end
 
-    test "logs a debug message when pushing a result" do
+    test "logs a debug message when pushing a result without payload contents" do
       s = socket()
 
       log =
         capture_debug(fn ->
-          DefaultHandler.handle_info({:push, :x}, s)
+          DefaultHandler.handle_info({:push, %{"secret" => "value"}}, s)
         end)
 
-      assert log =~ "[ChannelHelpers] push result: :x"
-      assert log =~ "PhoenixGenApi.ChannelHelpersTest.DefaultHandler"
+      assert log =~ "[ChannelHelpers] event=push_result"
+      assert log =~ "push result"
+      assert log =~ "module=PhoenixGenApi.ChannelHelpersTest.DefaultHandler"
+      assert log =~ "payload=\"size="
+      assert log =~ "result=<redacted>"
+      refute log =~ "\"secret\""
+      refute log =~ "\"value\""
     end
 
     test "logs a debug message for stream responses" do
@@ -92,7 +97,9 @@ defmodule PhoenixGenApi.ChannelHelpersTest do
           DefaultHandler.handle_info({:stream_response, :chunk}, s)
         end)
 
-      assert log =~ "[ChannelHelpers] stream response: :chunk"
+      assert log =~ "[ChannelHelpers] event=stream_response"
+      assert log =~ "stream response"
+      assert log =~ "result=<redacted>"
     end
 
     test "logs a debug message for async call results" do
@@ -103,7 +110,9 @@ defmodule PhoenixGenApi.ChannelHelpersTest do
           DefaultHandler.handle_info({:async_call, :result}, s)
         end)
 
-      assert log =~ "[ChannelHelpers] async call result: :result"
+      assert log =~ "[ChannelHelpers] event=async_call_result"
+      assert log =~ "async call result"
+      assert log =~ "result=<redacted>"
     end
 
     test "logs a debug message when a stream starts" do
@@ -114,7 +123,8 @@ defmodule PhoenixGenApi.ChannelHelpersTest do
           DefaultHandler.handle_info({:stream_started, "req_1", self()}, s)
         end)
 
-      assert log =~ "[ChannelHelpers] stream started: request_id=\"req_1\""
+      assert log =~ "[ChannelHelpers] event=stream_started"
+      assert log =~ "request_id=\"req_1\""
     end
   end
 end

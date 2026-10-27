@@ -33,6 +33,8 @@ defmodule PhoenixGenApi.WorkerPool.WorkerPoolSupervisor do
 
   use Supervisor
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   def start_link(opts) do
@@ -48,7 +50,12 @@ defmodule PhoenixGenApi.WorkerPool.WorkerPoolSupervisor do
     max_queue_size = Keyword.get(config, :max_queue_size, 10_000)
 
     Logger.info(
-      "[WorkerPoolSupervisor] starting, async_pool_size: #{async_pool_size}, stream_pool_size: #{stream_pool_size}, max_queue_size: #{max_queue_size}"
+      LogContext.line("WorkerPoolSupervisor", :starting, "starting",
+        async_pool_size: async_pool_size,
+        stream_pool_size: stream_pool_size,
+        max_queue_size: max_queue_size,
+        node: node()
+      )
     )
 
     children = [

@@ -78,6 +78,8 @@ defmodule PhoenixGenApi.ConfigPuller do
   alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.Structs.{FunConfig, ServiceConfig}
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @default_interval 30_000
@@ -99,21 +101,94 @@ defmodule PhoenixGenApi.ConfigPuller do
   The `services` argument must be a list of `%ServiceConfig{}` structs.
   """
   def add(services) when is_list(services) do
-    if services == [] do
-      Logger.warning("[ConfigPuller] add: empty list of services")
-    else
-      Enum.each(services, fn
-        %ServiceConfig{} ->
+    cond do
+      services == [] ->
+        Logger.warning(LogContext.event("ConfigPuller", :add_empty_services, node: node()))
+
+      true ->
+        Enum.each(services, fn
+          %ServiceConfig{} ->
+            :ok
+
+          other ->
+            Logger.error(
+              LogContext.line(
+                "ConfigPuller",
+                :add_invalid_item,
+                "add: incorrect data type",
+                item_type: LogContext.value(LogContext.type_name(other))
+              )
+            )
+
+            raise ArgumentError, "nodes must be a list of ServiceConfig"
+        end)
+
+        with :ok <- puller_admin_gate(),
+             :ok <- validate_services(services) do
+          GenServer.cast(__MODULE__, {:add, services})
           :ok
-
-        other ->
-          Logger.error("[ConfigPuller] add: incorrect data type=#{inspect(other)}")
-          raise ArgumentError, "nodes must be a list of ServiceConfig"
-      end)
-
-      GenServer.cast(__MODULE__, {:add, services})
+        end
     end
   end
+
+  defp puller_admin_gate do
+    if Application.get_env(:phoenix_gen_api, :protect_config_puller) == true and
+         Application.get_env(:phoenix_gen_api, :admin_actions) != nil do
+      if PhoenixGenApi.Security.admin_action_allowed?(:push_config) do
+        :ok
+      else
+        {:error, :admin_action_denied}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_services(services) do
+    Enum.reduce_while(services, :ok, fn service, _acc ->
+      case validate_service_config(service) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_service_config(
+         %ServiceConfig{module: module, function: function, args: args} = service
+       ) do
+    with :ok <- PhoenixGenApi.Security.validate_mfa({module, function, args}),
+         :ok <- validate_pull_nodes(service.nodes) do
+      :ok
+    else
+      {:error, {:mfa_not_allowed, _}} ->
+        {:error, {:invalid_service_config, :mfa_not_allowed}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp validate_pull_nodes(nodes) when is_list(nodes) do
+    case Application.get_env(:phoenix_gen_api, :pull_node_allowlist) do
+      nil ->
+        :ok
+
+      allowlist when is_list(allowlist) ->
+        allowed = Enum.map(allowlist, &to_string/1)
+        disallowed = Enum.reject(nodes, fn node -> to_string(node) in allowed end)
+
+        if disallowed == [] do
+          :ok
+        else
+          {:error, {:node_not_allowed, disallowed}}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp validate_pull_nodes(_nodes), do: :ok
 
   @doc """
   Triggers an immediate pull of configurations from the registered services.
@@ -133,7 +208,10 @@ defmodule PhoenixGenApi.ConfigPuller do
   after a deployment or when you suspect the local cache is stale.
   """
   def force_pull do
-    GenServer.cast(__MODULE__, :force_pull)
+    with :ok <- puller_admin_gate() do
+      GenServer.cast(__MODULE__, :force_pull)
+      :ok
+    end
   end
 
   @doc """
@@ -152,14 +230,21 @@ defmodule PhoenixGenApi.ConfigPuller do
   """
   def delete(services) when is_list(services) do
     if services == [] do
-      Logger.warning("[ConfigPuller] remove: empty list of services")
+      Logger.warning(LogContext.event("ConfigPuller", :remove_empty_services, node: node()))
     else
       Enum.each(services, fn
         %ServiceConfig{} ->
           :ok
 
         other ->
-          Logger.error("[ConfigPuller] remove: incorrect data type=#{inspect(other)}")
+          Logger.error(
+            LogContext.line(
+              "ConfigPuller",
+              :remove_invalid_item,
+              "remove: incorrect data type",
+              item_type: LogContext.value(LogContext.type_name(other))
+            )
+          )
 
           raise ArgumentError, "nodes must be a list of ServiceConfig"
       end)
@@ -210,13 +295,16 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   @impl true
   def init(_opts) do
-    Logger.info("[ConfigPuller] init")
+    Logger.info(LogContext.event("ConfigPuller", :init, node: node()))
 
     state = %{
       services: %{},
       api_list: %{},
       service_versions: %{},
-      failure_count: 0
+      failure_count: 0,
+      pulling?: false,
+      pull_ref: nil,
+      pull_pending?: false
     }
 
     {:ok, state, {:continue, :load_initial_data}}
@@ -224,15 +312,24 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   @impl true
   def handle_continue(:load_initial_data, state) do
-    Logger.info("[ConfigPuller] loading initial data")
+    Logger.info(LogContext.event("ConfigPuller", :loading_initial_data, node: node()))
     new_state = load_services_from_config(state)
 
     if map_size(new_state.services) > 0 do
       Logger.info(
-        "[ConfigPuller] starting initial pull, services: #{inspect(Map.keys(new_state.services))}"
+        LogContext.line(
+          "ConfigPuller",
+          :initial_pull_scheduled,
+          "starting initial pull",
+          services: Map.keys(new_state.services)
+        )
       )
     else
-      Logger.warning("[ConfigPuller] no services configured, waiting for service registration")
+      Logger.warning(
+        LogContext.event("ConfigPuller", :no_services_configured,
+          message: "no services configured, waiting for service registration"
+        )
+      )
     end
 
     Process.send_after(self(), :pull, 1_000)
@@ -252,17 +349,13 @@ defmodule PhoenixGenApi.ConfigPuller do
   end
 
   def handle_cast(:pull, state) do
-    new_state = do_pull(state)
-    {:noreply, new_state}
+    {:noreply, start_pull(state, false)}
   end
 
   def handle_cast(:force_pull, state) do
     # Clear all stored versions so that version checks will always fail,
     # forcing a full pull for all services regardless of version changes.
-    cleared_versions = %{}
-
-    new_state = do_pull(%{state | service_versions: cleared_versions})
-    {:noreply, new_state}
+    {:noreply, start_pull(%{state | service_versions: %{}}, true)}
   end
 
   def handle_cast({:delete, services}, state) do
@@ -316,13 +409,52 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   @impl true
   def handle_info(:pull, state) do
-    new_state = do_pull(state)
-    {:noreply, new_state}
+    {:noreply, start_pull(state, false)}
+  end
+
+  @impl true
+  def handle_info({:pull_result, ref, result}, state) do
+    if state.pull_ref == ref do
+      Process.demonitor(ref, [:flush])
+
+      new_state =
+        %{state | pulling?: false, pull_ref: nil}
+        |> apply_pull_result(result)
+        |> maybe_run_pending_pull()
+
+      {:noreply, new_state}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    if state.pull_ref == ref and reason != :normal do
+      Logger.error(
+        LogContext.line(
+          "ConfigPuller",
+          :pull_crashed,
+          "pull process crashed",
+          failure_count: state.failure_count + 1,
+          reason: reason
+        )
+      )
+
+      new_state =
+        %{state | pulling?: false, pull_ref: nil}
+        |> apply_pull_result({state.api_list, state.service_versions, false})
+        |> maybe_run_pending_pull()
+
+      {:noreply, new_state}
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
   def handle_info(:cleanup_sticky, state) do
-    Logger.debug("[ConfigPuller] cleaning up sticky table")
+    Logger.debug(fn -> LogContext.event("ConfigPuller", :sticky_cleanup, node: node()) end)
     PhoenixGenApi.NodeSelector.cleanup_sticky_table()
     Process.send_after(self(), :cleanup_sticky, 3_600_000)
     {:noreply, state}
@@ -335,48 +467,118 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   ### Private Functions
 
-  defp do_pull(state) do
-    {new_api_list, new_service_versions, success?} =
-      pull_and_update_cache(state.services, state.api_list, state.service_versions, false)
+  # Pulls run in a separate process so status/configuration queries keep being
+  # served while a slow pull is in flight.
+  defp start_pull(%{pulling?: true} = state, _force?) do
+    Logger.debug(fn -> LogContext.event("ConfigPuller", :pull_already_running, node: node()) end)
+    %{state | pull_pending?: true}
+  end
 
+  defp start_pull(state, force?) do
+    parent = self()
+    ref = make_ref()
+
+    spawn(fn ->
+      result =
+        try do
+          pull_and_update_cache(state.services, state.api_list, state.service_versions, force?)
+        rescue
+          error -> {state.api_list, state.service_versions, false, Exception.message(error)}
+        catch
+          kind, reason -> {state.api_list, state.service_versions, false, {kind, reason}}
+        end
+
+      send(parent, {:pull_result, ref, result})
+    end)
+
+    %{state | pulling?: true, pull_ref: ref}
+  end
+
+  defp maybe_run_pending_pull(%{pull_pending?: true} = state) do
+    start_pull(%{state | pull_pending?: false}, false)
+  end
+
+  defp maybe_run_pending_pull(state), do: state
+
+  defp apply_pull_result(state, result) do
     new_state =
-      if success? do
-        if state.failure_count > 0 do
-          Logger.info(
-            "[ConfigPuller] pull recovered after #{state.failure_count} consecutive failures"
+      case result do
+        {new_api_list, new_service_versions, success?} ->
+          apply_pull_success(state, new_api_list, new_service_versions, success?)
+
+        {new_api_list, new_service_versions, _success?, reason} ->
+          Logger.error(
+            LogContext.line(
+              "ConfigPuller",
+              :pull_failed,
+              "pull process failed",
+              failure_count: state.failure_count + 1,
+              reason: inspect(reason)
+            )
           )
-        end
 
-        %{
-          state
-          | api_list: new_api_list,
-            service_versions: new_service_versions,
-            failure_count: 0
-        }
-      else
-        new_failure_count = state.failure_count + 1
-
-        Logger.warning(
-          "[ConfigPuller] pull failed: failure_count=#{new_failure_count}, services=#{inspect(Map.keys(state.services))}"
-        )
-
-        if new_failure_count == 1 do
-          Logger.warning(
-            "[ConfigPuller] initial pull failed — will retry per pull_interval. " <>
-              "Check that service nodes are reachable and that the config function is available."
-          )
-        end
-
-        %{
-          state
-          | api_list: new_api_list,
-            service_versions: new_service_versions,
-            failure_count: new_failure_count
-        }
+          %{
+            state
+            | api_list: new_api_list,
+              service_versions: new_service_versions,
+              failure_count: state.failure_count + 1
+          }
       end
 
     schedule_pull(new_state)
     new_state
+  end
+
+  defp apply_pull_success(state, new_api_list, new_service_versions, true) do
+    if state.failure_count > 0 do
+      Logger.info(
+        LogContext.line(
+          "ConfigPuller",
+          :pull_recovered,
+          "pull recovered",
+          failure_count: state.failure_count
+        )
+      )
+    end
+
+    %{
+      state
+      | api_list: new_api_list,
+        service_versions: new_service_versions,
+        failure_count: 0
+    }
+  end
+
+  defp apply_pull_success(state, new_api_list, new_service_versions, false) do
+    new_failure_count = state.failure_count + 1
+
+    Logger.warning(
+      LogContext.line(
+        "ConfigPuller",
+        :pull_failed,
+        "pull failed",
+        failure_count: new_failure_count,
+        services: Map.keys(state.services)
+      )
+    )
+
+    if new_failure_count == 1 do
+      Logger.warning(
+        LogContext.line(
+          "ConfigPuller",
+          :initial_pull_failed,
+          "initial pull failed — will retry per pull_interval",
+          hint: "check that service nodes are reachable and the config function is available"
+        )
+      )
+    end
+
+    %{
+      state
+      | api_list: new_api_list,
+        service_versions: new_service_versions,
+        failure_count: new_failure_count
+    }
   end
 
   ### Private Functions
@@ -392,12 +594,23 @@ defmodule PhoenixGenApi.ConfigPuller do
             Map.put(acc, config.service, config)
           end)
 
-        Logger.debug("[ConfigPuller] loaded services from config: services=#{inspect(services)}")
+        Logger.debug(fn ->
+          LogContext.line(
+            "ConfigPuller",
+            :services_loaded,
+            "loaded services from config",
+            services: Map.keys(services)
+          )
+        end)
 
         %{state | services: services}
 
       :error ->
-        Logger.warning("[ConfigPuller] :service_configs not found in application config")
+        Logger.warning(
+          LogContext.event("ConfigPuller", :service_configs_missing,
+            message: ":service_configs not found in application config"
+          )
+        )
 
         state
     end
@@ -476,13 +689,38 @@ defmodule PhoenixGenApi.ConfigPuller do
 
         {:ok, {service_name, {:error, reason}}}, {acc_list, acc_versions, results_acc} ->
           Logger.error(
-            "[ConfigPuller] pull failed: service=#{inspect(service_name)} reason=#{inspect(reason)}"
+            LogContext.line(
+              "ConfigPuller",
+              :service_pull_failed,
+              "pull failed",
+              service: LogContext.value(service_name),
+              reason: reason
+            )
+          )
+
+          :telemetry.execute(
+            [:phoenix_gen_api, :config, :pull, :error],
+            %{},
+            %{
+              service: service_name,
+              failure_class: PhoenixGenApi.Errors.Classify.classify(:error, reason),
+              reason: reason
+            }
           )
 
           {acc_list, acc_versions, [{:error, reason} | results_acc]}
 
         {:exit, reason}, {acc_list, acc_versions, results_acc} ->
-          Logger.error("[ConfigPuller] task exited during pull: reason=#{inspect(reason)}")
+          Logger.error(
+            LogContext.line(
+              "ConfigPuller",
+              :pull_task_exited,
+              "task exited during pull",
+              node: node(),
+              reason: reason
+            )
+          )
+
           {acc_list, acc_versions, [{:error, {:task_exit, reason}} | results_acc]}
       end)
 
@@ -501,12 +739,18 @@ defmodule PhoenixGenApi.ConfigPuller do
 
     if failed_count > 0 do
       Logger.warning(
-        "[ConfigPuller] partial pull: #{failed_count}/#{length(results_list)} services failed"
+        LogContext.line(
+          "ConfigPuller",
+          :partial_pull,
+          "partial pull",
+          failed_count: failed_count,
+          total_count: length(results_list)
+        )
       )
     end
 
-    # Consider it a success if at least half of services succeeded
-    partial_success? = failed_count < length(results_list)
+    # Success only when every service succeeded or was legitimately skipped.
+    partial_success? = failed_count == 0
 
     {new_api_list, new_service_versions, partial_success?}
   end
@@ -526,7 +770,14 @@ defmodule PhoenixGenApi.ConfigPuller do
 
     if nodes == [] do
       Logger.error(
-        "[ConfigPuller] no valid nodes for service: service=#{inspect(service.service)}"
+        LogContext.line(
+          "ConfigPuller",
+          :no_valid_nodes,
+          "no valid nodes for service",
+          service: LogContext.value(service.service),
+          node: :none,
+          version: LogContext.value(stored_version)
+        )
       )
 
       {:error, :no_valid_nodes}
@@ -536,14 +787,30 @@ defmodule PhoenixGenApi.ConfigPuller do
   rescue
     error ->
       Logger.error(
-        "[ConfigPuller] RPC call failed: service=#{inspect(service.service)} error=#{Exception.message(error)}"
+        LogContext.line(
+          "ConfigPuller",
+          :rpc_call_failed,
+          "RPC call failed",
+          service: LogContext.value(service.service),
+          node: :none,
+          version: LogContext.value(stored_version),
+          error: Exception.message(error)
+        )
       )
 
       {:error, {:exception, Exception.message(error)}}
   catch
     kind, value ->
       Logger.error(
-        "[ConfigPuller] unexpected error: service=#{inspect(service.service)} kind=#{kind} value=#{inspect(value)}"
+        LogContext.line(
+          "ConfigPuller",
+          :unexpected_error,
+          "unexpected error",
+          service: LogContext.value(service.service),
+          version: LogContext.value(stored_version),
+          kind: kind,
+          value: value
+        )
       )
 
       {:error, {kind, value}}
@@ -560,22 +827,41 @@ defmodule PhoenixGenApi.ConfigPuller do
     if ServiceConfig.version_check_enabled?(service) do
       case execute_version_check_with_fallback(nodes, service) do
         {:ok, version} when version == stored_version ->
-          Logger.debug(
-            "[ConfigPuller] version match: service=#{inspect(service.service)} version=#{inspect(version)}, skipping pull"
-          )
+          Logger.debug(fn ->
+            LogContext.line(
+              "ConfigPuller",
+              :version_match,
+              "version match, skipping pull",
+              service: LogContext.value(service.service),
+              version: version
+            )
+          end)
 
           {:skipped, version}
 
         {:ok, version} ->
           Logger.info(
-            "[ConfigPuller] version changed: service=#{inspect(service.service)} stored_version=#{inspect(stored_version)} new_version=#{inspect(version)}, performing full pull"
+            LogContext.line(
+              "ConfigPuller",
+              :version_changed,
+              "version changed, performing full pull",
+              service: LogContext.value(service.service),
+              version: version,
+              stored_version: stored_version
+            )
           )
 
           do_full_pull(service, nodes, version)
 
         {:error, reason} ->
           Logger.warning(
-            "[ConfigPuller] version check failed: service=#{inspect(service.service)} reason=#{inspect(reason)}, falling back to full pull"
+            LogContext.line(
+              "ConfigPuller",
+              :version_check_failed,
+              "version check failed, falling back to full pull",
+              service: LogContext.value(service.service),
+              reason: reason
+            )
           )
 
           # Fall back to full pull, keeping the existing stored version
@@ -609,7 +895,14 @@ defmodule PhoenixGenApi.ConfigPuller do
     case :rpc.call(node, service.version_module, service.version_function, version_args, timeout) do
       {:badrpc, reason} ->
         Logger.warning(
-          "[ConfigPuller] version check RPC failed: node=#{inspect(node)} service=#{inspect(service.service)} reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPuller",
+            :version_check_rpc_failed,
+            "version check RPC failed",
+            service: LogContext.value(service.service),
+            node: node,
+            reason: reason
+          )
         )
 
         if remaining_nodes == [] do
@@ -618,8 +911,21 @@ defmodule PhoenixGenApi.ConfigPuller do
           execute_version_check_with_fallback(remaining_nodes, service)
         end
 
-      result ->
+      result when is_binary(result) or is_atom(result) or is_integer(result) ->
         {:ok, result}
+
+      other ->
+        Logger.warning(
+          LogContext.line(
+            "ConfigPuller",
+            :unexpected_version,
+            "version check returned a non-scalar value",
+            service: LogContext.value(service.service),
+            reason: inspect(other)
+          )
+        )
+
+        {:error, {:unexpected_version, other}}
     end
   end
 
@@ -632,11 +938,28 @@ defmodule PhoenixGenApi.ConfigPuller do
 
     case :rpc.call(node, service.module, service.function, service.args, timeout) do
       {:ok, fun_list} when is_list(fun_list) ->
-        {:ok, process_fun_list(service.service, fun_list, node, timeout)}
+        case process_fun_list(service.service, fun_list, node, timeout) do
+          {:ok, request_types} ->
+            {:ok, request_types}
+
+          {:error, reason} ->
+            if remaining_nodes == [] do
+              {:error, reason}
+            else
+              execute_rpc_with_fallback(remaining_nodes, service)
+            end
+        end
 
       {:badrpc, reason} ->
         Logger.warning(
-          "[ConfigPuller] RPC failed: node=#{inspect(node)} service=#{inspect(service.service)} reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPuller",
+            :rpc_failed,
+            "RPC failed",
+            service: LogContext.value(service.service),
+            node: node,
+            reason: reason
+          )
         )
 
         if remaining_nodes == [] do
@@ -647,7 +970,14 @@ defmodule PhoenixGenApi.ConfigPuller do
 
       other ->
         Logger.error(
-          "[ConfigPuller] unexpected RPC result: node=#{inspect(node)} result=#{inspect(other)}"
+          LogContext.line(
+            "ConfigPuller",
+            :unexpected_rpc_result,
+            "unexpected RPC result",
+            service: LogContext.value(service.service),
+            node: node,
+            result: LogContext.payload(other)
+          )
         )
 
         if remaining_nodes == [] do
@@ -671,13 +1001,27 @@ defmodule PhoenixGenApi.ConfigPuller do
         Enum.filter(nodes, &is_atom/1)
 
       _ ->
-        Logger.error("[ConfigPuller] invalid node list from MFA: result=#{inspect(result)}")
+        Logger.error(
+          LogContext.line(
+            "ConfigPuller",
+            :invalid_node_list,
+            "invalid node list from MFA",
+            result_type: LogContext.type_name(result)
+          )
+        )
 
         []
     end
   rescue
     error ->
-      Logger.error("[ConfigPuller] failed to resolve nodes: error=#{Exception.message(error)}")
+      Logger.error(
+        LogContext.line(
+          "ConfigPuller",
+          :node_resolution_failed,
+          "failed to resolve nodes",
+          error: Exception.message(error)
+        )
+      )
 
       []
   end
@@ -687,7 +1031,15 @@ defmodule PhoenixGenApi.ConfigPuller do
   end
 
   defp resolve_nodes(other) do
-    Logger.error("[ConfigPuller] invalid nodes configuration: config=#{inspect(other)}")
+    Logger.error(
+      LogContext.line(
+        "ConfigPuller",
+        :invalid_nodes_configuration,
+        "invalid nodes configuration",
+        config_type: LogContext.type_name(other)
+      )
+    )
+
     []
   end
 
@@ -703,27 +1055,52 @@ defmodule PhoenixGenApi.ConfigPuller do
     valid_configs =
       Enum.flat_map(fun_list, &validate_fun_config(&1, service_name, node, timeout))
 
-    case valid_configs do
-      [] ->
+    cond do
+      valid_configs == [] ->
         Logger.warning(
-          "[ConfigPuller] no valid configs to insert: service=#{inspect(service_name)}"
+          LogContext.line(
+            "ConfigPuller",
+            :no_valid_configs,
+            "no valid configs to insert",
+            service: LogContext.value(service_name)
+          )
         )
 
-      _ ->
+        {:error, :no_valid_configs}
+
+      true ->
         case ConfigDb.batch_add(valid_configs) do
-          {:ok, count} ->
+          {:ok, count} when count > 0 ->
+            request_types = Enum.map(valid_configs, & &1.request_type)
+
             Logger.info(
-              "[ConfigPuller] batch inserted: service=#{inspect(service_name)} count=#{count}"
+              LogContext.line(
+                "ConfigPuller",
+                :batch_inserted,
+                "batch inserted",
+                service: LogContext.value(service_name),
+                node: LogContext.value(node),
+                count: count,
+                request_types: request_types
+              )
             )
 
-          {:error, :all_invalid} ->
+            {:ok, request_types}
+
+          other ->
             Logger.error(
-              "[ConfigPuller] batch_add failed: service=#{inspect(service_name)} reason=all_invalid"
+              LogContext.line(
+                "ConfigPuller",
+                :batch_add_failed,
+                "batch_add failed",
+                service: LogContext.value(service_name),
+                reason: inspect(other)
+              )
             )
+
+            {:error, :no_configs_stored}
         end
     end
-
-    Enum.map(valid_configs, & &1.request_type)
   end
 
   defp validate_fun_config(config = %FunConfig{}, service_name, node, timeout) do
@@ -740,7 +1117,14 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   defp validate_fun_config(other, service_name, node, _timeout) do
     Logger.error(
-      "[ConfigPuller] unexpected item in fun_list: service=#{inspect(service_name)}, node=#{inspect(node)}, item=#{inspect(other)}"
+      LogContext.line(
+        "ConfigPuller",
+        :unexpected_fun_list_item,
+        "unexpected item in fun_list",
+        service: LogContext.value(service_name),
+        node: node,
+        item_type: LogContext.type_name(other)
+      )
     )
 
     []
@@ -756,7 +1140,15 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   defp reject_invalid_config(config, service_name, node) do
     Logger.warning(
-      "[ConfigPuller] invalid config: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, skipping"
+      LogContext.line(
+        "ConfigPuller",
+        :invalid_config,
+        "invalid config, skipping",
+        service: LogContext.value(service_name),
+        node: node,
+        request_type: LogContext.value(config.request_type),
+        version: LogContext.value(FunConfig.version(config))
+      )
     )
 
     PhoenixGenApi.ConfigFailed.record(config, validation_reasons(config), :pull, node)
@@ -772,7 +1164,16 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   defp reject_unsafe_config(config, service_name, node, reason) do
     Logger.error(
-      "[ConfigPuller] unsafe MFA: request_type=#{inspect(config.request_type)}, service=#{inspect(service_name)}, node=#{inspect(node)}, reason=#{inspect(reason)}, skipping"
+      LogContext.line(
+        "ConfigPuller",
+        :unsafe_mfa,
+        "unsafe MFA, skipping",
+        service: LogContext.value(service_name),
+        node: node,
+        request_type: LogContext.value(config.request_type),
+        version: LogContext.value(FunConfig.version(config)),
+        reason: reason
+      )
     )
 
     PhoenixGenApi.ConfigFailed.record(config, to_string(reason), :pull, node)
@@ -802,7 +1203,14 @@ defmodule PhoenixGenApi.ConfigPuller do
         # was a security vulnerability — a disconnected or malicious node
         # could register arbitrary MFAs that might not actually exist.
         Logger.warning(
-          "[ConfigPuller] failed to verify module: module=#{inspect(mod)} node=#{inspect(node)} reason=#{inspect(reason)}, rejecting config for safety"
+          LogContext.line(
+            "ConfigPuller",
+            :module_verification_failed,
+            "failed to verify module, rejecting config for safety",
+            node: node,
+            module: mod,
+            reason: reason
+          )
         )
 
         {:error,
@@ -825,7 +1233,11 @@ defmodule PhoenixGenApi.ConfigPuller do
 
   defp schedule_pull(state) do
     interval = calculate_pull_interval(state)
-    Logger.debug("[ConfigPuller] scheduling next pull: interval=#{interval}ms")
+
+    Logger.debug(fn ->
+      LogContext.event("ConfigPuller", :next_pull_scheduled, interval_ms: interval)
+    end)
+
     Process.send_after(self(), :pull, interval)
   end
 

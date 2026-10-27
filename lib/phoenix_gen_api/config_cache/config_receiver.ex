@@ -39,6 +39,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
   use GenServer, restart: :permanent
 
   alias PhoenixGenApi.{ConfigDb, ConfigPuller, Security}
+  alias PhoenixGenApi.LogContext
   alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.Structs.{FunConfig, PushConfig, ServiceConfig}
 
@@ -145,7 +146,7 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
   @impl true
   def init(_opts) do
-    Logger.info("[ConfigReceiver] init")
+    Logger.info(LogContext.event("ConfigReceiver", :init, node: node()))
 
     state = %{
       pushed_configs: %{},
@@ -156,8 +157,39 @@ defmodule PhoenixGenApi.ConfigReceiver do
   end
 
   @impl true
-  def handle_call({:push, config, force?}, _from, state) do
-    result = do_push(config, force?, state)
+  def handle_call({:push, config, force?}, from, state) do
+    origin_node = from |> elem(0) |> node()
+
+    result =
+      try do
+        LogContext.with_context(push_context(config, origin_node), fn ->
+          do_push(config, force?, state, origin_node)
+        end)
+      rescue
+        error ->
+          Logger.error(
+            LogContext.line(
+              "ConfigReceiver",
+              :push_internal_error,
+              "push failed unexpectedly",
+              LogContext.current(error: Exception.message(error))
+            )
+          )
+
+          {:error, :internal_error, state}
+      catch
+        kind, reason ->
+          Logger.error(
+            LogContext.line(
+              "ConfigReceiver",
+              :push_internal_error,
+              "push failed unexpectedly",
+              LogContext.current(kind: kind, reason: reason)
+            )
+          )
+
+          {:error, :internal_error, state}
+      end
 
     case result do
       {:ok, :accepted, new_state} ->
@@ -216,7 +248,15 @@ defmodule PhoenixGenApi.ConfigReceiver do
             service_versions: Map.delete(state.service_versions, service)
         }
 
-        Logger.info("[ConfigReceiver] deleted pushed service: service=#{inspect(service)}")
+        Logger.info(
+          LogContext.line(
+            "ConfigReceiver",
+            :deleted_pushed_service,
+            "deleted pushed service",
+            service: service,
+            node: node()
+          )
+        )
 
         {:reply, :ok, new_state}
     end
@@ -224,10 +264,12 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
   ### Private - Push Logic
 
-  defp do_push(raw_config, force?, state) do
+  defp do_push(raw_config, force?, state, origin_node) do
     with {:ok, config} <- decode_push_config(raw_config),
          :ok <- validate_push_config(config),
          :ok <- validate_push_token(config),
+         :ok <- validate_push_admin(),
+         :ok <- validate_push_source(config, origin_node),
          :ok <- maybe_skip_if_same_version(config, force?, state),
          {:ok, prepared_configs} <- prepare_fun_configs(config) do
       store_and_register(config, prepared_configs, state)
@@ -247,13 +289,27 @@ defmodule PhoenixGenApi.ConfigReceiver do
     {:ok, config}
   rescue
     e ->
-      Logger.error("[ConfigReceiver] failed to decode PushConfig: error=#{inspect(e)}")
+      Logger.error(
+        LogContext.line(
+          "ConfigReceiver",
+          :push_decode_failed,
+          "failed to decode PushConfig",
+          LogContext.current(error: e)
+        )
+      )
 
       {:error, :invalid_push_config_data}
   end
 
   defp decode_push_config(other) do
-    Logger.error("[ConfigReceiver] push received invalid data type: data=#{inspect(other)}")
+    Logger.error(
+      LogContext.line(
+        "ConfigReceiver",
+        :push_invalid_data_type,
+        "push received invalid data type",
+        LogContext.current(data: LogContext.payload(other))
+      )
+    )
 
     {:error, :invalid_push_config_data}
   end
@@ -264,18 +320,121 @@ defmodule PhoenixGenApi.ConfigReceiver do
         :ok
 
       {:error, errors} ->
-        Logger.error("[ConfigReceiver] PushConfig validation failed: errors=#{inspect(errors)}")
+        {count, types} = push_request_types(config)
+
+        Logger.error(
+          LogContext.line(
+            "ConfigReceiver",
+            :push_validation_failed,
+            "PushConfig validation failed",
+            LogContext.current(
+              errors: errors,
+              request_type_count: count,
+              request_types: types
+            )
+          )
+        )
 
         {:error, {:validation_failed, errors}}
     end
   end
 
-  defp validate_push_token(%PushConfig{push_token: token, service: service}) do
+  defp validate_push_admin do
+    if Application.get_env(:phoenix_gen_api, :admin_actions) == nil do
+      :ok
+    else
+      if Security.admin_action_allowed?(:push_config) do
+        :ok
+      else
+        Logger.warning(
+          LogContext.line(
+            "ConfigReceiver",
+            :push_admin_denied,
+            "push rejected: push_config admin action not allowed",
+            LogContext.current()
+          )
+        )
+
+        {:error, :admin_action_denied}
+      end
+    end
+  end
+
+  defp validate_push_source(%PushConfig{service: service, nodes: nodes}, origin_node) do
+    listed? = node_listed?(origin_node, nodes)
+    binding = Application.get_env(:phoenix_gen_api, :config_source_binding)
+    owners = Application.get_env(:phoenix_gen_api, :service_owners)
+
+    owner = owner_for(owners, service)
+    owner_mismatch? = is_atom(owner) and not is_nil(owner) and owner != origin_node
+
+    cond do
+      binding && not listed? ->
+        Logger.warning(
+          LogContext.line(
+            "ConfigReceiver",
+            :push_source_rejected,
+            "push rejected: origin not listed in pushed nodes",
+            LogContext.current(origin_node: origin_node)
+          )
+        )
+
+        {:error, :source_not_allowed}
+
+      owner_mismatch? ->
+        Logger.warning(
+          LogContext.line(
+            "ConfigReceiver",
+            :push_owner_rejected,
+            "push rejected: origin is not the service owner",
+            LogContext.current(origin_node: origin_node, service_owner: owner)
+          )
+        )
+
+        {:error, :source_not_allowed}
+
+      not listed? ->
+        Logger.warning(
+          LogContext.line(
+            "ConfigReceiver",
+            :push_source_mismatch,
+            "push origin is not listed in pushed nodes (binding disabled)",
+            LogContext.current(origin_node: origin_node)
+          )
+        )
+
+        :ok
+
+      true ->
+        :ok
+    end
+  end
+
+  defp owner_for(nil, _service), do: nil
+
+  defp owner_for(owners, service) when is_map(owners) do
+    Map.get(owners, service) || Map.get(owners, to_string(service))
+  end
+
+  defp owner_for(_owners, _service), do: nil
+
+  defp node_listed?(_origin, nodes) when not is_list(nodes), do: false
+
+  defp node_listed?(origin, nodes) do
+    Enum.any?(nodes, fn node -> to_string(node) == to_string(origin) end)
+  end
+
+  defp validate_push_token(%PushConfig{push_token: token}) do
     if Security.valid_push_token?(token) do
       :ok
     else
       Logger.warning(
-        "[ConfigReceiver] push token rejected: service=#{inspect(service)} token=#{inspect(token)}"
+        LogContext.line(
+          "ConfigReceiver",
+          :push_token_rejected,
+          "push token rejected",
+          LogContext.current(token_rejected: true)
+        )
       )
 
       {:error, :invalid_push_token}
@@ -283,13 +442,18 @@ defmodule PhoenixGenApi.ConfigReceiver do
   end
 
   defp maybe_skip_if_same_version(
-         %PushConfig{service: service, config_version: version},
+         %PushConfig{config_version: version},
          true,
          _state
        ) do
-    Logger.debug(
-      "[ConfigReceiver] force push: service=#{inspect(service)} version=#{inspect(version)}"
-    )
+    Logger.debug(fn ->
+      LogContext.line(
+        "ConfigReceiver",
+        :force_push,
+        "force push",
+        LogContext.current(version: version)
+      )
+    end)
 
     :ok
   end
@@ -302,10 +466,56 @@ defmodule PhoenixGenApi.ConfigReceiver do
     case Map.get(state.service_versions, service) do
       ^version ->
         Logger.warning(
-          "[ConfigReceiver] skipping push: service=#{inspect(service)} version=#{inspect(version)} already stored"
+          LogContext.line(
+            "ConfigReceiver",
+            :push_skipped,
+            "skipping push, version already stored",
+            LogContext.current(version: version, reason: :version_matches)
+          )
         )
 
         {:skip, :version_matches}
+
+      stored when is_binary(stored) and is_binary(version) ->
+        check_downgrade(stored, version)
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp check_downgrade(stored, version) do
+    case {Version.parse(stored), Version.parse(version)} do
+      {{:ok, stored_v}, {:ok, new_v}} ->
+        case Version.compare(new_v, stored_v) do
+          :lt ->
+            if Application.get_env(:phoenix_gen_api, :reject_config_downgrades) do
+              Logger.warning(
+                LogContext.line(
+                  "ConfigReceiver",
+                  :push_downgrade_rejected,
+                  "push rejected: version is older than the stored version",
+                  LogContext.current(stored_version: stored, version: version)
+                )
+              )
+
+              {:error, :version_downgrade}
+            else
+              Logger.warning(
+                LogContext.line(
+                  "ConfigReceiver",
+                  :push_downgrade_allowed,
+                  "accepting older version (downgrade rejection disabled)",
+                  LogContext.current(stored_version: stored, version: version)
+                )
+              )
+
+              :ok
+            end
+
+          _ ->
+            :ok
+        end
 
       _ ->
         :ok
@@ -313,16 +523,16 @@ defmodule PhoenixGenApi.ConfigReceiver do
   end
 
   defp prepare_fun_configs(%PushConfig{service: service, fun_configs: fun_configs}) do
-    {prepared, errors} =
-      Enum.flat_map_reduce(fun_configs, [], fn
-        %FunConfig{} = config, acc_errors ->
+    {prepared, {errors, rejected_types}} =
+      Enum.flat_map_reduce(fun_configs, {[], []}, fn
+        %FunConfig{} = config, {acc_errors, acc_types} ->
           config =
             config
             |> Shared.enforce_service_name(service)
             |> Shared.ensure_version()
 
           if FunConfig.valid?(config) do
-            {[config], acc_errors}
+            {[config], {acc_errors, acc_types}}
           else
             reasons =
               case FunConfig.validate_with_details(config) do
@@ -333,25 +543,72 @@ defmodule PhoenixGenApi.ConfigReceiver do
             error_msg =
               "invalid FunConfig: request_type=#{inspect(config.request_type)}, service=#{inspect(service)}, version=#{inspect(config.version)}, nodes: #{inspect(config.nodes)}, mfa: #{inspect(config.mfa)}, response_type: #{inspect(config.response_type)}, check_permission: #{inspect(config.check_permission)}"
 
-            Logger.error("[ConfigReceiver] #{error_msg}")
+            Logger.warning(
+              LogContext.line(
+                "ConfigReceiver",
+                :invalid_fun_config,
+                "invalid FunConfig",
+                LogContext.current(
+                  errors: reasons,
+                  mfa: config.mfa,
+                  nodes: config.nodes,
+                  request_type: config.request_type,
+                  version: config.version
+                )
+              )
+            )
+
             PhoenixGenApi.ConfigFailed.record(config, reasons, :push, nil)
-            {[], [error_msg | acc_errors]}
+            {[], {[error_msg | acc_errors], [config.request_type | acc_types]}}
           end
 
-        other, acc_errors ->
+        other, {acc_errors, acc_types} ->
           error_msg = "unexpected item in fun_configs: item=#{inspect(other)}"
-          Logger.error("[ConfigReceiver] #{error_msg}")
-          {[], [error_msg | acc_errors]}
+
+          Logger.error(
+            LogContext.line(
+              "ConfigReceiver",
+              :unexpected_fun_config,
+              "unexpected item in fun_configs",
+              LogContext.current(item: LogContext.payload(other))
+            )
+          )
+
+          {[], {[error_msg | acc_errors], acc_types}}
       end)
 
-    if prepared == [] do
-      Logger.error("[ConfigReceiver] no valid FunConfig items: service=#{inspect(service)}")
+    errors = Enum.reverse(errors)
+    rejected_types = rejected_types |> Enum.reverse() |> Enum.uniq()
 
-      {:error, {:all_invalid, Enum.reverse(errors)}}
+    if prepared == [] do
+      Logger.error(
+        LogContext.line(
+          "ConfigReceiver",
+          :no_valid_fun_configs,
+          "no valid FunConfig items",
+          LogContext.current(
+            request_type_count: length(rejected_types),
+            request_types: rejected_types,
+            errors: errors
+          )
+        )
+      )
+
+      {:error, {:all_invalid, errors}}
     else
       if errors != [] do
         Logger.warning(
-          "[ConfigReceiver] partial push: #{length(prepared)} valid, #{length(errors)} invalid, service=#{inspect(service)}, errors: #{inspect(Enum.reverse(errors))}"
+          LogContext.line(
+            "ConfigReceiver",
+            :partial_push,
+            "partial push",
+            LogContext.current(
+              accepted_count: length(prepared),
+              rejected_count: length(rejected_types),
+              rejected_request_types: rejected_types,
+              errors: errors
+            )
+          )
         )
       end
 
@@ -372,7 +629,16 @@ defmodule PhoenixGenApi.ConfigReceiver do
         )
 
         Logger.info(
-          "[ConfigReceiver] stored configs: service=#{inspect(service)} version=#{inspect(version)} count=#{count}"
+          LogContext.line(
+            "ConfigReceiver",
+            :push_stored,
+            "stored configs",
+            LogContext.current(
+              config_version: version,
+              count: count,
+              request_types: prepared_configs |> Enum.map(& &1.request_type) |> Enum.uniq()
+            )
+          )
         )
 
         # Register with ConfigPuller if module/function are present
@@ -388,7 +654,12 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
       {:error, :all_invalid} ->
         Logger.error(
-          "[ConfigReceiver] ConfigDb.batch_add failed: service=#{inspect(service)} reason=all_invalid"
+          LogContext.line(
+            "ConfigReceiver",
+            :batch_add_failed,
+            "ConfigDb.batch_add failed",
+            LogContext.current(reason: :all_invalid)
+          )
         )
 
         {:error, :batch_add_failed, state}
@@ -400,15 +671,25 @@ defmodule PhoenixGenApi.ConfigReceiver do
   defp maybe_register_with_puller(config = %PushConfig{}) do
     case PushConfig.to_service_config(config) do
       nil ->
-        Logger.debug(
-          "[ConfigReceiver] no auto-pull registration: service=#{inspect(config.service)} reason=module_function_not_provided"
-        )
+        Logger.debug(fn ->
+          LogContext.line(
+            "ConfigReceiver",
+            :auto_pull_skipped,
+            "no auto-pull registration",
+            LogContext.current(reason: :module_function_not_provided)
+          )
+        end)
 
         :ok
 
       %ServiceConfig{} = service_config ->
         Logger.info(
-          "[ConfigReceiver] registering service with ConfigPuller: service=#{inspect(config.service)}"
+          LogContext.line(
+            "ConfigReceiver",
+            :puller_registration,
+            "registering service with ConfigPuller",
+            LogContext.current()
+          )
         )
 
         ConfigPuller.add([service_config])
@@ -422,10 +703,49 @@ defmodule PhoenixGenApi.ConfigReceiver do
 
       %ServiceConfig{} = service_config ->
         Logger.info(
-          "[ConfigReceiver] unregistering service from ConfigPuller: service=#{inspect(config.service)}"
+          LogContext.line(
+            "ConfigReceiver",
+            :puller_unregistration,
+            "unregistering service from ConfigPuller",
+            LogContext.current(service: config.service)
+          )
         )
 
         ConfigPuller.delete([service_config])
     end
   end
+
+  defp push_context(%PushConfig{} = config, origin_node) do
+    [
+      service: LogContext.value(config.service),
+      config_version: LogContext.value(config.config_version),
+      origin_node: origin_node,
+      node: node()
+    ]
+  end
+
+  defp push_context(config, origin_node) when is_map(config) do
+    [
+      service: LogContext.value(Map.get(config, :service) || Map.get(config, "service")),
+      config_version:
+        LogContext.value(Map.get(config, :config_version) || Map.get(config, "config_version")),
+      origin_node: origin_node,
+      node: node()
+    ]
+  end
+
+  defp push_context(_config, origin_node) do
+    [service: :unknown, config_version: :unknown, origin_node: origin_node, node: node()]
+  end
+
+  defp push_request_types(%PushConfig{fun_configs: fun_configs}) when is_list(fun_configs) do
+    types =
+      for %FunConfig{request_type: request_type} <- fun_configs,
+          not is_nil(request_type),
+          do: request_type
+
+    {length(types), Enum.take(types, 10)}
+  end
+
+  defp push_request_types(_config), do: {0, []}
 end

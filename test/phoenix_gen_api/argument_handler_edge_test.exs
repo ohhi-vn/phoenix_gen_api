@@ -2,6 +2,7 @@ defmodule PhoenixGenApi.ArgumentHandlerEdgeTest do
   use ExUnit.Case, async: true
 
   alias PhoenixGenApi.ArgumentHandler
+  alias PhoenixGenApi.Errors.InvalidType
   alias PhoenixGenApi.Structs.{FunConfig, Request}
 
   # ── Configuration function tests ──
@@ -581,7 +582,7 @@ defmodule PhoenixGenApi.ArgumentHandlerEdgeTest do
 
       request = %Request{args: %{"items" => [%{valid: "map"}, "not_a_map"]}}
 
-      assert_raise RuntimeError, fn ->
+      assert_raise InvalidType, fn ->
         ArgumentHandler.validate_args!(config, request)
       end
     end
@@ -817,6 +818,50 @@ defmodule PhoenixGenApi.ArgumentHandlerEdgeTest do
       request = %Request{args: %{"count" => 42}}
       result = ArgumentHandler.convert_args!(config, request)
       assert result == [42]
+    end
+  end
+
+  describe "container type mismatches" do
+    test "scalar supplied for :string raises InvalidType" do
+      config = %FunConfig{arg_types: %{"name" => :string}, arg_orders: ["name"]}
+      request = %Request{args: %{"name" => 123}}
+
+      assert_raise InvalidType, ~r/expected :string/, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+
+    test "scalar supplied for :list raises InvalidType" do
+      config = %FunConfig{arg_types: %{"items" => :list}, arg_orders: ["items"]}
+      request = %Request{args: %{"items" => "not-a-list"}}
+
+      assert_raise InvalidType, ~r/expected :list/, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+
+    test "scalar supplied for :map raises InvalidType" do
+      config = %FunConfig{arg_types: %{"data" => :map}, arg_orders: ["data"]}
+      request = %Request{args: %{"data" => "not-a-map"}}
+
+      assert_raise InvalidType, ~r/expected :map/, fn ->
+        ArgumentHandler.convert_args!(config, request)
+      end
+    end
+
+    test "oversized :list_map item is rejected" do
+      oversized = Map.new(1..1_001, fn i -> {i, i} end)
+
+      config = %FunConfig{
+        arg_types: %{"items" => {:list_map, [max_items: 5]}},
+        arg_orders: ["items"]
+      }
+
+      request = %Request{args: %{"items" => [oversized]}}
+
+      assert_raise ArgumentError, ~r/list_map exceeds max items/, fn ->
+        ArgumentHandler.validate_args!(config, request)
+      end
     end
   end
 end

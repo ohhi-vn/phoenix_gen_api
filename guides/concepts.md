@@ -67,6 +67,12 @@ The gateway stores all received configs in an ETS table (`PhoenixGenApi.ConfigDb
 
 The client sends a `Request` (as JSON over the channel event). The gateway decodes it, routes it, executes the MFA, and pushes back a `Response`. The client correlates responses to requests via `request_id`.
 
+Endpoint code runs in an isolated process under a task supervisor, and `FunConfig.timeout`
+is a hard deadline, so a crashing or hanging endpoint cannot take down the channel. A
+stream always ends with one terminal frame — completion, error, or timeout — so clients
+never wait on a dead stream. Retry exhaustion reports the same documented outcome for
+local and remote execution.
+
 ## Node selection
 
 When several nodes of a service can run the same endpoint, `choose_node_mode` decides which one executes the request:

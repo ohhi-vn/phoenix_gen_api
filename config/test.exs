@@ -12,7 +12,9 @@ config :logger, level: :warning
 config :phoenix_gen_api, :admin_actions, [
   :change_detail_error,
   :update_rate_limit_config,
-  :push_config
+  :push_config,
+  :enable_tracing,
+  :disable_tracing
 ]
 
 # for test encoding Response

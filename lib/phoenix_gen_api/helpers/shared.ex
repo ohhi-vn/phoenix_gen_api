@@ -8,6 +8,8 @@ defmodule PhoenixGenApi.Helpers.Shared do
 
   alias PhoenixGenApi.Structs.FunConfig
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @doc """
@@ -72,7 +74,14 @@ defmodule PhoenixGenApi.Helpers.Shared do
       config
     else
       Logger.warning(
-        "[Shared] service_name mismatch in FunConfig, request_type: #{inspect(config.request_type)}, expected: #{inspect(service_name)}, got: #{inspect(config.service)}, overwriting"
+        LogContext.line(
+          "Shared",
+          :service_name_mismatch,
+          "service_name mismatch in FunConfig, overwriting",
+          request_type: LogContext.value(config.request_type),
+          service: LogContext.value(config.service),
+          expected_service: LogContext.value(service_name)
+        )
       )
 
       %FunConfig{config | service: service_name}
@@ -99,9 +108,16 @@ defmodule PhoenixGenApi.Helpers.Shared do
          byte_size(config.version) > 0 and config.version != "0.0.0" do
       config
     else
-      Logger.debug(
-        "[Shared] no version set for config, request_type: #{inspect(config.request_type)}, using nil (no version)"
-      )
+      Logger.debug(fn ->
+        LogContext.line(
+          "Shared",
+          :no_version,
+          "no version set for config, using nil (no version)",
+          request_type: LogContext.value(config.request_type),
+          service: LogContext.value(config.service),
+          version: :none
+        )
+      end)
 
       %FunConfig{config | version: nil}
     end

@@ -11,6 +11,7 @@ Complete reference for all application-level configuration options.
 5. [Security](#security)
 6. [Channel Integration](#channel-integration)
 7. [ConfigDb Runtime API](#configdb-runtime-api)
+8. [Logging](#logging)
 
 ---
 
@@ -146,6 +147,56 @@ Gateway-side API:
 PhoenixGenApi.pushed_services_status()
 ```
 
+### Push authentication and provenance
+
+```elixir
+config :phoenix_gen_api,
+  # Require a token on every push (nil = token not required).
+  push_token: "shared-secret",
+  # When admin_actions is configured, :push_config must be allowed to push.
+  admin_actions: [:push_config],
+  # Require the pushing node to be listed in the pushed config's nodes.
+  config_source_binding: true,
+  # Optional service -> owner node map; pushes must come from the owner.
+  service_owners: %{"billing" => :"billing@host"},
+  # Optional allowlist for nodes the puller may target.
+  pull_node_allowlist: [:"service1@host", :"service2@host"],
+  # Gate puller registration/forced pulls behind :push_config.
+  protect_config_puller: true
+```
+
+A rejected push returns `{:error, reason}` where `reason` is `:invalid_push_token`,
+`:admin_action_denied`, `:source_not_allowed`, `:version_downgrade`, or a validation
+error. With no token and no `admin_actions` configured, push behaviour is unchanged
+(unauthenticated, as before).
+
+### Versioning and retention
+
+- `config_version` is compared when both versions parse: an older push is accepted with a
+  warning by default and rejected when `reject_config_downgrades: true` (unless forced).
+- Client-selected versions are honoured by default. Set `allow_client_version: false` to
+  always resolve the latest configuration.
+- `max_configs_per_service` bounds stored versions per service/request type; the oldest
+  versions are evicted first.
+- Failed-configuration records expire after 24 hours and are swept hourly
+  (`config_failed_cleanup_interval`).
+
+### All-or-nothing validation
+
+Every write path — `ConfigDb.add/1`, `ConfigDb.update/1`, `ConfigDb.batch_add/1`,
+`ConfigReceiver.push/1`, and puller registration — validates the same rules, including
+every invocable MFA (endpoint, `nodes`, hooks, `permission_callback`, `result_encoder`).
+A rejected write leaves the previously stored configuration in place.
+
+### Pull failure reporting
+
+A pull is successful only when every service either stored configuration or was skipped
+because its version matched. Partial failures are reported per service with a reason and
+emit `[:phoenix_gen_api, :config, :pull, :error]`; a pull that stored nothing is a
+failure, not a success. A missing `ConfigDb` table is reported as `{:error, :unavailable}`
+and produces a retryable "Service temporarily unavailable" response, distinct from an
+unknown function.
+
 ---
 
 ## Rate Limiter
@@ -178,19 +229,46 @@ config :phoenix_gen_api, :rate_limiter,
 | `enabled` | `boolean` | `true` | Enable/disable rate limiting |
 | `fail_open` | `boolean` | `true` | Allow requests through if rate limiter errors |
 | `instance_count` | `:auto \| integer` | `:auto` | Number of rate limiter instances |
-| `routing_strategy` | `:hash \| :random` | `:hash` | Instance routing strategy |
+| `routing_strategy` | `:hash \| :random` | `:hash` | Instance routing strategy (`:random` is deprecated; keys are always hashed for correctness) |
 | `global_limits` | `[map()]` | `[]` | Limits applied to all requests |
 | `api_limits` | `[map()]` | `[]` | Limits applied to specific service/request_type pairs |
+| `timeout` | `pos_integer` | `1000` | Per-check call timeout (ms) |
+| `cleanup_interval` | `pos_integer` | `60000` | Expired-row sweep interval (ms) |
+| `ip_address_source` | `atom()` | `nil` | Request field that carries the client IP for `:ip_address` limits |
+| `max_rate_limit_keys` | `pos_integer` | `nil` | Cap on distinct limiter keys; excess keys share an overflow bucket |
+| `max_rate_limit_key_bytes` | `pos_integer` | `nil` | Keys longer than this are hashed before storage |
 
 ### Limit schema
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `key` | `:user_id \| :device_id \| :ip_address \| atom()` | Request field to key on |
+| `key` | `:user_id \| :device_id \| :ip_address \| String.t()` | Request field to key on; a string reads that key from `request.args` |
 | `max_requests` | `pos_integer` | Maximum requests within the window |
 | `window_ms` | `pos_integer` | Window size in milliseconds |
 | `service` | `String.t() \| atom()` | (api_limits only) Service name |
 | `request_type` | `String.t()` | (api_limits only) Request type |
+
+### Behaviour notes
+
+- **No limits means no cost.** With `global_limits`/`api_limits` empty (or the limiter
+  disabled), requests skip the limiter process entirely. Runtime changes through
+  `set_global_limits/1`, `add_global_limit/1`, `remove_global_limit/1`, or
+  `update_config/1` take effect immediately without a restart.
+- **Fail mode covers every failure.** Timeouts, process exits, missing instances, and
+  exceptions all honour `fail_open`; the failure class and reason are attached to the
+  `[:phoenix_gen_api, :rate_limiter, :check]` telemetry event.
+- **Keys are hashed to one instance.** `:random` routing cannot keep a key's counters
+  consistent, so it is accepted but ignored and logged as deprecated.
+- **Memory is bounded.** Each key stores at most `max_requests` timestamps; cleanup sweeps
+  expired rows in the background at `cleanup_interval`. Set `max_rate_limit_keys` to cap
+  cardinality from client-controlled keys, and `max_rate_limit_key_bytes` to bound key
+  size.
+- **`:ip_address` needs a source.** Requests do not carry an IP by default. Configure
+  `ip_address_source` (for example `:device_id`, or a field your transport adds) or the
+  limit is skipped and a warning is logged at configuration time.
+- **Administration is gated.** When `:admin_actions` is configured, replacing, adding, or
+  removing limits, resetting counters, and clearing state all require
+  `:update_rate_limit_config`, including direct instance calls.
 
 ### Runtime API
 
@@ -242,6 +320,12 @@ PhoenixGenApi.pool_status()
 # Returns: %{idle_workers: 950, busy_workers: 50, queued_tasks: 0, circuit_open: false, ...}
 ```
 
+`busy_workers` includes workers paused by an open circuit, `total_tasks_failed` counts
+failed/crashed/timed-out tasks, and dead workers are excluded while they are replaced.
+Streams run on `:stream_pool` capacity, so a long stream does not occupy an async slot.
+See "Worker Pools & Circuit Breakers" in the architecture guide for the delivery
+guarantees.
+
 ---
 
 ## Security
@@ -258,7 +342,7 @@ config :phoenix_gen_api,
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `admin_actions` | `[atom()]` | `[]` | Allowed admin operations (fail-closed) |
+| `admin_actions` | `[atom()]` | `[]` | Allowed admin operations (fail-closed once configured) |
 | `push_token` | `String.t() \| nil` | `nil` | Token for authenticating push requests |
 | `mfa_allowlist` | `[module() \| tuple]` | `nil` | Allowed `{module, function}` pairs |
 
@@ -267,12 +351,60 @@ config :phoenix_gen_api,
 | Action | Description |
 |--------|-------------|
 | `:push_config` | Allow receiving config pushes from remote nodes |
-| `:update_rate_limit_config` | Allow runtime rate limit config changes |
+| `:update_rate_limit_config` | Allow runtime rate limit config changes (and puller administration when `protect_config_puller` is on) |
 | `:change_detail_error` | Allow toggling detailed error messages |
+| `:enable_tracing` | Allow enabling tracing / adding traced targets |
+| `:disable_tracing` | Allow disabling tracing / removing traced targets |
+
+Once `admin_actions` is set, an action not in the list is denied, including when invoked
+directly on the owning process. When `admin_actions` is unset, existing behaviour is
+preserved. The push token is compared using a fixed-length digest, so timing does not
+reveal the configured secret's length.
 
 ### MFA allowlist
 
-When configured, only listed `{module, function}` pairs can be registered as function configs. Module-level entries allow all functions in that module. The following modules are **always blocked** unless explicitly allowed: `:os`, `:file`, `:code`, `:erlang`, `:net`, `:rpc`, `:global`, `:inet`.
+When configured, only listed `{module, function}` pairs can be registered as function
+configs. Module-level entries allow all functions in that module, and matching is exact —
+a prefix or lookalike module is not accepted. The following modules are **always blocked**
+unless explicitly allowed: `:os`, `:file`, `:code`, `:erlang`, `:net`, `:rpc`, `:global`,
+`:inet`, plus `Code`, `File`, `System`, `Node`, `IO`, `:ets`, `:application`,
+`:persistent_term`, `:logger`, `:gen_server`, `:supervisor`, and `:process`.
+
+Every MFA a config can invoke is checked — endpoint, `nodes`, hooks,
+`permission_callback`, and `result_encoder` — at registration time, not on first use.
+
+### Identity and atom safety
+
+- `use PhoenixGenApi, require_authenticated_roles: true` ignores payload `user_roles` and
+  reads roles from `socket.assigns`.
+- `use PhoenixGenApi, reject_unverified_user_id: true` treats a payload `user_id` as
+  absent when the socket has no verified identifier.
+- Both default to `false` (today's behaviour) so upgrades are non-breaking.
+- No request field, configuration value, or administrative input creates atoms; unknown
+  names are matched against existing atoms only.
+
+### Internal tables
+
+`protect_internal_tables: true` makes the library's named ETS tables `:protected` so only
+their owning process can write. ConfigDb writes are routed through its GenServer,
+failed-config records through the ConfigFailed owner, relay state through RelayServer, and
+the rate limiter pins all checks to the owning instance (sharding is disabled in this
+mode).
+
+### Recommended production set
+
+```elixir
+config :phoenix_gen_api,
+  admin_actions: [:push_config, :update_rate_limit_config, :enable_tracing, :disable_tracing],
+  push_token: System.fetch_env!("PGA_PUSH_TOKEN"),
+  mfa_allowlist: [MyApp.GenApi.Endpoints],
+  config_source_binding: true,
+  reject_config_downgrades: true,
+  protect_internal_tables: true,
+  max_configs_per_service: 20,
+  max_rate_limit_keys: 100_000,
+  max_rate_limit_key_bytes: 256
+```
 
 ### Payload size limit
 
@@ -344,6 +476,31 @@ PhoenixGenApi.cache_status()
 ```
 
 Function versioning (multiple `version` values per endpoint, the `"0.0.0"` sentinel, and runtime version management) is covered in the [FunConfig Reference](./fun_config.md#function-versioning).
+
+---
+
+## Logging
+
+PhoenixGenApi emits `[Module] event=<name>` log lines with inline context such as
+`request_id`, `request_type`, `service`, `user_id`, `node`, `config_version`, and `version`. Context is
+also installed as Logger metadata (`request_id`, `request_type`, `service`, `user_id`,
+`node`) for the duration of a request, so formatters and structured backends can use it.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `log_verbose_payloads` | `boolean` | `false` | Include full request payloads, argument values, and results in debug logs. Leave disabled in production. |
+
+```elixir
+# config/config.exs
+config :phoenix_gen_api, log_verbose_payloads: false
+```
+
+With verbose logging disabled (the default), debug lines record request identity plus a
+payload summary (`size`, top-level `keys`) and never the payload contents. Push tokens
+are always redacted regardless of this setting.
+
+See [Diagnostics → Logging context](./diagnostics.md#logging-context) for the key
+vocabulary and a Logger formatter snippet.
 
 ---
 

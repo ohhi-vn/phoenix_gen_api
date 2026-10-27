@@ -109,12 +109,20 @@ defmodule PhoenixGenApi.RateLimiterExtraTest do
   describe "fail-open and fail-closed on errors" do
     test "fails open when the instance call fails" do
       with_rate_limiter_env(%{timeout: :bogus, fail_open: true}, fn ->
+        RateLimiter.update_config(%{
+          global_limits: [%{key: :user_id, max_requests: 100, window_ms: 60_000}]
+        })
+
         assert :ok == RateLimiter.check_rate_limit(request(2, "failopen_user"))
       end)
     end
 
     test "fails closed when the instance call fails" do
       with_rate_limiter_env(%{timeout: :bogus, fail_open: false}, fn ->
+        RateLimiter.update_config(%{
+          global_limits: [%{key: :user_id, max_requests: 100, window_ms: 60_000}]
+        })
+
         assert {:error, :rate_limiter_error, %{message: _}} =
                  RateLimiter.check_rate_limit(request(3, "failclosed_user"))
       end)

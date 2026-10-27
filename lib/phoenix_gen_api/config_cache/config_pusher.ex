@@ -21,8 +21,8 @@ defmodule PhoenixGenApi.ConfigPusher do
 
   ## Example
 
-      alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
       alias PhoenixGenApi.ConfigPusher
+      alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
 
       fun_configs = [
         %FunConfig{
@@ -58,6 +58,7 @@ defmodule PhoenixGenApi.ConfigPusher do
       end
   """
 
+  alias PhoenixGenApi.LogContext
   alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
 
   require Logger
@@ -100,8 +101,12 @@ defmodule PhoenixGenApi.ConfigPusher do
     force = Keyword.get(opts, :force, false)
 
     Logger.info(
-      "[ConfigPusher] pushing: service=#{inspect(push_config.service)} " <>
-        "node=#{inspect(server_node)} timeout=#{timeout}ms force=#{force}"
+      LogContext.line(
+        "ConfigPusher",
+        :push_started,
+        "pushing",
+        push_fields(push_config, server_node, timeout_ms: timeout, force: force)
+      )
     )
 
     # Read push_token at runtime so config changes take effect
@@ -120,32 +125,48 @@ defmodule PhoenixGenApi.ConfigPusher do
     case result do
       {:ok, :accepted} = result ->
         Logger.info(
-          "[ConfigPusher] push accepted: service=#{inspect(push_config.service)} " <>
-            "node=#{inspect(server_node)}"
+          LogContext.line(
+            "ConfigPusher",
+            :push_accepted,
+            "push accepted",
+            push_fields(push_config, server_node)
+          )
         )
 
         result
 
       {:ok, :skipped, reason} = result ->
         Logger.warning(
-          "[ConfigPusher] push skipped: service=#{inspect(push_config.service)} " <>
-            "node=#{inspect(server_node)} reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPusher",
+            :push_skipped,
+            "push skipped",
+            push_fields(push_config, server_node, reason: reason)
+          )
         )
 
         result
 
       {:error, reason} = error ->
         Logger.error(
-          "[ConfigPusher] push failed: service=#{inspect(push_config.service)} " <>
-            "node=#{inspect(server_node)} reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPusher",
+            :push_failed,
+            "push failed",
+            push_fields(push_config, server_node, reason: reason)
+          )
         )
 
         error
 
       {:badrpc, reason} = rpc_error ->
         Logger.error(
-          "[ConfigPusher] RPC call failed: node=#{inspect(server_node)} " <>
-            "reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPusher",
+            :rpc_call_failed,
+            "RPC call failed",
+            push_fields(push_config, server_node, reason: reason)
+          )
         )
 
         {:error, rpc_error}
@@ -205,10 +226,14 @@ defmodule PhoenixGenApi.ConfigPusher do
   def verify(server_node, service, config_version, opts) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
-    Logger.debug(
-      "[ConfigPusher] verifying: service=#{inspect(service)} " <>
-        "version=#{inspect(config_version)} node=#{inspect(server_node)}"
-    )
+    Logger.debug(fn ->
+      LogContext.line(
+        "ConfigPusher",
+        :verify_started,
+        "verifying",
+        verify_fields(service, config_version, server_node)
+      )
+    end)
 
     result =
       :rpc.call(
@@ -221,42 +246,61 @@ defmodule PhoenixGenApi.ConfigPusher do
 
     case result do
       {:ok, :matched} ->
-        Logger.debug(
-          "[ConfigPusher] verify matched: service=#{inspect(service)} " <>
-            "version=#{inspect(config_version)} node=#{inspect(server_node)}"
-        )
+        Logger.debug(fn ->
+          LogContext.line(
+            "ConfigPusher",
+            :verify_matched,
+            "verify matched",
+            verify_fields(service, config_version, server_node)
+          )
+        end)
 
         {:ok, :matched}
 
       {:ok, :mismatch, stored_version} ->
-        Logger.debug(
-          "[ConfigPusher] verify mismatch: service=#{inspect(service)} " <>
-            "node=#{inspect(server_node)} expected=#{inspect(config_version)} " <>
-            "stored=#{inspect(stored_version)}"
-        )
+        Logger.debug(fn ->
+          LogContext.line(
+            "ConfigPusher",
+            :verify_mismatch,
+            "verify mismatch",
+            verify_fields(service, config_version, server_node, stored_version: stored_version)
+          )
+        end)
 
         {:ok, :mismatch, stored_version}
 
       {:error, :not_found} ->
-        Logger.debug(
-          "[ConfigPusher] verify not found: service=#{inspect(service)} " <>
-            "node=#{inspect(server_node)}"
-        )
+        Logger.debug(fn ->
+          LogContext.line(
+            "ConfigPusher",
+            :verify_not_found,
+            "verify not found",
+            verify_fields(service, config_version, server_node)
+          )
+        end)
 
         {:error, :not_found}
 
       {:error, reason} ->
         Logger.error(
-          "[ConfigPusher] verify failed: service=#{inspect(service)} " <>
-            "node=#{inspect(server_node)} reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPusher",
+            :verify_failed,
+            "verify failed",
+            verify_fields(service, config_version, server_node, reason: reason)
+          )
         )
 
         {:error, reason}
 
       {:badrpc, reason} ->
         Logger.error(
-          "[ConfigPusher] RPC verify call failed: node=#{inspect(server_node)} " <>
-            "reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPusher",
+            :verify_rpc_failed,
+            "RPC verify call failed",
+            verify_fields(service, config_version, server_node, reason: reason)
+          )
         )
 
         {:error, {:badrpc, reason}}
@@ -334,8 +378,14 @@ defmodule PhoenixGenApi.ConfigPusher do
     version = push_config.config_version
 
     Logger.info(
-      "[ConfigPusher] startup push: service=#{inspect(service)} " <>
-        "version=#{inspect(version)} node=#{inspect(server_node)}"
+      LogContext.line(
+        "ConfigPusher",
+        :startup_push_started,
+        "startup push",
+        service: LogContext.value(service),
+        version: LogContext.value(version),
+        node: server_node
+      )
     )
 
     result = push(server_node, push_config, opts)
@@ -343,23 +393,40 @@ defmodule PhoenixGenApi.ConfigPusher do
     case result do
       {:ok, :accepted} ->
         Logger.info(
-          "[ConfigPusher] startup push accepted: " <>
-            "service=#{inspect(service)} version=#{inspect(version)} " <>
-            "node=#{inspect(server_node)}"
+          LogContext.line(
+            "ConfigPusher",
+            :startup_push_accepted,
+            "startup push accepted",
+            service: LogContext.value(service),
+            version: LogContext.value(version),
+            node: server_node
+          )
         )
 
       {:ok, :skipped, reason} ->
         Logger.info(
-          "[ConfigPusher] startup push skipped: " <>
-            "service=#{inspect(service)} version=#{inspect(version)} " <>
-            "node=#{inspect(server_node)} reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPusher",
+            :startup_push_skipped,
+            "startup push skipped",
+            service: LogContext.value(service),
+            version: LogContext.value(version),
+            node: server_node,
+            reason: reason
+          )
         )
 
       {:error, reason} ->
         Logger.error(
-          "[ConfigPusher] startup push failed: " <>
-            "service=#{inspect(service)} version=#{inspect(version)} " <>
-            "node=#{inspect(server_node)} reason=#{inspect(reason)}"
+          LogContext.line(
+            "ConfigPusher",
+            :startup_push_failed,
+            "startup push failed",
+            service: LogContext.value(service),
+            version: LogContext.value(version),
+            node: server_node,
+            reason: reason
+          )
         )
     end
 
@@ -443,5 +510,21 @@ defmodule PhoenixGenApi.ConfigPusher do
       version_args: version_args,
       push_token: nil
     }
+  end
+
+  defp push_fields(push_config, server_node, extra \\ []) do
+    [
+      service: LogContext.value(push_config.service),
+      version: LogContext.value(push_config.config_version),
+      node: server_node
+    ] ++ extra
+  end
+
+  defp verify_fields(service, config_version, server_node, extra \\ []) do
+    [
+      service: LogContext.value(service),
+      version: LogContext.value(config_version),
+      node: server_node
+    ] ++ extra
   end
 end

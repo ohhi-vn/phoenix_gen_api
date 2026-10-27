@@ -47,6 +47,35 @@ defmodule PhoenixGenApi.Telemetry do
   | `[:phoenix_gen_api, :worker_pool, :task, :rejected]` | `%{system_time: integer()}` | `%{pool_name: atom(), reason: :circuit_open}` |
   | `[:phoenix_gen_api, :worker_pool, :circuit_breaker, :open]` | `%{}` | `%{pool_name: atom(), consecutive_failures: non_neg_integer()}` |
   | `[:phoenix_gen_api, :worker_pool, :circuit_breaker, :close]` | `%{}` | `%{pool_name: atom()}` |
+  | `[:phoenix_gen_api, :worker_pool, :worker, :restart]` | `%{}` | `%{pool_name: atom(), reason: term()}` |
+
+  ### Streams
+
+  | Event | Measurements | Metadata |
+  |-------|-------------|----------|
+  | `[:phoenix_gen_api, :stream, :stop]` | `%{duration_us: integer()}` | `%{request_id: String.t(), request_type: String.t(), service: String.t(), chunks: non_neg_integer(), reason: atom()}` |
+  | `[:phoenix_gen_api, :stream, :exception]` | `%{duration_us: integer()}` | `%{request_id: String.t(), request_type: String.t(), service: String.t(), failure_class: atom(), reason: term()}` |
+
+  ### Permission
+
+  | Event | Measurements | Metadata |
+  |-------|-------------|----------|
+  | `[:phoenix_gen_api, :permission, :denied]` | `%{}` | `%{request_id: String.t(), request_type: String.t(), service: String.t(), permission_mode: term()}` |
+  | `[:phoenix_gen_api, :permission, :error]` | `%{}` | `%{request_id: String.t(), request_type: String.t(), service: String.t(), failure_class: atom(), reason: term()}` |
+
+  ### Relay
+
+  | Event | Measurements | Metadata |
+  |-------|-------------|----------|
+  | `[:phoenix_gen_api, :relay, :accepted]` | `%{}` | `%{group_id: String.t(), request_id: String.t(), targeted: non_neg_integer()}` |
+  | `[:phoenix_gen_api, :relay, :delivered]` | `%{delivered: non_neg_integer()}` | `%{group_id: String.t(), request_id: String.t(), targeted: non_neg_integer()}` |
+  | `[:phoenix_gen_api, :relay, :rejected]` | `%{}` | `%{group_id: String.t() \\| nil, reason: term()}` |
+
+  ### Requests
+
+  | Event | Measurements | Metadata |
+  |-------|-------------|----------|
+  | `[:phoenix_gen_api, :request, :decode_error]` | `%{}` | `%{code: atom(), failure_class: atom(), reason: term()}` |
 
   ### Config Cache
 
@@ -54,7 +83,9 @@ defmodule PhoenixGenApi.Telemetry do
   |-------|-------------|----------|
   | `[:phoenix_gen_api, :config, :pull, :start]` | `%{system_time: integer()}` | `%{service: String.t() \| atom()}` |
   | `[:phoenix_gen_api, :config, :pull, :stop]` | `%{duration_us: integer(), count: non_neg_integer()}` | `%{service: String.t() \| atom(), version: String.t() \| nil}` |
+  | `[:phoenix_gen_api, :config, :pull, :error]` | `%{}` | `%{service: String.t() \| atom(), failure_class: atom(), reason: term()}` |
   | `[:phoenix_gen_api, :config, :push]` | `%{count: non_neg_integer()}` | `%{service: String.t() \| atom(), version: String.t()}` |
+  | `[:phoenix_gen_api, :config, :push, :rejected]` | `%{}` | `%{service: String.t() \| atom(), failure_class: atom(), reason: term()}` |
   | `[:phoenix_gen_api, :config, :add]` | `%{}` | `%{service: String.t() \| atom(), request_type: String.t(), version: String.t()}` |
   | `[:phoenix_gen_api, :config, :batch_add]` | `%{count: non_neg_integer()}` | `%{service: String.t() \| atom()}` |
   | `[:phoenix_gen_api, :config, :delete]` | `%{}` | `%{service: String.t() \| atom(), request_type: String.t(), version: String.t()}` |
@@ -77,6 +108,8 @@ defmodule PhoenixGenApi.Telemetry do
       PhoenixGenApi.Telemetry.detach_all("my-handler")
   """
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @executor_events [
@@ -85,6 +118,10 @@ defmodule PhoenixGenApi.Telemetry do
     [:phoenix_gen_api, :executor, :request, :exception],
     [:phoenix_gen_api, :executor, :retry],
     [:phoenix_gen_api, :executor, :retry, :exhausted]
+  ]
+
+  @request_events [
+    [:phoenix_gen_api, :request, :decode_error]
   ]
 
   @rate_limiter_events [
@@ -109,13 +146,32 @@ defmodule PhoenixGenApi.Telemetry do
     [:phoenix_gen_api, :worker_pool, :task, :exception],
     [:phoenix_gen_api, :worker_pool, :task, :rejected],
     [:phoenix_gen_api, :worker_pool, :circuit_breaker, :open],
-    [:phoenix_gen_api, :worker_pool, :circuit_breaker, :close]
+    [:phoenix_gen_api, :worker_pool, :circuit_breaker, :close],
+    [:phoenix_gen_api, :worker_pool, :worker, :restart]
+  ]
+
+  @stream_events [
+    [:phoenix_gen_api, :stream, :stop],
+    [:phoenix_gen_api, :stream, :exception]
+  ]
+
+  @permission_events [
+    [:phoenix_gen_api, :permission, :denied],
+    [:phoenix_gen_api, :permission, :error]
+  ]
+
+  @relay_events [
+    [:phoenix_gen_api, :relay, :accepted],
+    [:phoenix_gen_api, :relay, :delivered],
+    [:phoenix_gen_api, :relay, :rejected]
   ]
 
   @config_events [
     [:phoenix_gen_api, :config, :pull, :start],
     [:phoenix_gen_api, :config, :pull, :stop],
+    [:phoenix_gen_api, :config, :pull, :error],
     [:phoenix_gen_api, :config, :push],
+    [:phoenix_gen_api, :config, :push, :rejected],
     [:phoenix_gen_api, :config, :add],
     [:phoenix_gen_api, :config, :batch_add],
     [:phoenix_gen_api, :config, :delete],
@@ -125,7 +181,14 @@ defmodule PhoenixGenApi.Telemetry do
   ]
 
   @all_events @executor_events ++
-                @rate_limiter_events ++ @hook_events ++ @worker_pool_events ++ @config_events
+                @request_events ++
+                @rate_limiter_events ++
+                @hook_events ++
+                @worker_pool_events ++
+                @stream_events ++
+                @permission_events ++
+                @relay_events ++
+                @config_events
 
   @doc """
   Returns the full list of telemetry events emitted by PhoenixGenApi.
@@ -227,11 +290,16 @@ defmodule PhoenixGenApi.Telemetry do
   @doc false
   @spec default_logger(list(atom()), map(), map(), any()) :: :ok
   def default_logger(event, measurements, metadata, _config) do
-    Logger.debug("""
-    [Telemetry] event=#{inspect(event)}
-      measurements=#{inspect(measurements)}
-      metadata=#{inspect(metadata)}\
-    """)
+    Logger.debug(fn ->
+      LogContext.line(
+        "Telemetry",
+        :event,
+        "telemetry event",
+        event: event,
+        measurements: measurements,
+        metadata: metadata
+      )
+    end)
   end
 
   @doc """

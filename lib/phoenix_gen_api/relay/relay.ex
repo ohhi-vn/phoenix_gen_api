@@ -39,15 +39,12 @@ defmodule PhoenixGenApi.Relay do
 
   alias PhoenixGenApi.Structs.Response
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @table :phoenix_gen_api_relay_groups
   @registry PhoenixGenApi.RelayRegistry
-
-  # Threshold below which sequential dispatch is used (avoids Task overhead for small groups).
-  @relay_dispatch_threshold 32
-  # Max concurrent Task.async_stream workers for large group dispatch.
-  @relay_max_concurrency 16
 
   @type group_type :: :public | :private | :strict_private
   @type member_status :: :active | :pending | :muted
@@ -62,6 +59,25 @@ defmodule PhoenixGenApi.Relay do
   @doc "Returns the ETS table name for group metadata storage."
   @spec table :: atom()
   def table, do: @table
+
+  defp trust_mode do
+    Application.get_env(:phoenix_gen_api, :relay_trust_mode, :legacy)
+  end
+
+  defp strict? do
+    trust_mode() == :strict
+  end
+
+  defp relay_limits do
+    case Application.get_env(:phoenix_gen_api, :relay_limits) do
+      limits when is_map(limits) -> limits
+      _ -> %{}
+    end
+  end
+
+  defp limit(name) do
+    Map.get(relay_limits(), name)
+  end
 
   # ── Group Lifecycle ────────────────────────────────────────────
 
@@ -84,9 +100,28 @@ defmodule PhoenixGenApi.Relay do
 
   Returns `:ok` or `{:error, :not_found}`.
   """
-  @spec delete_group(String.t()) :: :ok | {:error, :not_found}
+  @spec delete_group(String.t()) :: :ok | {:error, :not_found | :actor_required}
   def delete_group(group_id) when is_binary(group_id) do
-    PhoenixGenApi.RelayServer.delete_group(group_id)
+    if strict?() do
+      {:error, :actor_required}
+    else
+      PhoenixGenApi.RelayServer.delete_group(group_id)
+    end
+  end
+
+  @doc """
+  Deletes a group on behalf of `actor_user_id`.
+
+  In `:strict` trust mode the actor must be an active admin of the group.
+  """
+  @spec delete_group(String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_group(group_id, actor_user_id)
+      when is_binary(group_id) and is_binary(actor_user_id) do
+    if strict?() do
+      PhoenixGenApi.RelayServer.delete_group(group_id, actor_user_id)
+    else
+      PhoenixGenApi.RelayServer.delete_group(group_id)
+    end
   end
 
   @doc """
@@ -112,7 +147,12 @@ defmodule PhoenixGenApi.Relay do
           {:ok, :active | :pending} | {:error, :not_found | :already_member}
   def join_group(group_id, user_id, channel_pid)
       when is_binary(group_id) and is_binary(user_id) and is_pid(channel_pid) do
-    PhoenixGenApi.RelayServer.join_group(group_id, user_id, channel_pid)
+    if strict?() and node(channel_pid) != node() do
+      emit_relay_event(:rejected, %{group_id: group_id, reason: :remote_pid_not_allowed})
+      {:error, :remote_pid_not_allowed}
+    else
+      PhoenixGenApi.RelayServer.join_group(group_id, user_id, channel_pid)
+    end
   end
 
   @doc """
@@ -187,7 +227,59 @@ defmodule PhoenixGenApi.Relay do
   @spec handle_relay(PhoenixGenApi.Structs.Request.t(), PhoenixGenApi.Structs.FunConfig.t()) ::
           PhoenixGenApi.Structs.Response.t()
   def handle_relay(request, fun_config) do
-    PhoenixGenApi.RelayServer.handle_relay(request, fun_config)
+    case safe_server_call({:prepare_relay, request, fun_config}) do
+      {:ok, relay_response, recipient_pids} ->
+        targeted = length(recipient_pids)
+
+        delivered =
+          Enum.count(recipient_pids, fn pid ->
+            if Process.alive?(pid) do
+              send(pid, {:relay_message, relay_response})
+              true
+            else
+              false
+            end
+          end)
+
+        emit_relay_event(:accepted, %{
+          group_id: relay_response.result["group_id"],
+          request_id: request.request_id,
+          targeted: targeted
+        })
+
+        emit_relay_event(:delivered, %{
+          group_id: relay_response.result["group_id"],
+          request_id: request.request_id,
+          targeted: targeted,
+          delivered: delivered
+        })
+
+        Response.sync_response(request.request_id, %{
+          "status" => "relayed",
+          "recipients_count" => delivered,
+          "targeted_count" => targeted
+        })
+
+      %Response{} = error ->
+        emit_relay_event(:rejected, %{group_id: nil, reason: error.error})
+        error
+
+      {:error, reason} ->
+        emit_relay_event(:rejected, %{group_id: nil, reason: reason})
+        Response.error_response(request.request_id, "Relay unavailable", true)
+    end
+  end
+
+  defp safe_server_call(message) do
+    try do
+      PhoenixGenApi.RelayServer.server_call(message)
+    catch
+      :exit, reason -> {:error, {:unavailable, reason}}
+    end
+  end
+
+  defp emit_relay_event(event, metadata) do
+    :telemetry.execute([:phoenix_gen_api, :relay, event], %{}, metadata)
   end
 
   # ── Private Implementation (called by RelayServer) ─────────────
@@ -207,10 +299,28 @@ defmodule PhoenixGenApi.Relay do
         Registry.register(@registry, group_id, {creator_user_id, channel_pid})
 
         Logger.info(
-          "[Relay] group created: #{group_id}, type: #{group_type}, creator: #{creator_user_id}"
+          LogContext.line("Relay", :group_created, "group created",
+            group_id: group_id,
+            group_type: group_type,
+            user_id: creator_user_id,
+            node: node()
+          )
         )
 
         :ok
+    end
+  end
+
+  @doc false
+  def do_delete_group(group_id, actor_user_id) do
+    case :ets.lookup(@table, group_id) do
+      [{^group_id, _group_type, members}] ->
+        with {:ok, _} <- fetch_admin_actor(members, actor_user_id) do
+          do_delete_group(group_id)
+        end
+
+      [] ->
+        {:error, :not_found}
     end
   end
 
@@ -224,7 +334,14 @@ defmodule PhoenixGenApi.Relay do
       [{^group_id, _, _}] ->
         :ets.delete(@table, group_id)
         Registry.unregister_match(@registry, group_id, :_)
-        Logger.info("[Relay] group deleted: #{group_id}")
+
+        Logger.info(
+          LogContext.line("Relay", :group_deleted, "group deleted",
+            group_id: group_id,
+            node: node()
+          )
+        )
+
         :ok
     end
   end
@@ -250,45 +367,53 @@ defmodule PhoenixGenApi.Relay do
         {:error, :not_found}
 
       [{^group_id, :public, members}] ->
-        case Map.get(members, user_id) do
-          nil ->
-            member = new_member([:member], :active)
-            :ets.insert(@table, {group_id, :public, Map.put(members, user_id, member)})
-            Registry.register(@registry, group_id, {user_id, channel_pid})
-            {:ok, :active}
+        if group_full?(members) do
+          {:error, :group_full}
+        else
+          case Map.get(members, user_id) do
+            nil ->
+              member = new_member([:member], :active)
+              :ets.insert(@table, {group_id, :public, Map.put(members, user_id, member)})
+              Registry.register(@registry, group_id, {user_id, channel_pid})
+              {:ok, :active}
 
-          %{status: :active} ->
-            {:error, :already_member}
+            %{status: :active} ->
+              {:error, :already_member}
 
-          %{status: _old_status} ->
-            Registry.unregister_match(@registry, group_id, {user_id, :_})
-            member = new_member([:member], :active)
-            :ets.insert(@table, {group_id, :public, Map.put(members, user_id, member)})
-            Registry.register(@registry, group_id, {user_id, channel_pid})
-            {:ok, :active}
+            %{status: _old_status} ->
+              Registry.unregister_match(@registry, group_id, {user_id, :_})
+              member = new_member([:member], :active)
+              :ets.insert(@table, {group_id, :public, Map.put(members, user_id, member)})
+              Registry.register(@registry, group_id, {user_id, channel_pid})
+              {:ok, :active}
+          end
         end
 
       [{^group_id, group_type, members}]
       when group_type in [:private, :strict_private] ->
-        case Map.get(members, user_id) do
-          nil ->
-            member = new_member([:member], :pending)
-            :ets.insert(@table, {group_id, group_type, Map.put(members, user_id, member)})
-            Registry.register(@registry, group_id, {user_id, channel_pid})
-            {:ok, :pending}
+        if group_full?(members) do
+          {:error, :group_full}
+        else
+          case Map.get(members, user_id) do
+            nil ->
+              member = new_member([:member], :pending)
+              :ets.insert(@table, {group_id, group_type, Map.put(members, user_id, member)})
+              Registry.register(@registry, group_id, {user_id, channel_pid})
+              {:ok, :pending}
 
-          %{status: :active} ->
-            {:error, :already_member}
+            %{status: :active} ->
+              {:error, :already_member}
 
-          %{status: :pending} ->
-            {:error, :already_member}
+            %{status: :pending} ->
+              {:error, :already_member}
 
-          %{status: :muted} ->
-            Registry.unregister_match(@registry, group_id, {user_id, :_})
-            member = new_member([:member], :pending)
-            :ets.insert(@table, {group_id, group_type, Map.put(members, user_id, member)})
-            Registry.register(@registry, group_id, {user_id, channel_pid})
-            {:ok, :pending}
+            %{status: :muted} ->
+              Registry.unregister_match(@registry, group_id, {user_id, :_})
+              member = new_member([:member], :pending)
+              :ets.insert(@table, {group_id, group_type, Map.put(members, user_id, member)})
+              Registry.register(@registry, group_id, {user_id, channel_pid})
+              {:ok, :pending}
+          end
         end
     end
   end
@@ -379,14 +504,28 @@ defmodule PhoenixGenApi.Relay do
   end
 
   @doc false
-  @spec do_handle_relay(PhoenixGenApi.Structs.Request.t(), PhoenixGenApi.Structs.FunConfig.t()) ::
-          PhoenixGenApi.Structs.Response.t()
-  def do_handle_relay(request, _fun_config) do
+  @spec prepare_relay(PhoenixGenApi.Structs.Request.t(), PhoenixGenApi.Structs.FunConfig.t()) ::
+          {:ok, PhoenixGenApi.Structs.Response.t(), [pid()]}
+          | PhoenixGenApi.Structs.Response.t()
+  def prepare_relay(request, _fun_config) do
     group_id = Map.get(request.args, "group_id")
     message = Map.get(request.args, "message")
     user_id = request.user_id
     request_id = request.request_id
 
+    cond do
+      not is_binary(group_id) ->
+        Response.error_response(request_id, "Group not found")
+
+      too_large?(message, limit(:max_message_bytes)) ->
+        Response.error_response(request_id, "Message too large")
+
+      true ->
+        prepare_group_relay(group_id, message, user_id, request_id)
+    end
+  end
+
+  defp prepare_group_relay(group_id, message, user_id, request_id) do
     case :ets.lookup(@table, group_id) do
       [] ->
         Response.error_response(request_id, "Group not found")
@@ -406,24 +545,94 @@ defmodule PhoenixGenApi.Relay do
             recipient_ids =
               for {uid, %{status: s}} <- members, s in [:active, :muted], do: uid
 
-            relay_payload = %{
-              "group_id" => group_id,
-              "from_user_id" => user_id,
-              "message" => message,
-              "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601()
-            }
+            recipient_pids = registry_pids(group_id, recipient_ids)
 
-            send_to_group(group_id, request_id, relay_payload)
+            cond do
+              exceeds?(length(recipient_pids), limit(:max_recipients)) ->
+                Response.error_response(request_id, "Too many recipients")
 
-            Response.sync_response(request_id, %{
-              "status" => "relayed",
-              "recipients_count" => length(recipient_ids)
-            })
+              true ->
+                relay_payload = %{
+                  "group_id" => group_id,
+                  "from_user_id" => user_id,
+                  "message" => message,
+                  "timestamp" => DateTime.utc_now() |> DateTime.to_iso8601()
+                }
+
+                Logger.debug(fn ->
+                  LogContext.event("Relay", :relay_prepared,
+                    group_id: group_id,
+                    targeted: length(recipient_ids)
+                  )
+                end)
+
+                {:ok, Response.sync_response(request_id, relay_payload), recipient_pids}
+            end
         end
     end
   end
 
+  defp registry_pids(group_id, allowed_user_ids) do
+    Registry.select(@registry, [
+      {{:"$1", :"$2", :"$3"}, [{:==, :"$1", group_id}], [:"$3"]}
+    ])
+    |> Enum.filter(fn {user_id, _pid} -> user_id in allowed_user_ids end)
+    |> Enum.map(fn {_user_id, pid} -> pid end)
+  end
+
+  defp too_large?(_message, nil), do: false
+
+  defp too_large?(message, max) when is_integer(max) and max > 0 do
+    size =
+      if is_binary(message) do
+        byte_size(message)
+      else
+        try do
+          :erlang.external_size(message)
+        rescue
+          _ -> message |> :erlang.term_to_binary() |> byte_size()
+        end
+      end
+
+    size > max
+  end
+
+  defp too_large?(_message, _max), do: false
+
+  defp exceeds?(count, max) when is_integer(max) and max > 0 and count > max, do: true
+  defp exceeds?(_count, _max), do: false
+
+  @doc false
+  @spec do_handle_relay(PhoenixGenApi.Structs.Request.t(), PhoenixGenApi.Structs.FunConfig.t()) ::
+          PhoenixGenApi.Structs.Response.t()
+  def do_handle_relay(request, fun_config) do
+    case prepare_relay(request, fun_config) do
+      {:ok, relay_response, recipient_pids} ->
+        Enum.each(recipient_pids, fn pid ->
+          if Process.alive?(pid), do: send(pid, {:relay_message, relay_response})
+        end)
+
+        delivered = Enum.count(recipient_pids, &Process.alive?/1)
+
+        Response.sync_response(request.request_id, %{
+          "status" => "relayed",
+          "recipients_count" => delivered,
+          "targeted_count" => length(recipient_pids)
+        })
+
+      %Response{} = error ->
+        error
+    end
+  end
+
   # ── Private Helpers ────────────────────────────────────────────
+
+  defp group_full?(members) do
+    case limit(:max_group_size) do
+      max when is_integer(max) and max > 0 -> map_size(members) >= max
+      _ -> false
+    end
+  end
 
   defp new_member(roles, status) do
     %{
@@ -459,6 +668,9 @@ defmodule PhoenixGenApi.Relay do
         else
           {:error, :not_admin}
         end
+
+      nil ->
+        {:error, :user_not_in_group}
 
       _ ->
         {:error, :not_admin}
@@ -501,33 +713,6 @@ defmodule PhoenixGenApi.Relay do
 
       _ ->
         {:error, :not_muted}
-    end
-  end
-
-  defp send_to_group(group_id, request_id, relay_payload) do
-    relay_response = Response.sync_response(request_id, relay_payload)
-
-    members =
-      Registry.select(@registry, [
-        {{:"$1", :"$2", :"$3"}, [{:==, :"$1", group_id}], [{{:"$2", :"$3"}}]}
-      ])
-
-    # For small groups, use sequential dispatch (lower overhead).
-    # For large groups, use Task.async_stream to parallelize sends with back-pressure.
-    if length(members) <= @relay_dispatch_threshold do
-      Enum.each(members, fn {_key, {_user_id, channel_pid}} ->
-        send(channel_pid, {:relay_message, relay_response})
-      end)
-    else
-      Task.async_stream(
-        members,
-        fn {_key, {_user_id, channel_pid}} ->
-          send(channel_pid, {:relay_message, relay_response})
-        end,
-        max_concurrency: @relay_max_concurrency,
-        ordered: false
-      )
-      |> Stream.run()
     end
   end
 end

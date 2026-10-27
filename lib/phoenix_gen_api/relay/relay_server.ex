@@ -12,6 +12,8 @@ defmodule PhoenixGenApi.RelayServer do
 
   alias PhoenixGenApi.Relay
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @table :phoenix_gen_api_relay_groups
@@ -35,6 +37,20 @@ defmodule PhoenixGenApi.RelayServer do
 
   def delete_group(group_id) do
     GenServer.call(__MODULE__, {:delete_group, group_id})
+  end
+
+  def delete_group(group_id, actor_user_id) do
+    GenServer.call(__MODULE__, {:delete_group, group_id, actor_user_id})
+  end
+
+  @doc false
+  def prepare_relay(request, fun_config) do
+    GenServer.call(__MODULE__, {:prepare_relay, request, fun_config})
+  end
+
+  @doc false
+  def server_call(message) do
+    GenServer.call(__MODULE__, message)
   end
 
   def get_group_info(group_id) do
@@ -75,13 +91,13 @@ defmodule PhoenixGenApi.RelayServer do
   def init(_opts) do
     :ets.new(@table, [
       :set,
-      :public,
+      PhoenixGenApi.Security.internal_table_access(),
       :named_table,
       read_concurrency: true,
       write_concurrency: true
     ])
 
-    Logger.info("[RelayServer] initialized ETS table with read/write concurrency")
+    Logger.info(LogContext.event("RelayServer", :ets_initialized, node: node()))
     {:ok, %{monitors: %{}}}
   end
 
@@ -91,27 +107,45 @@ defmodule PhoenixGenApi.RelayServer do
         _from,
         state
       ) do
-    result = Relay.do_create_group(group_id, group_type, creator_user_id, channel_pid)
+    result =
+      relay_call(fn ->
+        Relay.do_create_group(group_id, group_type, creator_user_id, channel_pid)
+      end)
+
     {:reply, result, state}
   end
 
   def handle_call({:delete_group, group_id}, _from, state) do
-    result = Relay.do_delete_group(group_id)
-    {:reply, result, state}
+    result = relay_call(fn -> Relay.do_delete_group(group_id) end)
+
+    case result do
+      :ok -> {:reply, :ok, drop_group_monitors(state, group_id)}
+      _ -> {:reply, result, state}
+    end
   end
 
   def handle_call({:get_group_info, group_id}, _from, state) do
-    result = Relay.do_get_group_info(group_id)
+    result = relay_call(fn -> Relay.do_get_group_info(group_id) end)
     {:reply, result, state}
   end
 
   def handle_call({:join_group, group_id, user_id, channel_pid}, _from, state) do
-    result = Relay.do_join_group(group_id, user_id, channel_pid)
+    result = relay_call(fn -> Relay.do_join_group(group_id, user_id, channel_pid) end)
 
     case result do
       {:ok, _} ->
+        monitors =
+          case Map.pop(state.monitors, {group_id, user_id}) do
+            {nil, monitors} ->
+              monitors
+
+            {old_ref, monitors} ->
+              Process.demonitor(old_ref, [:flush])
+              monitors
+          end
+
         ref = Process.monitor(channel_pid)
-        new_monitors = Map.put(state.monitors, {group_id, user_id}, ref)
+        new_monitors = Map.put(monitors, {group_id, user_id}, ref)
 
         # Store the monitor ref in the member info so we can demonitor on leave
         update_monitor_ref(group_id, user_id, ref)
@@ -124,7 +158,7 @@ defmodule PhoenixGenApi.RelayServer do
   end
 
   def handle_call({:leave_group, group_id, user_id}, _from, state) do
-    result = Relay.do_leave_group(group_id, user_id)
+    result = relay_call(fn -> Relay.do_leave_group(group_id, user_id) end)
 
     case result do
       :ok ->
@@ -149,22 +183,36 @@ defmodule PhoenixGenApi.RelayServer do
   end
 
   def handle_call({:accept_member, group_id, actor_user_id, target_user_id}, _from, state) do
-    result = Relay.do_accept_member(group_id, actor_user_id, target_user_id)
+    result = relay_call(fn -> Relay.do_accept_member(group_id, actor_user_id, target_user_id) end)
     {:reply, result, state}
   end
 
   def handle_call({:mute_member, group_id, actor_user_id, target_user_id}, _from, state) do
-    result = Relay.do_mute_member(group_id, actor_user_id, target_user_id)
+    result = relay_call(fn -> Relay.do_mute_member(group_id, actor_user_id, target_user_id) end)
     {:reply, result, state}
   end
 
   def handle_call({:unmute_member, group_id, actor_user_id, target_user_id}, _from, state) do
-    result = Relay.do_unmute_member(group_id, actor_user_id, target_user_id)
+    result = relay_call(fn -> Relay.do_unmute_member(group_id, actor_user_id, target_user_id) end)
+    {:reply, result, state}
+  end
+
+  def handle_call({:delete_group, group_id, actor_user_id}, _from, state) do
+    result = relay_call(fn -> Relay.do_delete_group(group_id, actor_user_id) end)
+
+    case result do
+      :ok -> {:reply, :ok, drop_group_monitors(state, group_id)}
+      _ -> {:reply, result, state}
+    end
+  end
+
+  def handle_call({:prepare_relay, request, fun_config}, _from, state) do
+    result = relay_call(fn -> Relay.prepare_relay(request, fun_config) end)
     {:reply, result, state}
   end
 
   def handle_call({:handle_relay, request, fun_config}, _from, state) do
-    result = Relay.do_handle_relay(request, fun_config)
+    result = relay_call(fn -> Relay.do_handle_relay(request, fun_config) end)
     {:reply, result, state}
   end
 
@@ -191,6 +239,42 @@ defmodule PhoenixGenApi.RelayServer do
        groups: group_summaries,
        monitored_memberships: map_size(state.monitors)
      }, state}
+  end
+
+  defp drop_group_monitors(state, group_id) do
+    {drop, keep} = Enum.split_with(state.monitors, fn {{gid, _uid}, _ref} -> gid == group_id end)
+    Enum.each(drop, fn {_key, ref} -> Process.demonitor(ref, [:flush]) end)
+    %{state | monitors: Map.new(keep)}
+  end
+
+  defp relay_call(fun) do
+    try do
+      fun.()
+    rescue
+      error ->
+        Logger.error(
+          LogContext.line(
+            "RelayServer",
+            :operation_failed,
+            "relay operation failed",
+            LogContext.current(error: Exception.message(error))
+          )
+        )
+
+        {:error, :internal_error}
+    catch
+      kind, reason ->
+        Logger.error(
+          LogContext.line(
+            "RelayServer",
+            :operation_failed,
+            "relay operation failed",
+            LogContext.current(kind: kind, reason: reason)
+          )
+        )
+
+        {:error, :internal_error}
+    end
   end
 
   defp update_monitor_ref(group_id, user_id, ref) do
@@ -241,7 +325,15 @@ defmodule PhoenixGenApi.RelayServer do
 
       {{group_id, user_id}, _ref} ->
         Logger.info(
-          "[RelayServer] channel process down, cleaning up membership, group_id: #{group_id}, user_id: #{user_id}, reason: #{inspect(reason)}"
+          LogContext.line(
+            "RelayServer",
+            :channel_process_down,
+            "channel process down, cleaning up membership",
+            group_id: group_id,
+            user_id: user_id,
+            reason: reason,
+            node: node()
+          )
         )
 
         Process.demonitor(ref, [:flush])

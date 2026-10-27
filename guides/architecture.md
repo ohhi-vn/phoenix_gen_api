@@ -865,6 +865,25 @@ Key operations:
 | `get_all_functions/0` | List all configs grouped by service |
 | `clear/0` | Remove all configs |
 
+The table is an `:ordered_set`, so the un-versioned `get_fast/2` lookup is restricted to
+the `{service, request_type}` key prefix instead of scanning every stored version. A
+missing table is reported as `{:error, :unavailable}` (retryable) and distinguished from
+`{:error, :not_found}`.
+
+### Config validation and provenance
+
+All write paths (`add/1`, `update/1`, `batch_add/1`, `ConfigReceiver.push/1`, puller
+registration) run the same validation. `FunConfig.validate_security/1` checks every MFA
+the config can invoke — endpoint, `nodes`, hooks, `permission_callback`, `result_encoder`
+— and structural validation runs before the ETS write, so a rejected write leaves the
+previous config serving requests.
+
+Pushes are guarded by, in order: payload decoding, structural validation, push token,
+admin gate (`:push_config` when `admin_actions` is configured), optional source binding
+(`:config_source_binding`, `:service_owners`), and optional downgrade rejection. Retention
+is bounded by `:max_configs_per_service`, and failed-config records expire after 24 hours
+with an hourly sweep.
+
 ---
 
 ## 7. Execution Engine
@@ -1100,6 +1119,33 @@ Normal:    [task] → [worker] → success/failure → reset counter on success
               │                                                      │
               └── success during cooldown ───► CIRCUIT CLOSE ◄───────┘
 ```
+
+### Delivery guarantees
+
+- **One completion per task.** The worker's monitor `:DOWN` is the single completion
+  source; the task process no longer notifies the pool. Duplicate or stale completions
+  for an unknown or already-idle worker are ignored, so the pool cannot dispatch two
+  tasks to one worker.
+- **Hard concurrency limit.** A task is dispatched only by taking an idle worker, and a
+  worker is marked busy until its completion arrives.
+- **Crash containment.** Workers are linked but the pool traps exits (and monitors them),
+  so a worker crash replaces that worker and keeps the queue. Replacement failures are
+  logged, retried, and reported with a `worker restart` telemetry event.
+- **No silent task loss.** A worker whose circuit is open rejects the task with
+  `{:worker_rejected, worker, :circuit_open, task}`; the pool requeues it and pauses that
+  worker for the cooldown. Callers are never told `:ok` for a task that is then dropped.
+- **Resource cleanup.** Each task's timeout timer is cancelled on completion, and task
+  timeouts terminate and unmonitor the task before reporting one failure.
+- **Streams have their own capacity.** Stream work is dispatched to `:stream_pool`
+  (default 500 workers), and the pool slot is released once `StreamCall` owns the stream,
+  so a long stream does not hold an async slot.
+
+### Pool status
+
+`WorkerPool.status/1` reports `idle_workers`, `busy_workers` (busy + paused),
+`queued_tasks`, `circuit_open`, `total_tasks_executed`, and `total_tasks_failed`. The
+failure counter increments on every failed task; dead workers are excluded from the
+idle/busy totals.
 
 ---
 
@@ -1354,6 +1400,28 @@ Even without retry, the executor will try all nodes in the `nodes` list before g
 
 Between retries, the executor waits `2^attempt * base_ms` milliseconds (configurable). This prevents thundering herd problems during recovery.
 
+### Execution Isolation and Timeouts
+
+Endpoint code never runs in the calling process. Local execution and timeout-guarded
+requests run under the application's `PhoenixGenApi.TaskSupervisor` (falling back to a
+monitored process when the supervisor is not running), so a raise, throw, or exit in an
+endpoint becomes an error response instead of killing the channel.
+
+`FunConfig.timeout` is a hard bound: the endpoint is killed at the deadline even if it
+ignores shutdown, and a single outcome is returned. A request that finishes as the
+deadline fires is reported as finished, not timed out.
+
+When all retries are exhausted, both local and remote paths return the documented
+`all retry attempts exhausted` error and keep the last real failure in telemetry. A node
+resolution failure stops retrying immediately instead of looping over an empty node list.
+
+### Stream Termination
+
+Every stream ends with exactly one terminal frame. Normal completion is signalled by the
+data generator; a timeout or an abnormal producer exit produces an explicit error frame
+and a `[:phoenix_gen_api, :stream, :stop | :exception]` telemetry event, so clients are
+never left waiting on a dead stream.
+
 ---
 
 ## 17. Node Selection Strategies
@@ -1396,6 +1464,23 @@ nodes: {MyApp.Cluster, :get_nodes, ["user_service"]}
 ```
 
 This allows integration with service discovery systems.
+
+---
+
+## Compatibility and Hardening Tiers
+
+Hardening fixes in this library are classified before implementation so reviewers can see
+whether a change is safe on upgrade:
+
+| Tier | Meaning | Ships as |
+| --- | --- | --- |
+| A | Behaviour is preserved for valid input; only crashes, leaks, silent no-ops, or wasted work change | Always on |
+| B | Observable behaviour could change for a documented, valid usage | New flag, default = current behaviour |
+| C | Closing the hole by default requires a breaking change | Documented follow-up; flag provided in Tier B |
+
+When adding a fix, state its tier in the change description. Tier B flags must document
+their default in `guides/configuration.md`, and Tier C follow-ups must be listed in
+`CHANGELOG.md` under the deferred-defaults section.
 
 ---
 

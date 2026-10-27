@@ -1554,34 +1554,78 @@ defmodule PhoenixGenApi do
 
       @phoenix_gen_api_override_user_id Keyword.get(opts, :override_user_id, true)
       @phoenix_gen_api_require_verified_user_id Keyword.get(opts, :require_verified_user_id, true)
+      @phoenix_gen_api_require_authenticated_roles Keyword.get(
+                                                     opts,
+                                                     :require_authenticated_roles,
+                                                     false
+                                                   )
+      @phoenix_gen_api_reject_unverified_user_id Keyword.get(
+                                                   opts,
+                                                   :reject_unverified_user_id,
+                                                   false
+                                                 )
       @phoenix_gen_api_event Keyword.get(opts, :event, "phoenix_gen_api")
 
       require Logger
 
       alias PhoenixGenApi.Errors.DecodeError
       alias PhoenixGenApi.Executor
+      alias PhoenixGenApi.LogContext
       alias PhoenixGenApi.Structs.Request
       alias PhoenixGenApi.Structs.Response
 
       @impl true
       @doc false
       def handle_in(@phoenix_gen_api_event, payload, socket) do
+        context = LogContext.payload_context(payload, __MODULE__)
+
+        LogContext.with_context(context, fn ->
+          do_handle_in(payload, socket)
+        end)
+      end
+
+      defp do_handle_in(payload, socket) do
         Logger.debug(fn ->
-          "[PhoenixGenApi] incoming request, module: #{__MODULE__}, payload: #{inspect(payload)}"
+          LogContext.line("PhoenixGenApi", :incoming_request, "incoming request",
+            module: __MODULE__,
+            payload: LogContext.payload_summary(payload)
+          )
         end)
 
         # Only override user_id from socket assigns if it's a valid non-empty string.
         # Previously, nil user_ids from socket.assigns would be set in the payload,
         # which could bypass :any_authenticated permission checks.
+        verified_user_id =
+          case Map.get(socket.assigns, :user_id) do
+            user_id when is_binary(user_id) and byte_size(user_id) > 0 -> user_id
+            _ -> nil
+          end
+
         payload =
           if @phoenix_gen_api_override_user_id do
-            case Map.get(socket.assigns, :user_id) do
-              user_id when is_binary(user_id) and byte_size(user_id) > 0 ->
-                Map.put(payload, "user_id", user_id)
-
-              _ ->
-                payload
+            case verified_user_id do
+              nil -> payload
+              user_id -> Map.put(payload, "user_id", user_id)
             end
+          else
+            payload
+          end
+
+        # Opt-in: roles must come from the authenticated socket, not the payload.
+        payload =
+          if @phoenix_gen_api_require_authenticated_roles do
+            case Map.get(socket.assigns, :user_roles) do
+              roles when is_list(roles) -> Map.put(payload, "user_roles", roles)
+              _ -> Map.put(payload, "user_roles", nil)
+            end
+          else
+            payload
+          end
+
+        # Opt-in: an unverified payload user_id is treated as absent.
+        payload =
+          if @phoenix_gen_api_reject_unverified_user_id and is_nil(verified_user_id) do
+            Map.delete(payload, "user_id")
           else
             payload
           end
@@ -1600,7 +1644,13 @@ defmodule PhoenixGenApi do
                 request_id = Map.get(payload, "request_id", "unknown")
 
                 Logger.warning(
-                  "[PhoenixGenApi] rejected unauthenticated request, module: #{__MODULE__}, request_id: #{inspect(request_id)}"
+                  LogContext.line(
+                    "PhoenixGenApi",
+                    :unauthenticated_request_rejected,
+                    "rejected unauthenticated request",
+                    [module: __MODULE__, request_id: LogContext.value(request_id)] ++
+                      LogContext.current()
+                  )
                 )
 
                 error_response =
@@ -1637,7 +1687,17 @@ defmodule PhoenixGenApi do
           request_id = Map.get(payload, "request_id", "unknown")
 
           Logger.warning(
-            "[PhoenixGenApi] decode error, module: #{__MODULE__}, request_id: #{inspect(request_id)}, code: #{inspect(e.code)}, error: #{e.message}"
+            LogContext.line(
+              "PhoenixGenApi",
+              :request_decode_failed,
+              "decode error",
+              [
+                module: __MODULE__,
+                request_id: LogContext.value(request_id),
+                code: e.code,
+                error: e.message
+              ] ++ LogContext.current()
+            )
           )
 
           error_response =
@@ -1652,7 +1712,16 @@ defmodule PhoenixGenApi do
           request_id = Map.get(payload, "request_id", "unknown")
 
           Logger.error(
-            "[PhoenixGenApi] request processing failed, module: #{__MODULE__}, request_id: #{inspect(request_id)}, error: #{Exception.message(e)}"
+            LogContext.line(
+              "PhoenixGenApi",
+              :request_processing_failed,
+              "request processing failed",
+              [
+                module: __MODULE__,
+                request_id: LogContext.value(request_id),
+                error: Exception.message(e)
+              ] ++ LogContext.current()
+            )
           )
 
           error_response =
@@ -1675,7 +1744,16 @@ defmodule PhoenixGenApi do
       def handle_info({type, result}, socket)
           when type in [:push, :stream_response, :async_call] do
         Logger.debug(fn ->
-          "[PhoenixGenApi] #{type} result, module: #{__MODULE__}, result: #{inspect(result)}"
+          LogContext.line(
+            "PhoenixGenApi",
+            :result_received,
+            "#{type} result",
+            [
+              module: __MODULE__,
+              payload: LogContext.payload_summary(result),
+              result: LogContext.payload(result)
+            ] ++ LogContext.result_context(result)
+          )
         end)
 
         push(socket, @phoenix_gen_api_event, result)
@@ -1685,7 +1763,16 @@ defmodule PhoenixGenApi do
       @doc false
       def handle_info({:relay_message, result}, socket) do
         Logger.debug(fn ->
-          "[PhoenixGenApi] relay message, module: #{__MODULE__}, result: #{inspect(result)}"
+          LogContext.line(
+            "PhoenixGenApi",
+            :relay_message_received,
+            "relay message",
+            [
+              module: __MODULE__,
+              payload: LogContext.payload_summary(result),
+              result: LogContext.payload(result)
+            ] ++ LogContext.result_context(result)
+          )
         end)
 
         push(socket, @phoenix_gen_api_event, result)

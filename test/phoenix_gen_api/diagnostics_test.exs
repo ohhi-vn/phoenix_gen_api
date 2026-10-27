@@ -462,6 +462,16 @@ defmodule PhoenixGenApi.DiagnosticsTest do
     end
 
     test "trace operations are denied without admin action" do
+      original = Application.get_env(:phoenix_gen_api, :admin_actions)
+
+      on_exit(fn ->
+        if original,
+          do: Application.put_env(:phoenix_gen_api, :admin_actions, original),
+          else: Application.delete_env(:phoenix_gen_api, :admin_actions)
+      end)
+
+      Application.put_env(:phoenix_gen_api, :admin_actions, [:change_detail_error])
+
       assert {:error, :admin_action_denied} = Diagnostics.trace_processes(self())
       assert {:error, :admin_action_denied} = Diagnostics.trace_functions({__MODULE__, :noop})
       assert {:error, :admin_action_denied} = Diagnostics.stop_trace(self())

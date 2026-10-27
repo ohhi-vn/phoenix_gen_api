@@ -16,32 +16,49 @@ defmodule PhoenixGenApi.ConfigFailed do
 
   ## TTL
 
-  Entries expire after 24 hours. Call `cleanup/0` periodically to purge expired
-  entries. Query functions (`list/1`, `count/0`) automatically filter out expired
-  entries.
+  Entries expire after 24 hours. This process owns the table and sweeps expired
+  entries periodically (`:config_failed_cleanup_interval`, default one hour).
+  Query functions (`list/1`, `count/0`) also filter out expired entries.
+
+  Recording is safe when the process is not running: the failure is logged and
+  the caller does not crash.
   """
+
+  use GenServer
+
+  alias PhoenixGenApi.LogContext
 
   require Logger
 
   @table :phoenix_gen_api_config_failed
   @ttl_ms 24 * 60 * 60 * 1000
+  @default_cleanup_interval 60 * 60 * 1000
 
   # ── Public API ─────────────────────────────────────────────────────
 
   @doc """
-  Initializes the ETS table. Called by the application supervisor.
+  Initializes the ETS table if it does not exist. Called by the supervisor.
   """
   @spec init() :: :ok
   def init do
-    :ets.new(@table, [
-      :set,
-      :public,
-      :named_table,
-      read_concurrency: true,
-      write_concurrency: true
-    ])
+    case :ets.whereis(@table) do
+      :undefined ->
+        :ets.new(@table, [
+          :set,
+          PhoenixGenApi.Security.internal_table_access(),
+          :named_table,
+          read_concurrency: true,
+          write_concurrency: true
+        ])
 
-    Logger.info("[ConfigFailed] initialized ETS table with #{@ttl_ms}ms TTL")
+        Logger.info(
+          LogContext.event("ConfigFailed", :ets_initialized, ttl_ms: @ttl_ms, node: node())
+        )
+
+      _ ->
+        :ok
+    end
+
     :ok
   end
 
@@ -82,11 +99,40 @@ defmodule PhoenixGenApi.ConfigFailed do
       expires_at_ms: now + @ttl_ms
     }
 
-    :ets.insert(@table, {id, entry})
+    cond do
+      :ets.whereis(@table) == :undefined ->
+        Logger.debug(fn ->
+          LogContext.line(
+            "ConfigFailed",
+            :failure_not_stored,
+            "failed config store not running, failure only logged",
+            service: LogContext.value(entry.service),
+            request_type: LogContext.value(entry.request_type),
+            source: source
+          )
+        end)
 
-    Logger.debug(
-      "[ConfigFailed] recorded: id=#{id} service=#{inspect(entry.service)} request_type=#{inspect(entry.request_type)} source=#{source} reason=#{inspect(entry.reason)}"
-    )
+      PhoenixGenApi.Security.internal_table_access() == :protected and
+          Process.whereis(__MODULE__) != nil ->
+        GenServer.call(__MODULE__, {:record, entry})
+
+      true ->
+        :ets.insert(@table, {id, entry})
+    end
+
+    Logger.debug(fn ->
+      LogContext.line(
+        "ConfigFailed",
+        :failure_recorded,
+        "recorded",
+        id: id,
+        service: LogContext.value(entry.service),
+        request_type: LogContext.value(entry.request_type),
+        source: source,
+        node: LogContext.value(entry.node),
+        reason: entry.reason
+      )
+    end)
 
     entry
   end
@@ -103,22 +149,22 @@ defmodule PhoenixGenApi.ConfigFailed do
   """
   @spec list(keyword()) :: [map()]
   def list(opts \\ []) do
-    now = System.system_time(:millisecond)
-    source_filter = Keyword.get(opts, :source)
-    service_filter = Keyword.get(opts, :service)
-    limit = Keyword.get(opts, :limit, 100)
-    order = Keyword.get(opts, :order, :newest_first)
+    if :ets.whereis(@table) == :undefined do
+      []
+    else
+      now = System.system_time(:millisecond)
+      source_filter = Keyword.get(opts, :source)
+      service_filter = Keyword.get(opts, :service)
+      limit = Keyword.get(opts, :limit, 100)
+      order = Keyword.get(opts, :order, :newest_first)
 
-    # Select all entries where expires_at_ms > now
-    ms = [{{:"$1", :"$2"}, [{:>, {:map_get, :expires_at_ms, :"$2"}, now}], [:"$2"]}]
+      ms = [{{:"$1", :"$2"}, [{:>, {:map_get, :expires_at_ms, :"$2"}, now}], [:"$2"]}]
 
-    entries =
       :ets.select(@table, ms)
       |> filter_entries(source_filter, service_filter)
       |> sort_entries(order)
       |> Enum.take(limit)
-
-    entries
+    end
   end
 
   @doc """
@@ -126,9 +172,13 @@ defmodule PhoenixGenApi.ConfigFailed do
   """
   @spec count() :: non_neg_integer()
   def count do
-    now = System.system_time(:millisecond)
-    ms = [{{:"$1", :"$2"}, [{:>, {:map_get, :expires_at_ms, :"$2"}, now}], [true]}]
-    :ets.select_count(@table, ms)
+    if :ets.whereis(@table) == :undefined do
+      0
+    else
+      now = System.system_time(:millisecond)
+      ms = [{{:"$1", :"$2"}, [{:>, {:map_get, :expires_at_ms, :"$2"}, now}], [true]}]
+      :ets.select_count(@table, ms)
+    end
   end
 
   @doc """
@@ -154,21 +204,20 @@ defmodule PhoenixGenApi.ConfigFailed do
   """
   @spec cleanup() :: non_neg_integer()
   def cleanup do
-    now = System.system_time(:millisecond)
+    if :ets.whereis(@table) == :undefined do
+      0
+    else
+      now = System.system_time(:millisecond)
 
-    expired_ids =
-      :ets.tab2list(@table)
-      |> Enum.filter(fn {_id, entry} -> entry.expires_at_ms <= now end)
-      |> Enum.map(fn {id, _entry} -> id end)
+      ms = [{{:"$1", :"$2"}, [{:"=<", {:map_get, :expires_at_ms, :"$2"}, now}], [true]}]
+      count = :ets.select_delete(@table, ms)
 
-    count = length(expired_ids)
+      if count > 0 do
+        Logger.info(LogContext.event("ConfigFailed", :expired_entries_cleaned, count: count))
+      end
 
-    if count > 0 do
-      Enum.each(expired_ids, &:ets.delete(@table, &1))
-      Logger.info("[ConfigFailed] cleaned up #{count} expired entries")
+      count
     end
-
-    count
   end
 
   @doc """
@@ -176,19 +225,55 @@ defmodule PhoenixGenApi.ConfigFailed do
   """
   @spec clear() :: :ok
   def clear do
-    :ets.delete_all_objects(@table)
-    Logger.info("[ConfigFailed] cleared all entries")
-    :ok
+    if :ets.whereis(@table) == :undefined do
+      :ok
+    else
+      :ets.delete_all_objects(@table)
+      Logger.info(LogContext.event("ConfigFailed", :entries_cleared, node: node()))
+      :ok
+    end
   end
 
   @doc """
-  Starts the ConfigFailed table under the supervisor.
+  Starts the ConfigFailed owner process under the supervisor.
   """
-  @spec start_link(keyword()) :: {:ok, pid()}
-  def start_link(_opts) do
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(_opts \\ []) do
+    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  end
+
+  # ── Callbacks ──────────────────────────────────────────────────────
+
+  @impl true
+  def init(_opts) do
     init()
-    # Return a dummy pid — the ETS table is the actual state
-    {:ok, self()}
+    interval = cleanup_interval()
+    schedule_cleanup(interval)
+    {:ok, %{interval: interval}}
+  end
+
+  @impl true
+  def handle_call({:record, entry}, _from, state) do
+    :ets.insert(@table, {entry.id, entry})
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_info(:cleanup, state) do
+    cleanup()
+    schedule_cleanup(state.interval)
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  defp schedule_cleanup(interval) do
+    Process.send_after(self(), :cleanup, interval)
+  end
+
+  defp cleanup_interval do
+    Application.get_env(:phoenix_gen_api, :config_failed_cleanup_interval) ||
+      @default_cleanup_interval
   end
 
   # ── Private ────────────────────────────────────────────────────────

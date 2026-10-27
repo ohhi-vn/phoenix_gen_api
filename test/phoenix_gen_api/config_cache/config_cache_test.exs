@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.ConfigDbTest do
   use ExUnit.Case
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.Structs.FunConfig
 
@@ -522,10 +524,20 @@ defmodule PhoenixGenApi.ConfigDbTest do
       assert ConfigDb.get("Test", "test_request") == {:error, :not_found}
     end
 
-    test "add/1 with an invalid config" do
-      config = valid_config(%{arg_orders: :invalid_order})
-      assert {:error, :invalid_config} = ConfigDb.add(config)
+    test "add/1 with an invalid config logs identity without dumping the struct" do
+      config = valid_config(%{arg_orders: :invalid_order, version: "1.2.3"})
+
+      log =
+        capture_log(fn ->
+          assert {:error, :invalid_config} = ConfigDb.add(config)
+        end)
+
       assert ConfigDb.get("Test", "test_request") == {:error, :not_found}
+      assert log =~ "event=add_invalid_config"
+      assert log =~ "service=\"Test\""
+      assert log =~ "request_type=\"test_request\""
+      assert log =~ "version=\"1.2.3\""
+      refute log =~ "%FunConfig{"
     end
 
     test "add/1 with an invalid request_type" do

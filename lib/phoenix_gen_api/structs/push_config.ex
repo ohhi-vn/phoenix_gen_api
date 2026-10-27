@@ -45,6 +45,8 @@ defmodule PhoenixGenApi.Structs.PushConfig do
   alias PhoenixGenApi.Helpers.Shared
   alias PhoenixGenApi.Structs.{FunConfig, ServiceConfig}
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @typedoc "Push configuration struct for remote node pushes."
@@ -64,6 +66,7 @@ defmodule PhoenixGenApi.Structs.PushConfig do
         }
 
   @derive Nestru.Decoder
+  @derive {Inspect, except: [:push_token]}
   defstruct [
     # Service name — used as a key to group function configurations.
     :service,
@@ -122,7 +125,14 @@ defmodule PhoenixGenApi.Structs.PushConfig do
 
       {:error, errors} ->
         Logger.error(
-          "[PushConfig] validation failed, errors: #{inspect(errors)}, service: #{inspect(config.service)}, config_version: #{inspect(config.config_version)}"
+          LogContext.line(
+            "PushConfig",
+            :validation_failed,
+            "validation failed",
+            service: LogContext.value(config.service),
+            config_version: LogContext.value(config.config_version),
+            errors: errors
+          )
         )
 
         false

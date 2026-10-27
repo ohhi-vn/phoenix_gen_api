@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.ConfigReceiverTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.{ConfigDb, ConfigReceiver}
   alias PhoenixGenApi.Structs.{FunConfig, PushConfig}
 
@@ -49,6 +51,51 @@ defmodule PhoenixGenApi.ConfigReceiverTest do
     test "accepts a valid PushConfig and returns {:ok, :accepted}" do
       config = valid_push_config()
       assert {:ok, :accepted} = ConfigReceiver.push(config)
+    end
+
+    test "validation failure logs service, config_version, origin node, and request types" do
+      config = valid_push_config(%{nodes: [], config_version: "2.0.0"})
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:validation_failed, _errors}} = ConfigReceiver.push(config)
+        end)
+
+      assert log =~ "event=push_validation_failed"
+      assert log =~ "service=\"test_service\""
+      assert log =~ "config_version=\"2.0.0\""
+      assert log =~ "origin_node=#{inspect(node())}"
+      assert log =~ "request_type_count=1"
+      assert log =~ "request_types=[\"test_request\"]"
+    end
+
+    test "validation failure lists up to ten request types carried by the push" do
+      base = %FunConfig{
+        request_type: "alpha",
+        service: "test_service",
+        nodes: [Node.self()],
+        choose_node_mode: :random,
+        timeout: 5000,
+        mfa: {String, :upcase, []},
+        arg_types: %{},
+        arg_orders: [],
+        response_type: :sync,
+        version: "1.0.0"
+      }
+
+      fun_configs =
+        for request_type <- ["alpha", "beta", "gamma"] do
+          %{base | request_type: request_type}
+        end
+
+      config = valid_push_config(%{nodes: [], fun_configs: fun_configs})
+
+      log = capture_log(fn -> assert {:error, _} = ConfigReceiver.push(config) end)
+
+      assert log =~ "request_type_count=3"
+      assert log =~ "\"alpha\""
+      assert log =~ "\"beta\""
+      assert log =~ "\"gamma\""
     end
 
     test "stores FunConfigs in ConfigDb after push" do
@@ -286,7 +333,17 @@ defmodule PhoenixGenApi.ConfigReceiverTest do
       end)
 
       config = valid_push_config(push_token: "wrong-token")
-      assert {:error, :invalid_push_token} = ConfigReceiver.push(config)
+
+      log =
+        capture_log(fn ->
+          assert {:error, :invalid_push_token} = ConfigReceiver.push(config)
+        end)
+
+      assert log =~ "event=push_token_rejected"
+      assert log =~ "service=\"test_service\""
+      assert log =~ "origin_node=#{inspect(node())}"
+      assert log =~ "token_rejected=true"
+      refute log =~ "wrong-token"
     end
 
     test "rejects a push with a missing token when one is configured" do

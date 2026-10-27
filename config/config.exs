@@ -5,6 +5,13 @@ config :phoenix_gen_api,
   # Set to true if this node only makes requests (doesn't serve)
   client_mode: false
 
+# Logging verbosity.
+# By default log lines contain request/config identity plus a redacted payload
+# summary. Set to true to include full request payloads, argument values, and
+# function results in debug-level logs. Never enable this in production with
+# sensitive traffic.
+# log_verbose_payloads: false
+
 # Push token for authenticating push requests from remote nodes.
 # When set, push requests must include a matching `push_token` in the PushConfig.
 # If not set (nil), push requests are accepted without token check (backward compatible).

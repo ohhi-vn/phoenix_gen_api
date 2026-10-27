@@ -361,6 +361,61 @@ channel.on("chat", (payload) => {
 - **Process monitoring**: `RelayServer` calls `Process.monitor(channel_pid)` on every successful join. When a monitored channel process dies (crash, client disconnect, normal exit), the `handle_info({:DOWN, ...})` callback automatically calls `Relay.do_leave_group/2` to clean up both the ETS entry and the Registry entry. This prevents dead PIDs from accumulating in the Registry.
 - **Monitor cleanup**: On explicit `leave_group`, the monitor reference is demonitored and removed from the `RelayServer` state map via `Process.demonitor(ref, [:flush])`.
 
+## Hardening options
+
+```elixir
+config :phoenix_gen_api,
+  # :legacy (default) preserves the historical API; :strict adds actor checks.
+  relay_trust_mode: :strict,
+  relay_limits: %{
+    max_group_size: 1_000,
+    max_message_bytes: 65_536,
+    max_recipients: 10_000
+  }
+```
+
+### Trust mode (`:strict`)
+
+- `join_group/3` rejects a channel pid that belongs to another node
+  (`{:error, :remote_pid_not_allowed}`).
+- `delete_group/1` refuses to act without an actor (`{:error, :actor_required}`); use
+  `delete_group/2` with an active admin's user id. Non-admins and non-members are
+  rejected (`:not_admin`, `:user_not_in_group`).
+- `:legacy` (default) keeps the previous behaviour.
+
+### Limits
+
+`relay_limits` bounds group size (`:group_full`), message bytes (`"Message too large"`),
+and fan-out recipients (`"Too many recipients"`). Unset limits preserve the historical
+unlimited behaviour. Limits are checked before any message is delivered — a rejected
+message is never partially sent.
+
+### Delivery outcome
+
+The relay response now distinguishes targeted from delivered recipients:
+
+```elixir
+# %Response{result: %{
+#   "status" => "relayed",
+#   "targeted_count" => 3,
+#   "recipients_count" => 2    # pids that were still alive at send time
+# }}
+```
+
+`recipients_count` keeps its historical key and means *delivered*. Lifecycle telemetry
+is emitted for `[:phoenix_gen_api, :relay, :accepted]`,
+`[:phoenix_gen_api, :relay, :delivered]`, and `[:phoenix_gen_api, :relay, :rejected]`.
+
+### Resilience and isolation
+
+- Fan-out runs in the caller's process from a recipient snapshot; a large or slow group
+  does not block unrelated group operations, joins, or messages in `RelayServer`.
+- Invalid state transitions or malformed stored state return `{:error, :internal_error}`
+  and leave the server and other groups intact.
+- Deleting a group demonitors every member; re-joining demonitors the previous pid.
+- If the relay server is not running, `handle_relay/2` returns a retryable
+  `"Relay unavailable"` response instead of exiting.
+
 ---
 
 ## What's Next

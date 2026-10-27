@@ -117,10 +117,13 @@ defmodule PhoenixGenApi.RateLimiter do
 
   alias PhoenixGenApi.Helpers.Shared
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @supervisor :rate_limiter_supervisor
   @instance_prefix :rate_limiter_instance_
+  @limits_key {__MODULE__, :effective_limits}
 
   @default_cleanup_interval 60_000
 
@@ -213,6 +216,17 @@ defmodule PhoenixGenApi.RateLimiter do
     instance_count = get_instance_count()
     routing_strategy = get_routing_strategy()
 
+    if routing_strategy == :random do
+      Logger.warning(
+        LogContext.line(
+          "RateLimiter",
+          :random_routing_deprecated,
+          ":random routing is deprecated and ignored; keys are routed by hash for correctness",
+          node: node()
+        )
+      )
+    end
+
     # Start the supervisor that will manage all instances
     children =
       for i <- 0..(instance_count - 1) do
@@ -234,7 +248,14 @@ defmodule PhoenixGenApi.RateLimiter do
     case Supervisor.start_link(children, supervisor_opts) do
       {:ok, sup_pid} ->
         Logger.info(
-          "[RateLimiter] started, instances: #{instance_count}, routing: #{routing_strategy}"
+          LogContext.line(
+            "RateLimiter",
+            :started,
+            "started",
+            instances: instance_count,
+            routing: routing_strategy,
+            node: node()
+          )
         )
 
         {:ok, sup_pid}
@@ -285,43 +306,31 @@ defmodule PhoenixGenApi.RateLimiter do
     end
   end
 
-  # Select instance based on routing strategy
-  defp select_instance(request) do
-    instance_count = get_instance_count()
-    strategy = get_routing_strategy()
-
-    # Use user_id as the primary routing key (most common rate limit key)
-    # Fall back to request_id if user_id is not present
-    routing_value = Map.get(request, :user_id) || Map.get(request, :request_id) || ""
-
-    index =
-      case strategy do
-        :random ->
-          :rand.uniform(instance_count) - 1
-
-        :hash ->
-          :erlang.phash2(routing_value, instance_count)
-      end
-
-    instance_name(index)
+  # Keys are always routed by hash so checks for one key are serialized on one
+  # instance; this is what makes accounting race-free. `:random` is accepted for
+  # backwards compatibility but ignored.
+  defp select_instance(payload, instance_count) do
+    if protected_tables?() do
+      # Protected tables can only be written by their owner, so all checks are
+      # routed to the owning instance. This trades sharding for strict protection.
+      instance_name(0)
+    else
+      routing_value = Map.get(payload, :user_id) || Map.get(payload, :request_id) || ""
+      instance_name(:erlang.phash2(routing_value, instance_count))
+    end
   end
 
-  defp select_instance_for_direct(key_value, scope) do
-    instance_count = get_instance_count()
-    strategy = get_routing_strategy()
+  defp select_instance_for_direct(key_value, scope, instance_count) do
+    if protected_tables?() do
+      instance_name(0)
+    else
+      hash_input = "#{inspect(scope)}:#{key_value}"
+      instance_name(:erlang.phash2(hash_input, instance_count))
+    end
+  end
 
-    index =
-      case strategy do
-        :random ->
-          :rand.uniform(instance_count) - 1
-
-        :hash ->
-          # Hash based on key_value and scope for consistent routing
-          hash_input = "#{inspect(scope)}:#{key_value}"
-          :erlang.phash2(hash_input, instance_count)
-      end
-
-    instance_name(index)
+  defp protected_tables? do
+    PhoenixGenApi.Security.internal_table_access() == :protected
   end
 
   @doc """
@@ -359,73 +368,121 @@ defmodule PhoenixGenApi.RateLimiter do
   """
   def check_rate_limit(request) do
     if enabled?() do
-      start_time = System.monotonic_time(:microsecond)
-      instance = select_instance(request)
-      timeout = rate_limit_timeout()
+      started = System.monotonic_time(:microsecond)
 
-      result =
-        try do
-          GenServer.call(instance, {:check_rate_limit, request}, timeout)
-        rescue
-          e ->
-            if fail_open?() do
-              Logger.error(
-                "[RateLimiter] call failed (fail-open): #{Exception.message(e)}, request_id: #{request.request_id}"
-              )
+      case effective_limits() do
+        %{configured?: false} ->
+          :ok
 
-              :ok
-            else
-              {:error, :rate_limiter_error, %{message: Exception.message(e)}}
-            end
-        end
-
-      duration = System.monotonic_time(:microsecond) - start_time
-
-      :telemetry.execute(
-        [:phoenix_gen_api, :rate_limiter, :check],
-        %{duration_us: duration},
-        %{
-          request_id: request.request_id,
-          user_id: request.user_id,
-          instance: instance,
-          service: request.service,
-          request_type: request.request_type,
-          result: result
-        }
-      )
-
-      if match?({:error, :rate_limited, _}, result) do
-        {:error, :rate_limited, details} = result
-
-        :telemetry.execute(
-          [:phoenix_gen_api, :rate_limiter, :exceeded],
-          %{retry_after_ms: details.retry_after_ms},
-          %{
-            key: details.key,
-            scope: details.scope,
-            max_requests: details.max_requests,
-            current_requests: details.current_requests,
-            request_id: request.request_id,
-            user_id: request.user_id
-          }
-        )
+        snapshot ->
+          payload = build_check_payload(request, snapshot)
+          instance = select_instance(payload, snapshot.instance_count)
+          result = do_check(instance, {:check_rate_limit, payload})
+          emit_check_telemetry(request, instance, result, started)
+          maybe_emit_exceeded(request, result)
+          result
       end
-
-      result
     else
       :ok
     end
-  rescue
-    e ->
-      if fail_open?() do
-        Logger.error(
-          "[RateLimiter] check_rate_limit failed, allowing request (fail-open): #{Exception.message(e)}"
-        )
+  end
 
-        :ok
+  defp do_check(instance, message) do
+    try do
+      GenServer.call(instance, message, rate_limit_timeout())
+    rescue
+      error -> failure_result(error, :internal)
+    catch
+      :exit, reason -> failure_result(reason, classify_exit(reason))
+    end
+  end
+
+  defp failure_result(reason, failure_class) do
+    message = format_failure(reason)
+
+    if fail_open?() do
+      Logger.error(
+        LogContext.line(
+          "RateLimiter",
+          :call_failed_fail_open,
+          "call failed (fail-open)",
+          LogContext.current(error: message, failure_class: failure_class)
+        )
+      )
+
+      :ok
+    else
+      {:error, :rate_limiter_error, %{message: message, failure_class: failure_class}}
+    end
+  end
+
+  defp classify_exit(:timeout), do: :timeout
+  defp classify_exit({:timeout, _}), do: :timeout
+  defp classify_exit(:noproc), do: :unavailable
+  defp classify_exit(:shutdown), do: :unavailable
+  defp classify_exit({:shutdown, _}), do: :unavailable
+  defp classify_exit(_reason), do: :internal
+
+  defp format_failure(%{__exception__: true} = error), do: Exception.message(error)
+  defp format_failure(reason), do: inspect(reason)
+
+  defp emit_check_telemetry(request, instance, result, started) do
+    duration = System.monotonic_time(:microsecond) - started
+
+    :telemetry.execute(
+      [:phoenix_gen_api, :rate_limiter, :check],
+      %{duration_us: duration},
+      %{
+        request_id: request.request_id,
+        user_id: request.user_id,
+        instance: instance,
+        service: request.service,
+        request_type: request.request_type,
+        result: result
+      }
+    )
+  end
+
+  defp maybe_emit_exceeded(request, {:error, :rate_limited, details}) do
+    :telemetry.execute(
+      [:phoenix_gen_api, :rate_limiter, :exceeded],
+      %{retry_after_ms: details.retry_after_ms},
+      %{
+        key: details.key,
+        scope: details.scope,
+        max_requests: details.max_requests,
+        current_requests: details.current_requests,
+        request_id: request.request_id,
+        user_id: request.user_id
+      }
+    )
+  end
+
+  defp maybe_emit_exceeded(_request, _result), do: :ok
+
+  # Only the key material the limiter needs is copied to the limiter process.
+  # `args` is included only when a configured limit keys on a custom argument.
+  defp build_check_payload(request, snapshot) do
+    payload = %{
+      request_id: request.request_id,
+      user_id: request.user_id,
+      device_id: request.device_id,
+      service: request.service,
+      request_type: request.request_type
+    }
+
+    payload =
+      if snapshot.needs_ip? do
+        Map.put(payload, :ip_address, Map.get(request, :ip_address))
       else
-        {:error, :rate_limiter_error, %{message: Exception.message(e)}}
+        payload
       end
+
+    if snapshot.needs_args? do
+      Map.put(payload, :args, request.args)
+    else
+      payload
+    end
   end
 
   @doc """
@@ -454,8 +511,14 @@ defmodule PhoenixGenApi.RateLimiter do
           :ok | {:error, :rate_limited, rate_limit_details()}
   def check_rate_limit(key_value, scope, rate_limit_key) do
     if enabled?() do
-      instance = select_instance_for_direct(key_value, scope)
-      GenServer.call(instance, {:check_rate_limit_direct, key_value, scope, rate_limit_key})
+      case effective_limits() do
+        %{configured?: false} ->
+          :ok
+
+        snapshot ->
+          instance = select_instance_for_direct(key_value, scope, snapshot.instance_count)
+          do_check(instance, {:check_rate_limit_direct, key_value, scope, rate_limit_key})
+      end
     else
       :ok
     end
@@ -479,22 +542,30 @@ defmodule PhoenixGenApi.RateLimiter do
       # Reset all rate limits for a user
       RateLimiter.reset_rate_limit("user_123", :global, :user_id)
   """
-  @spec reset_rate_limit(String.t(), :global | api_identifier(), rate_limit_key()) :: :ok
+  @spec reset_rate_limit(String.t(), :global | api_identifier(), rate_limit_key()) ::
+          :ok | {:error, term()}
   def reset_rate_limit(key_value, scope, rate_limit_key) do
-    instance = select_instance_for_direct(key_value, scope)
-    result = GenServer.call(instance, {:reset_rate_limit, key_value, scope, rate_limit_key})
+    with :ok <- admin_gate(:update_rate_limit_config) do
+      instance = select_instance_for_direct(key_value, scope, effective_limits().instance_count)
 
-    :telemetry.execute(
-      [:phoenix_gen_api, :rate_limiter, :reset],
-      %{},
-      %{
-        key: key_value,
-        scope: scope,
-        rate_limit_key: rate_limit_key
-      }
-    )
+      case safe_admin_call(instance, {:reset_rate_limit, key_value, scope, rate_limit_key}) do
+        :ok ->
+          :telemetry.execute(
+            [:phoenix_gen_api, :rate_limiter, :reset],
+            %{},
+            %{
+              key: key_value,
+              scope: scope,
+              rate_limit_key: rate_limit_key
+            }
+          )
 
-    result
+          :ok
+
+        error ->
+          error
+      end
+    end
   end
 
   @doc """
@@ -504,20 +575,21 @@ defmodule PhoenixGenApi.RateLimiter do
 
     A map with current usage information for all applicable rate limits.
   """
-  @spec get_rate_limit_status(String.t(), :global | api_identifier(), rate_limit_key()) :: map()
+  @spec get_rate_limit_status(String.t(), :global | api_identifier(), rate_limit_key()) ::
+          map() | {:error, term()}
   def get_rate_limit_status(key_value, scope, rate_limit_key) do
-    instance = select_instance_for_direct(key_value, scope)
-    GenServer.call(instance, {:get_rate_limit_status, key_value, scope, rate_limit_key})
+    instance = select_instance_for_direct(key_value, scope, effective_limits().instance_count)
+    safe_admin_call(instance, {:get_rate_limit_status, key_value, scope, rate_limit_key})
   end
 
   @doc """
   Gets all configured rate limits.
   """
-  @spec get_configured_limits() :: %{global: list(), api: list()}
+  @spec get_configured_limits() :: %{global: list(), api: list()} | {:error, term()}
   def get_configured_limits do
     # This is a global config, can query any instance
     instance = instance_name(0)
-    GenServer.call(instance, :get_configured_limits)
+    safe_admin_call(instance, :get_configured_limits)
   end
 
   @doc """
@@ -532,11 +604,11 @@ defmodule PhoenixGenApi.RateLimiter do
       PhoenixGenApi.RateLimiter.get_global_limits()
       # => [%{key: :user_id, max_requests: 2000, window_ms: 60_000}]
   """
-  @spec get_global_limits() :: [map()]
+  @spec get_global_limits() :: [map()] | {:error, term()}
   def get_global_limits do
     # This is a global config, can query any instance
     instance = instance_name(0)
-    GenServer.call(instance, :get_global_limits)
+    safe_admin_call(instance, :get_global_limits)
   end
 
   @doc """
@@ -560,20 +632,48 @@ defmodule PhoenixGenApi.RateLimiter do
         %{key: :device_id, max_requests: 10000, window_ms: 60_000}
       ])
   """
-  @spec set_global_limits([map()]) :: :ok
+  @spec set_global_limits([map()]) :: :ok | {:error, term()}
   def set_global_limits(limits) when is_list(limits) do
-    broadcast_to_all_instances({:set_global_limits, limits})
+    with :ok <- admin_gate(:update_rate_limit_config) do
+      broadcast_to_all_instances({:set_global_limits, limits})
+    end
   end
 
   defp broadcast_to_all_instances(message) do
-    instance_count = get_instance_count()
+    instance_count = effective_limits().instance_count
+    indices = if protected_tables?(), do: [0], else: Enum.to_list(0..(instance_count - 1))
 
-    for i <- 0..(instance_count - 1) do
-      instance = instance_name(i)
-      GenServer.call(instance, message)
+    results =
+      for i <- indices do
+        safe_admin_call(instance_name(i), message)
+      end
+
+    case Enum.find(results, &(&1 != :ok)) do
+      nil -> :ok
+      error -> error
     end
+  end
 
-    :ok
+  defp safe_admin_call(instance, message) do
+    try do
+      GenServer.call(instance, message)
+    rescue
+      error -> {:error, {:instance_error, Exception.message(error)}}
+    catch
+      :exit, reason -> {:error, {:instance_unavailable, reason}}
+    end
+  end
+
+  defp admin_gate(action) do
+    if Application.get_env(:phoenix_gen_api, :admin_actions) == nil do
+      :ok
+    else
+      if PhoenixGenApi.Security.admin_action_allowed?(action) do
+        :ok
+      else
+        {:error, :admin_action_denied}
+      end
+    end
   end
 
   @doc """
@@ -598,9 +698,11 @@ defmodule PhoenixGenApi.RateLimiter do
         window_ms: 60_000
       })
   """
-  @spec add_global_limit(map()) :: :ok
+  @spec add_global_limit(map()) :: :ok | {:error, term()}
   def add_global_limit(limit) when is_map(limit) do
-    broadcast_to_all_instances({:add_global_limit, limit})
+    with :ok <- admin_gate(:update_rate_limit_config) do
+      broadcast_to_all_instances({:add_global_limit, limit})
+    end
   end
 
   @doc """
@@ -618,9 +720,11 @@ defmodule PhoenixGenApi.RateLimiter do
 
       PhoenixGenApi.RateLimiter.remove_global_limit(:ip_address)
   """
-  @spec remove_global_limit(atom() | String.t()) :: :ok
+  @spec remove_global_limit(atom() | String.t()) :: :ok | {:error, term()}
   def remove_global_limit(key) do
-    broadcast_to_all_instances({:remove_global_limit, key})
+    with :ok <- admin_gate(:update_rate_limit_config) do
+      broadcast_to_all_instances({:remove_global_limit, key})
+    end
   end
 
   @doc """
@@ -664,8 +768,10 @@ defmodule PhoenixGenApi.RateLimiter do
     statuses =
       if instance_count > 0 do
         for i <- 0..(instance_count - 1) do
-          instance = instance_name(i)
-          GenServer.call(instance, :status)
+          case safe_admin_call(instance_name(i), :status) do
+            {:error, reason} -> %{status: :error, instance_index: i, reason: reason}
+            status -> status
+          end
         end
       else
         []
@@ -679,9 +785,11 @@ defmodule PhoenixGenApi.RateLimiter do
 
   Useful for testing or resetting rate limit counters.
   """
-  @spec clear() :: :ok
+  @spec clear() :: :ok | {:error, term()}
   def clear do
-    broadcast_to_all_instances(:clear)
+    with :ok <- admin_gate(:update_rate_limit_config) do
+      broadcast_to_all_instances(:clear)
+    end
   end
 
   ### Callbacks
@@ -690,14 +798,15 @@ defmodule PhoenixGenApi.RateLimiter do
   def init(opts) do
     instance_index = Keyword.get(opts, :instance_index, 0)
 
-    # Create ETS tables for rate limiting (only if they don't exist)
-    # Multiple instances will share these tables
+    # Create the shared ETS tables. Rows are `{ {key, timestamp, unique} }` in an
+    # ordered_set so a key's window can be counted with a key-prefix range scan
+    # instead of copying and filtering a whole list on every check.
     case :ets.whereis(:rate_limiter_global) do
       :undefined ->
         :ets.new(:rate_limiter_global, [
-          :set,
+          :ordered_set,
           :named_table,
-          :public,
+          PhoenixGenApi.Security.internal_table_access(),
           read_concurrency: true,
           write_concurrency: true
         ])
@@ -709,9 +818,9 @@ defmodule PhoenixGenApi.RateLimiter do
     case :ets.whereis(:rate_limiter_api) do
       :undefined ->
         :ets.new(:rate_limiter_api, [
-          :set,
+          :ordered_set,
           :named_table,
-          :public,
+          PhoenixGenApi.Security.internal_table_access(),
           read_concurrency: true,
           write_concurrency: true
         ])
@@ -724,20 +833,56 @@ defmodule PhoenixGenApi.RateLimiter do
       instance_index: instance_index,
       global_limits: load_global_limits(),
       api_limits: load_api_limits(),
-      cleanup_interval: cleanup_interval()
+      api_index: build_api_index(load_api_limits()),
+      cleanup_interval: cleanup_interval(),
+      max_keys: Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:max_rate_limit_keys],
+      max_key_bytes:
+        Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:max_rate_limit_key_bytes],
+      ip_source: Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:ip_address_source]
     }
 
+    validate_limit_keys(state.global_limits)
+    validate_limit_keys(state.api_limits)
+    publish_limits(state)
+
     Logger.info(
-      "[RateLimiter] instance #{instance_index} initialized, global_limits: #{length(state.global_limits)}, api_limits: #{length(state.api_limits)}, cleanup_interval: #{state.cleanup_interval}ms"
+      LogContext.line(
+        "RateLimiter",
+        :instance_initialized,
+        "instance initialized",
+        instance: instance_index,
+        global_limits: length(state.global_limits),
+        api_limits: length(state.api_limits),
+        cleanup_interval_ms: state.cleanup_interval,
+        node: node()
+      )
     )
 
-    schedule_cleanup()
+    schedule_cleanup(state.cleanup_interval)
     {:ok, state}
   end
 
   @impl true
+  def handle_call({:check_rate_limit, payload}, _from, state)
+      when is_map(payload) and not is_struct(payload) do
+    context = [
+      request_id: payload.request_id,
+      request_type: payload.request_type,
+      service: payload.service,
+      user_id: payload.user_id,
+      node: node()
+    ]
+
+    result = LogContext.with_context(context, fn -> check_request_limits(payload, state) end)
+    {:reply, result, state}
+  end
+
   def handle_call({:check_rate_limit, request}, _from, state) do
-    result = check_request_limits(request, state)
+    result =
+      LogContext.with_context(LogContext.request_context(request), fn ->
+        check_request_limits(request, state)
+      end)
+
     {:reply, result, state}
   end
 
@@ -747,8 +892,14 @@ defmodule PhoenixGenApi.RateLimiter do
   end
 
   def handle_call({:reset_rate_limit, key_value, scope, rate_limit_key}, _from, state) do
-    reset_limit(key_value, scope, rate_limit_key)
-    {:reply, :ok, state}
+    case admin_gate(:update_rate_limit_config) do
+      :ok ->
+        reset_limit(key_value, scope, rate_limit_key)
+        {:reply, :ok, state}
+
+      error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call({:get_rate_limit_status, key_value, scope, rate_limit_key}, _from, state) do
@@ -765,36 +916,36 @@ defmodule PhoenixGenApi.RateLimiter do
   end
 
   def handle_call({:set_global_limits, limits}, _from, state) do
-    Logger.info("[RateLimiter] global limits replaced: #{inspect(limits)}")
-    {:reply, :ok, %{state | global_limits: limits}}
+    case admin_gate(:update_rate_limit_config) do
+      :ok -> do_set_global_limits(limits, state)
+      error -> {:reply, error, state}
+    end
   end
 
   def handle_call({:add_global_limit, limit}, _from, state) do
-    key = Map.get(limit, :key)
-
-    new_limits =
-      state.global_limits
-      |> Enum.reject(fn l -> Map.get(l, :key) == key end)
-      |> Enum.concat([limit])
-
-    Logger.info("[RateLimiter] global limit added/updated: #{inspect(limit)}")
-    {:reply, :ok, %{state | global_limits: new_limits}}
+    case admin_gate(:update_rate_limit_config) do
+      :ok -> do_add_global_limit(limit, state)
+      error -> {:reply, error, state}
+    end
   end
 
   def handle_call({:remove_global_limit, key}, _from, state) do
-    new_limits = Enum.reject(state.global_limits, fn l -> Map.get(l, :key) == key end)
-
-    Logger.info(
-      "[RateLimiter] global limit removed, key: #{inspect(key)}, remaining: #{length(new_limits)}"
-    )
-
-    {:reply, :ok, %{state | global_limits: new_limits}}
+    case admin_gate(:update_rate_limit_config) do
+      :ok -> do_remove_global_limit(key, state)
+      error -> {:reply, error, state}
+    end
   end
 
   def handle_call(:clear, _from, state) do
-    :ets.delete_all_objects(:rate_limiter_global)
-    :ets.delete_all_objects(:rate_limiter_api)
-    {:reply, :ok, state}
+    case admin_gate(:update_rate_limit_config) do
+      :ok ->
+        :ets.delete_all_objects(:rate_limiter_global)
+        :ets.delete_all_objects(:rate_limiter_api)
+        {:reply, :ok, state}
+
+      error ->
+        {:reply, error, state}
+    end
   end
 
   def handle_call(:status, _from, state) do
@@ -813,31 +964,31 @@ defmodule PhoenixGenApi.RateLimiter do
   end
 
   def handle_call({:update_config, config}, _from, state) do
-    new_state =
-      state
-      |> maybe_update_global_limits(config)
-      |> maybe_update_api_limits(config)
+    case admin_gate(:update_rate_limit_config) do
+      :ok ->
+        new_state =
+          state
+          |> refresh_caps()
+          |> maybe_update_global_limits(config)
+          |> maybe_update_api_limits(config)
 
-    Logger.info("[RateLimiter] configuration updated")
-    {:reply, :ok, new_state}
+        new_state = %{new_state | api_index: build_api_index(new_state.api_limits)}
+        validate_limit_keys(new_state.global_limits)
+        validate_limit_keys(new_state.api_limits)
+        publish_limits(new_state)
+
+        Logger.info(LogContext.event("RateLimiter", :configuration_updated, node: node()))
+        {:reply, :ok, new_state}
+
+      error ->
+        {:reply, error, state}
+    end
   end
 
   @impl true
   def handle_info(:cleanup, state) do
-    start_time = System.monotonic_time(:microsecond)
-    cleaned_count = perform_cleanup(state.instance_index)
-    duration = System.monotonic_time(:microsecond) - start_time
-
-    :telemetry.execute(
-      [:phoenix_gen_api, :rate_limiter, :cleanup],
-      %{duration_us: duration, cleaned_entries: cleaned_count},
-      %{
-        global_limits_count: length(state.global_limits),
-        api_limits_count: length(state.api_limits)
-      }
-    )
-
-    schedule_cleanup()
+    schedule_cleanup(state.cleanup_interval)
+    maybe_start_cleanup(state)
     {:noreply, state}
   end
 
@@ -856,55 +1007,62 @@ defmodule PhoenixGenApi.RateLimiter do
   ### Private Functions
 
   defp check_request_limits(request, state) do
-    # Check global limits
-    case check_global_limits(request, state.global_limits) do
-      {:error, _reason, _details} = error -> error
-      :ok -> check_api_limits(request, state.api_limits)
+    case check_global_limits(request, state.global_limits, state) do
+      {:error, _reason, _details} = error ->
+        error
+
+      :ok ->
+        check_api_limits(
+          request,
+          Map.get(state.api_index, {request.service, request.request_type}, []),
+          state
+        )
     end
   end
 
-  defp check_global_limits(request, global_limits) do
+  defp check_global_limits(request, global_limits, state) do
     Enum.reduce_while(global_limits, :ok, fn limit, _acc ->
-      key_value = get_key_value(request, limit.key)
+      case resolve_key(request, limit.key, state) do
+        {:ok, key_value} ->
+          case check_and_record(:rate_limiter_global, key_value, limit, state) do
+            :ok -> {:cont, :ok}
+            {:error, :rate_limited, details} -> {:halt, {:error, :rate_limited, details}}
+          end
 
-      if is_binary(key_value) and byte_size(key_value) > 0 do
-        case check_and_record(:rate_limiter_global, key_value, limit) do
-          :ok -> {:cont, :ok}
-          {:error, :rate_limited, details} -> {:halt, {:error, :rate_limited, details}}
-        end
-      else
-        {:cont, :ok}
+        :missing ->
+          log_missing_key(limit.key, :global)
+          {:cont, :ok}
       end
     end)
   end
 
-  defp check_api_limits(request, api_limits) do
+  defp check_api_limits(request, api_limits, state) do
     Enum.reduce_while(api_limits, :ok, fn limit, _acc ->
-      check_api_limit(request, limit)
+      case resolve_key(request, limit.key, state) do
+        {:ok, key_value} ->
+          scope = {limit.service, limit.request_type}
+
+          case check_and_record(:rate_limiter_api, build_api_key(key_value, scope), limit, state) do
+            :ok -> {:cont, :ok}
+            {:error, :rate_limited, details} -> {:halt, {:error, :rate_limited, details}}
+          end
+
+        :missing ->
+          log_missing_key(limit.key, {limit.service, limit.request_type})
+          {:cont, :ok}
+      end
     end)
   end
 
-  defp check_api_limit(request, limit) do
-    if limit.service == request.service and limit.request_type == request.request_type do
-      check_api_limit_key(request, limit)
-    else
-      {:cont, :ok}
-    end
-  end
-
-  defp check_api_limit_key(request, limit) do
-    key_value = get_key_value(request, limit.key)
-
-    if is_binary(key_value) and byte_size(key_value) > 0 do
-      scope = {limit.service, limit.request_type}
-
-      case check_and_record(:rate_limiter_api, build_api_key(key_value, scope), limit) do
-        :ok -> {:cont, :ok}
-        {:error, :rate_limited, details} -> {:halt, {:error, :rate_limited, details}}
-      end
-    else
-      {:cont, :ok}
-    end
+  defp log_missing_key(key, scope) do
+    Logger.debug(fn ->
+      LogContext.line(
+        "RateLimiter",
+        :rate_limit_key_missing,
+        "enabled limit skipped because its key source is unavailable",
+        LogContext.current(rate_limit_key: key, scope: scope)
+      )
+    end)
   end
 
   defp check_direct_limit(key_value, scope, rate_limit_key, state) do
@@ -914,10 +1072,9 @@ defmodule PhoenixGenApi.RateLimiter do
           state.global_limits
 
         {service, request_type} ->
-          Enum.filter(state.api_limits, fn limit ->
-            limit.service == service and limit.request_type == request_type and
-              limit.key == rate_limit_key
-          end)
+          state.api_index
+          |> Map.get({service, request_type}, [])
+          |> Enum.filter(fn limit -> limit.key == rate_limit_key end)
       end
 
     if limits == [] do
@@ -930,7 +1087,7 @@ defmodule PhoenixGenApi.RateLimiter do
             _ -> build_api_key(key_value, scope)
           end
 
-        case check_and_record(ets_table_for_scope(scope), ets_key, limit) do
+        case check_and_record(ets_table_for_scope(scope), ets_key, limit, state) do
           :ok -> {:cont, :ok}
           {:error, :rate_limited, details} -> {:halt, {:error, :rate_limited, details}}
         end
@@ -938,47 +1095,114 @@ defmodule PhoenixGenApi.RateLimiter do
     end
   end
 
-  defp check_and_record(table, key, limit) do
+  # Sliding-window accounting with one ordered_set row per timestamp. Counting
+  # and expiry use key-prefix range scans, so a check never copies or filters the
+  # whole window in the caller's heap.
+  defp check_and_record(table, key, limit, state) do
+    key = bound_key(table, bound_key_bytes(key, state), state)
     now = System.monotonic_time(:millisecond)
     window_start = now - limit.window_ms
 
-    case :ets.lookup(table, key) do
-      [{^key, timestamps}] ->
-        # Filter out expired timestamps
-        valid_timestamps = Enum.reject(timestamps, fn ts -> ts <= window_start end)
-        current_count = length(valid_timestamps)
+    delete_expired_for_key(table, key, window_start)
+    current_count = count_in_window(table, key, window_start)
 
-        if current_count >= limit.max_requests do
-          # Rate limit exceeded
-          oldest_valid = List.last(valid_timestamps)
-          retry_after_ms = oldest_valid + limit.window_ms - now
-
-          details = %{
-            key: key,
-            max_requests: limit.max_requests,
-            current_requests: current_count,
-            window_ms: limit.window_ms,
-            retry_after_ms: max(retry_after_ms, 0),
-            scope: get_scope_from_table(table, key)
-          }
-
-          Logger.warning(
-            "[RateLimiter] rate limit exceeded, key: #{inspect(key)}, current: #{current_count}/#{limit.max_requests}, window: #{limit.window_ms}ms, retry_after: #{retry_after_ms}ms"
-          )
-
-          {:error, :rate_limited, details}
-        else
-          # Within limit, add new timestamp and keep list bounded
-          new_timestamps = Enum.take([now | valid_timestamps], limit.max_requests)
-          :ets.insert(table, {key, new_timestamps})
-          :ok
+    if current_count >= limit.max_requests do
+      retry_after_ms =
+        case oldest_in_window(table, key, window_start) do
+          nil -> limit.window_ms
+          oldest -> max(oldest + limit.window_ms - now, 0)
         end
 
-      [] ->
-        # No existing entry, create new one
-        :ets.insert(table, {key, [now]})
-        :ok
+      details = %{
+        key: key,
+        max_requests: limit.max_requests,
+        current_requests: current_count,
+        window_ms: limit.window_ms,
+        retry_after_ms: retry_after_ms,
+        scope: get_scope_from_table(table, key)
+      }
+
+      Logger.warning(
+        LogContext.line(
+          "RateLimiter",
+          :rate_limit_exceeded,
+          "rate limit exceeded",
+          LogContext.current(
+            key: key,
+            current: current_count,
+            max_requests: limit.max_requests,
+            window_ms: limit.window_ms,
+            retry_after_ms: retry_after_ms
+          )
+        )
+      )
+
+      {:error, :rate_limited, details}
+    else
+      unique = :erlang.unique_integer([:positive, :monotonic])
+      :ets.insert(table, {{key, now, unique}})
+      :ok
     end
+  rescue
+    error in ArgumentError ->
+      Logger.error(
+        LogContext.line(
+          "RateLimiter",
+          :table_unavailable,
+          "rate limit table unavailable",
+          LogContext.current(error: Exception.message(error))
+        )
+      )
+
+      {:error, :rate_limited,
+       %{
+         key: key,
+         max_requests: limit.max_requests,
+         current_requests: 0,
+         window_ms: limit.window_ms,
+         retry_after_ms: 0,
+         scope: get_scope_from_table(table, key)
+       }}
+  end
+
+  defp bound_key_bytes(key, %{max_key_bytes: max})
+       when is_integer(max) and max > 0 and is_binary(key) do
+    if byte_size(key) > max do
+      :crypto.hash(:sha256, key) |> Base.encode16(case: :lower)
+    else
+      key
+    end
+  end
+
+  defp bound_key_bytes(key, _state), do: key
+
+  defp bound_key(table, key, %{max_keys: max}) when is_integer(max) and max > 0 do
+    if :ets.info(table, :size) >= max and count_all_for_key(table, key) == 0 do
+      :rate_limiter_overflow
+    else
+      key
+    end
+  end
+
+  defp bound_key(_table, key, _state), do: key
+
+  defp count_all_for_key(table, key) do
+    :ets.select_count(table, [{{{key, :_, :_}}, [], [true]}])
+  end
+
+  defp count_in_window(table, key, window_start) do
+    :ets.select_count(table, [{{{key, :"$1", :_}}, [{:>, :"$1", window_start}], [true]}])
+  end
+
+  defp oldest_in_window(table, key, window_start) do
+    case :ets.select(table, [{{{key, :"$1", :_}}, [{:>, :"$1", window_start}], [:"$1"]}], 1) do
+      {[oldest], _continuation} -> oldest
+      :"$end_of_table" -> nil
+    end
+  end
+
+  defp delete_expired_for_key(table, key, window_start) do
+    :ets.select_delete(table, [{{{key, :"$1", :_}}, [{:"=<", :"$1", window_start}], [true]}])
   end
 
   defp reset_limit(key_value, scope, _rate_limit_key) do
@@ -990,10 +1214,17 @@ defmodule PhoenixGenApi.RateLimiter do
         _ -> build_api_key(key_value, scope)
       end
 
-    :ets.delete(table, ets_key)
+    :ets.match_delete(table, {{ets_key, :_, :_}})
 
     Logger.info(
-      "[RateLimiter] rate limit reset, key: #{inspect(key_value)}, scope: #{inspect(scope)}"
+      LogContext.line(
+        "RateLimiter",
+        :rate_limit_reset,
+        "rate limit reset",
+        key: key_value,
+        scope: scope,
+        node: node()
+      )
     )
   end
 
@@ -1012,24 +1243,14 @@ defmodule PhoenixGenApi.RateLimiter do
           state.global_limits
 
         {service, request_type} ->
-          Enum.filter(state.api_limits, fn limit ->
-            limit.service == service and limit.request_type == request_type
-          end)
+          Map.get(state.api_index, {service, request_type}, [])
       end
 
     now = System.monotonic_time(:millisecond)
 
-    existing_timestamps =
-      case :ets.lookup(table, ets_key) do
-        [{^ets_key, timestamps}] -> timestamps
-        [] -> []
-      end
-
-    # Pre-compute valid count once if all limits share the same window
-    # Otherwise compute per-limit
     Enum.map(limits, fn limit ->
       window_start = now - limit.window_ms
-      valid_count = count_valid_timestamps(existing_timestamps, window_start)
+      valid_count = count_in_window(table, ets_key, window_start)
 
       %{
         key: ets_key,
@@ -1042,33 +1263,33 @@ defmodule PhoenixGenApi.RateLimiter do
     end)
   end
 
-  # Counts timestamps within the sliding window.
-  # Although this scans all timestamps, the list is bounded by `max_requests`
-  # (we cap it via `Enum.take` in `check_and_record`), so the iteration is
-  # always O(max_requests) — typically a small constant. An early-exit variant
-  # would only save work when the limit is exceeded, which is the uncommon path.
-  defp count_valid_timestamps(timestamps, window_start) do
-    Enum.count(timestamps, fn ts -> ts > window_start end)
-  end
-
-  defp get_key_value(request, key) do
+  defp get_key_value(request, key, state) do
     case key do
       :user_id ->
-        val = request.user_id
+        val = Map.get(request, :user_id)
         if is_binary(val), do: val, else: nil
 
       :device_id ->
-        val = request.device_id
+        val = Map.get(request, :device_id)
         if is_binary(val), do: val, else: nil
 
       :ip_address ->
-        Map.get(request, :ip_address)
+        Map.get(request, :ip_address) || Map.get(request, state.ip_source || :ip_address)
 
       custom_key when is_binary(custom_key) ->
-        Map.get(request.args, custom_key)
+        request
+        |> Map.get(:args, %{})
+        |> Map.get(custom_key)
 
       _ ->
         nil
+    end
+  end
+
+  defp resolve_key(request, key, state) do
+    case get_key_value(request, key, state) do
+      value when is_binary(value) and byte_size(value) > 0 -> {:ok, value}
+      _ -> :missing
     end
   end
 
@@ -1081,92 +1302,197 @@ defmodule PhoenixGenApi.RateLimiter do
 
   defp get_scope_from_table(:rate_limiter_global, _key), do: :global
 
-  defp get_scope_from_table(:rate_limiter_api, key) do
+  defp get_scope_from_table(:rate_limiter_api, key) when is_binary(key) do
     case String.split(key, ":", parts: 3) do
       [service, request_type, _key_value] -> {service, request_type}
       _ -> :global
     end
   end
 
-  # Sharded cleanup: each instance only cleans keys that hash to its shard.
-  # This avoids N instances each doing a full table scan, reducing total work
-  # from O(N * keys) to O(keys) across the cluster.
-  defp perform_cleanup(instance_index) do
+  defp get_scope_from_table(:rate_limiter_api, _key), do: :global
+
+  # Cleanup runs in a short-lived process owned by shard 0 so a sweep never
+  # blocks request checks. One ordered_set range delete per table removes all
+  # expired rows regardless of key.
+  defp perform_cleanup(global_limits, api_limits) do
     now = System.monotonic_time(:millisecond)
-    total_instances = get_instance_count()
 
-    # Clean global table (sharded)
     global_cleaned =
-      cleanup_table_sharded(:rate_limiter_global, now, instance_index, total_instances)
+      delete_expired(:rate_limiter_global, now - max_window(global_limits))
 
-    # Clean API table (sharded)
-    api_cleaned = cleanup_table_sharded(:rate_limiter_api, now, instance_index, total_instances)
-
-    Logger.debug(
-      "[RateLimiter] cleanup completed (shard #{instance_index}/#{total_instances}), removed: #{global_cleaned + api_cleaned} entries (global: #{global_cleaned}, api: #{api_cleaned})"
-    )
-
+    api_cleaned = delete_expired(:rate_limiter_api, now - max_window(api_limits))
     global_cleaned + api_cleaned
+  rescue
+    _error in ArgumentError -> 0
   end
 
-  # Sharded cleanup: only processes keys where phash2(key) rem total_instances == shard_index.
-  # This distributes cleanup work evenly across instances without coordination.
-  defp cleanup_table_sharded(table, now, shard_index, total_instances) do
-    max_window = get_max_window_for_table(table)
-    cutoff = now - max_window
-
-    :ets.foldl(
-      fn {key, timestamps}, acc ->
-        clean_key_in_shard(table, key, timestamps, cutoff, shard_index, total_instances, acc)
-      end,
-      0,
-      table
-    )
+  defp delete_expired(table, cutoff) do
+    :ets.select_delete(table, [{{{:_, :"$1", :_}}, [{:"=<", :"$1", cutoff}], [true]}])
   end
 
-  defp clean_key_in_shard(table, key, timestamps, cutoff, shard_index, total_instances, acc) do
-    # Only clean keys belonging to this instance's shard
-    if rem(:erlang.phash2(key), total_instances) == shard_index do
-      clean_expired_key(table, key, timestamps, cutoff, acc)
-    else
-      acc
-    end
+  defp max_window([]), do: @default_cleanup_interval
+
+  defp max_window(limits) do
+    limits
+    |> Enum.map(& &1.window_ms)
+    |> Enum.max(fn -> @default_cleanup_interval end)
   end
 
-  defp clean_expired_key(table, key, timestamps, cutoff, acc) do
-    # Use split_with for single-pass partitioning
-    {valid_timestamps, expired} = Enum.split_with(timestamps, fn ts -> ts > cutoff end)
+  defp build_api_index(api_limits) do
+    Enum.group_by(api_limits, fn limit -> {limit.service, limit.request_type} end)
+  end
 
-    if expired == [] do
-      # No expired entries, skip update
-      acc
-    else
-      if valid_timestamps == [] do
-        :ets.delete(table, key)
-      else
-        :ets.insert(table, {key, valid_timestamps})
+  defp needs_args?(limits) do
+    Enum.any?(limits, fn limit -> is_binary(limit.key) end)
+  end
+
+  defp needs_ip?(limits) do
+    Enum.any?(limits, fn limit -> limit.key == :ip_address end)
+  end
+
+  defp validate_limit_keys(limits) do
+    Enum.each(limits, fn limit ->
+      if limit.key == :ip_address and
+           Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:ip_address_source] == nil do
+        Logger.warning(
+          LogContext.line(
+            "RateLimiter",
+            :unsupported_key_source,
+            ":ip_address limits cannot be evaluated unless :ip_address_source is configured",
+            LogContext.current(rate_limit_key: :ip_address)
+          )
+        )
       end
-
-      acc + length(expired)
-    end
+    end)
   end
 
-  defp get_max_window_for_table(:rate_limiter_global) do
-    case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:global_limits] do
-      nil -> @default_cleanup_interval
-      limits -> Enum.map(limits, & &1.window_ms) |> Enum.max(fn -> @default_cleanup_interval end)
-    end
+  defp do_set_global_limits(limits, state) do
+    state = refresh_caps(state)
+
+    Logger.info(
+      LogContext.line(
+        "RateLimiter",
+        :global_limits_replaced,
+        "global limits replaced",
+        count: length(limits),
+        node: node()
+      )
+    )
+
+    new_state = %{state | global_limits: limits}
+    validate_limit_keys(limits)
+    publish_limits(new_state)
+    {:reply, :ok, new_state}
   end
 
-  defp get_max_window_for_table(:rate_limiter_api) do
-    case Application.get_env(:phoenix_gen_api, :rate_limiter, [])[:api_limits] do
-      nil -> @default_cleanup_interval
-      limits -> Enum.map(limits, & &1.window_ms) |> Enum.max(fn -> @default_cleanup_interval end)
-    end
+  defp do_add_global_limit(limit, state) do
+    state = refresh_caps(state)
+    key = Map.get(limit, :key)
+
+    new_limits =
+      state.global_limits
+      |> Enum.reject(fn l -> Map.get(l, :key) == key end)
+      |> Enum.concat([limit])
+
+    Logger.info(
+      LogContext.line(
+        "RateLimiter",
+        :global_limit_upserted,
+        "global limit added/updated",
+        key: Map.get(limit, :key),
+        max_requests: Map.get(limit, :max_requests),
+        window_ms: Map.get(limit, :window_ms),
+        node: node()
+      )
+    )
+
+    new_state = %{state | global_limits: new_limits}
+    publish_limits(new_state)
+    {:reply, :ok, new_state}
   end
 
-  defp schedule_cleanup do
-    Process.send_after(self(), :cleanup, @default_cleanup_interval)
+  defp do_remove_global_limit(key, state) do
+    state = refresh_caps(state)
+    new_limits = Enum.reject(state.global_limits, fn l -> Map.get(l, :key) == key end)
+
+    Logger.info(
+      LogContext.line(
+        "RateLimiter",
+        :global_limit_removed,
+        "global limit removed",
+        key: key,
+        remaining: length(new_limits),
+        node: node()
+      )
+    )
+
+    new_state = %{state | global_limits: new_limits}
+    publish_limits(new_state)
+    {:reply, :ok, new_state}
+  end
+
+  defp refresh_caps(state) do
+    config = Application.get_env(:phoenix_gen_api, :rate_limiter, [])
+
+    %{
+      state
+      | max_keys: config[:max_rate_limit_keys],
+        max_key_bytes: config[:max_rate_limit_key_bytes],
+        ip_source: config[:ip_address_source]
+    }
+  end
+
+  defp publish_limits(state) do
+    :persistent_term.put(@limits_key, %{
+      configured?: state.global_limits != [] or state.api_limits != [],
+      instance_count: get_instance_count(),
+      needs_args?: needs_args?(state.global_limits) or needs_args?(state.api_limits),
+      needs_ip?: needs_ip?(state.global_limits) or needs_ip?(state.api_limits),
+      max_keys: state.max_keys,
+      max_key_bytes: state.max_key_bytes,
+      ip_source: state.ip_source
+    })
+  end
+
+  defp effective_limits do
+    :persistent_term.get(@limits_key, %{
+      configured?: true,
+      instance_count: get_instance_count(),
+      needs_args?: true,
+      needs_ip?: true,
+      max_keys: nil,
+      max_key_bytes: nil,
+      ip_source: nil
+    })
+  end
+
+  defp schedule_cleanup(interval) do
+    Process.send_after(self(), :cleanup, interval)
+  end
+
+  # Only shard 0 sweeps the shared tables, and it does so off the reply path.
+  defp maybe_start_cleanup(%{instance_index: index}) when index != 0, do: :ok
+
+  defp maybe_start_cleanup(state) do
+    global_limits = state.global_limits
+    api_limits = state.api_limits
+
+    spawn(fn ->
+      start_time = System.monotonic_time(:microsecond)
+      cleaned_count = perform_cleanup(global_limits, api_limits)
+      duration = System.monotonic_time(:microsecond) - start_time
+
+      :telemetry.execute(
+        [:phoenix_gen_api, :rate_limiter, :cleanup],
+        %{duration_us: duration, cleaned_entries: cleaned_count},
+        %{
+          global_limits_count: length(global_limits),
+          api_limits_count: length(api_limits)
+        }
+      )
+    end)
+
+    :ok
   end
 
   defp load_global_limits do

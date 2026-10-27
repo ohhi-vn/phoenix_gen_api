@@ -4,7 +4,19 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
   import ExUnit.CaptureLog
 
   alias PhoenixGenApi.ArgumentHandler
+  alias PhoenixGenApi.Errors.InvalidType
   alias PhoenixGenApi.Structs.{FunConfig, Request}
+
+  defp capture_debug(fun) do
+    previous_level = Logger.level()
+    Logger.configure(level: :debug)
+
+    try do
+      capture_log([level: :debug], fun)
+    after
+      Logger.configure(level: previous_level)
+    end
+  end
 
   describe "convert_args!/2" do
     test "converts arguments for a function with no arguments" do
@@ -842,8 +854,8 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       config = %FunConfig{arg_types: %{"user_id" => :uuid}}
       request = %Request{args: %{"user_id" => 123}}
 
-      assert_raise ArgumentError,
-                   ~r/invalid argument value for "user_id", require a UUID format string/,
+      assert_raise InvalidType,
+                   ~r/expected :uuid/,
                    fn ->
                      ArgumentHandler.validate_args!(config, request)
                    end
@@ -1038,6 +1050,104 @@ defmodule PhoenixGenApi.ArgumentHandlerTest do
       request = %Request{args: %{"items" => [%{a: 1}]}}
 
       assert ArgumentHandler.convert_args!(config, request) == [[%{a: 1}]]
+    end
+  end
+
+  describe "log context" do
+    test "validation failures include request identity" do
+      config = %FunConfig{arg_types: %{"name" => :string}, arg_orders: ["name"]}
+
+      request = %Request{
+        request_id: "arg_ctx_req",
+        request_type: "arg_ctx_type",
+        service: "arg_ctx_service",
+        user_id: "arg_ctx_user",
+        args: %{}
+      }
+
+      log =
+        capture_log(fn ->
+          assert_raise ArgumentError, fn -> ArgumentHandler.convert_args!(config, request) end
+        end)
+
+      assert log =~ "event=missing_or_nil_argument"
+      assert log =~ "request_id=\"arg_ctx_req\""
+      assert log =~ "request_type=\"arg_ctx_type\""
+      assert log =~ "service=\"arg_ctx_service\""
+      assert log =~ "user_id=\"arg_ctx_user\""
+      assert log =~ "argument=\"name\""
+    end
+
+    test "conversion failures include the argument name and request identity" do
+      config = %FunConfig{arg_types: %{"when" => :datetime}, arg_orders: ["when"]}
+
+      request = %Request{
+        request_id: "conv_ctx_req",
+        request_type: "conv_ctx_type",
+        service: "conv_ctx_service",
+        args: %{"when" => "not-a-date"}
+      }
+
+      log =
+        capture_log(fn ->
+          assert_raise ArgumentError, fn ->
+            ArgumentHandler.convert_args!(config, request)
+          end
+        end)
+
+      assert log =~ "event=argument_conversion_failed"
+      assert log =~ "argument=\"when\""
+      assert log =~ "request_id=\"conv_ctx_req\""
+      assert log =~ "request_type=\"conv_ctx_type\""
+    end
+
+    test "converted arguments are redacted by default" do
+      config = %FunConfig{
+        arg_types: %{"name" => :string, "age" => :num},
+        arg_orders: ["name", "age"]
+      }
+
+      request = %Request{
+        request_id: "redact_req",
+        request_type: "redact_type",
+        service: "redact_service",
+        args: %{"name" => "super-secret-value", "age" => 30}
+      }
+
+      log =
+        capture_debug(fn ->
+          assert ArgumentHandler.convert_args!(config, request) == ["super-secret-value", 30]
+        end)
+
+      assert log =~ "event=args_converted"
+      assert log =~ "args_size=2"
+      assert log =~ "args=<redacted>"
+      refute log =~ "super-secret-value"
+    end
+
+    test "converted arguments are logged when verbose payloads are enabled" do
+      previous = Application.get_env(:phoenix_gen_api, :log_verbose_payloads, false)
+      Application.put_env(:phoenix_gen_api, :log_verbose_payloads, true)
+
+      on_exit(fn ->
+        Application.put_env(:phoenix_gen_api, :log_verbose_payloads, previous)
+      end)
+
+      config = %FunConfig{
+        arg_types: %{"name" => :string, "age" => :num},
+        arg_orders: ["name", "age"]
+      }
+
+      request = %Request{
+        request_id: "verbose_req",
+        request_type: "verbose_type",
+        service: "verbose_service",
+        args: %{"name" => "visible-value", "age" => 30}
+      }
+
+      log = capture_debug(fn -> ArgumentHandler.convert_args!(config, request) end)
+
+      assert log =~ "visible-value"
     end
   end
 end

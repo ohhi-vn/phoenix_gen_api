@@ -4,7 +4,7 @@ defmodule PhoenixGenApi.TelemetryTest do
   alias PhoenixGenApi.ConfigDb
   alias PhoenixGenApi.Executor
   alias PhoenixGenApi.RateLimiter
-  alias PhoenixGenApi.Structs.{FunConfig, Request}
+  alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
   alias PhoenixGenApi.Telemetry
 
   setup do
@@ -77,6 +77,26 @@ defmodule PhoenixGenApi.TelemetryTest do
       assert [:phoenix_gen_api, :hook, :after, :exception] in events
     end
 
+    test "includes hardening failure events" do
+      events = Telemetry.list_events()
+
+      for event <- [
+            [:phoenix_gen_api, :request, :decode_error],
+            [:phoenix_gen_api, :stream, :stop],
+            [:phoenix_gen_api, :stream, :exception],
+            [:phoenix_gen_api, :permission, :denied],
+            [:phoenix_gen_api, :permission, :error],
+            [:phoenix_gen_api, :config, :pull, :error],
+            [:phoenix_gen_api, :config, :push, :rejected],
+            [:phoenix_gen_api, :relay, :accepted],
+            [:phoenix_gen_api, :relay, :delivered],
+            [:phoenix_gen_api, :relay, :rejected],
+            [:phoenix_gen_api, :worker_pool, :worker, :restart]
+          ] do
+        assert event in events, "expected #{inspect(event)} in Telemetry.list_events/0"
+      end
+    end
+
     test "includes worker pool events" do
       events = Telemetry.list_events()
 
@@ -103,6 +123,37 @@ defmodule PhoenixGenApi.TelemetryTest do
   end
 
   describe "attach_all/3 and detach_all/1" do
+    test "attach_all/3 subscribes to the new hardening events" do
+      parent = self()
+
+      events = [
+        [:phoenix_gen_api, :request, :decode_error],
+        [:phoenix_gen_api, :stream, :stop],
+        [:phoenix_gen_api, :stream, :exception],
+        [:phoenix_gen_api, :permission, :denied],
+        [:phoenix_gen_api, :permission, :error],
+        [:phoenix_gen_api, :config, :pull, :error],
+        [:phoenix_gen_api, :config, :push, :rejected],
+        [:phoenix_gen_api, :relay, :accepted],
+        [:phoenix_gen_api, :relay, :delivered],
+        [:phoenix_gen_api, :relay, :rejected],
+        [:phoenix_gen_api, :worker_pool, :worker, :restart]
+      ]
+
+      :ok =
+        Telemetry.attach_all("test-hardening-handler", fn event, _m, _meta, _config ->
+          send(parent, {:hardening_event, event})
+        end)
+
+      Enum.each(events, fn event -> :telemetry.execute(event, %{}, %{}) end)
+
+      Enum.each(events, fn event ->
+        assert_receive {:hardening_event, ^event}, 500
+      end)
+    after
+      Telemetry.detach_all("test-hardening-handler")
+    end
+
     test "attaches a handler to all events and detaches cleanly" do
       test_pid = self()
 
@@ -1051,7 +1102,7 @@ defmodule PhoenixGenApi.TelemetryTest do
       assert is_atom(metadata.pool_name)
     end
 
-    test "emits task exception event for failing tasks" do
+    test "a failing endpoint is an async error response, not a worker crash" do
       test_pid = self()
 
       :telemetry.attach(
@@ -1067,7 +1118,9 @@ defmodule PhoenixGenApi.TelemetryTest do
         :telemetry.detach("test-wp-task-exception")
       end)
 
-      # Execute an async request with a failing function
+      # Execute an async request with a raising function. Execution is isolated,
+      # so the endpoint failure surfaces as an error response — the worker task
+      # itself does not crash.
       config =
         valid_config(%{
           service: "WPExceptionTest",
@@ -1089,11 +1142,8 @@ defmodule PhoenixGenApi.TelemetryTest do
 
       Executor.execute!(request)
 
-      assert_receive {:wp_exception, %{duration_us: duration_us}, metadata}, 2000
-      assert is_integer(duration_us)
-      assert is_atom(metadata.pool_name)
-      assert metadata.kind == :error
-      assert is_binary(metadata.reason)
+      assert_receive {:async_call, %Response{success: false}}, 2000
+      refute_receive {:wp_exception, _, _}, 500
     end
   end
 

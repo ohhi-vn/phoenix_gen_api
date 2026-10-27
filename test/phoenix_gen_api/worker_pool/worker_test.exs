@@ -19,7 +19,7 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
 
       assert_receive :task_started
       assert_receive :task_completed
-      assert_receive {:worker_done, ^worker}
+      assert_receive {:worker_done, ^worker, _outcome}
     end
 
     test "handles task failures gracefully" do
@@ -34,7 +34,7 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
       Worker.execute(worker, failing_task)
 
       # Should still notify pool even though task failed
-      assert_receive {:worker_done, ^worker}, 1000
+      assert_receive {:worker_done, ^worker, _outcome}, 1000
 
       # Worker should still be alive
       assert Process.alive?(worker)
@@ -52,7 +52,7 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
       Worker.execute(worker, exiting_task)
 
       # Should still notify pool
-      assert_receive {:worker_done, ^worker}, 1000
+      assert_receive {:worker_done, ^worker, _outcome}, 1000
 
       # Worker should still be alive
       assert Process.alive?(worker)
@@ -71,7 +71,7 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
         Worker.execute(worker, task)
 
         assert_receive {:task, ^i}
-        assert_receive {:worker_done, ^worker}
+        assert_receive {:worker_done, ^worker, _outcome}
       end
 
       assert Process.alive?(worker)
@@ -93,10 +93,10 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
       {:ok, worker} = Worker.start_link(pool_name: parent)
 
       Worker.execute(worker, fn -> raise "boom" end)
-      assert_receive {:worker_done, ^worker}, 1000
+      assert_receive {:worker_done, ^worker, _outcome}, 1000
 
       Worker.execute(worker, fn -> send(parent, :should_not_run) end)
-      assert_receive {:worker_done, ^worker}, 1000
+      assert_receive {:worker_rejected, ^worker, :circuit_open, _task}, 1000
       refute_receive :should_not_run, 100
 
       assert Process.alive?(worker)
@@ -116,11 +116,11 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
       {:ok, worker} = Worker.start_link(pool_name: parent)
 
       Worker.execute(worker, fn -> raise "boom" end)
-      assert_receive {:worker_done, ^worker}, 1000
+      assert_receive {:worker_done, ^worker, _outcome}, 1000
 
       Worker.execute(worker, fn -> send(parent, :ran_after_cooldown) end)
       assert_receive :ran_after_cooldown, 1000
-      assert_receive {:worker_done, ^worker}, 1000
+      assert_receive {:worker_done, ^worker, _outcome}, 1000
     end
   end
 
@@ -134,7 +134,7 @@ defmodule PhoenixGenApi.WorkerPool.WorkerTest do
         send(parent, :task_survived)
       end)
 
-      assert_receive {:worker_done, ^worker}, 1000
+      assert_receive {:worker_done, ^worker, _outcome}, 1000
       refute_receive :task_survived, 100
       assert Process.alive?(worker)
     end

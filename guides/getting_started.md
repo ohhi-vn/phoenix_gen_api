@@ -577,6 +577,9 @@ Note: over `ChannelCase` the payload arrives as the raw `%Response{}` struct (JS
 **`"Authentication required"` on every request**
 `use PhoenixGenApi` defaults to `require_verified_user_id: true` — the socket must have a non-empty `user_id` assign. Set it in `UserSocket.connect/3` (as shown above). For intentionally public endpoints, set `use PhoenixGenApi, event: "api", require_verified_user_id: false`.
 
+**Roles or `user_id` come from the payload**
+By default the channel trusts payload `user_roles` and, when the socket has no verified id, the payload `user_id`. Harden it with `use PhoenixGenApi, require_authenticated_roles: true, reject_unverified_user_id: true` so authorization identity always comes from `socket.assigns`.
+
 **`unsupported function: <name> version latest`**
 The gateway has no `FunConfig` for that `{service, request_type}` pair. Check `PhoenixGenApi.cache_status()` — is the service registered? For pull mode: is the cluster connected (`Node.list()`), and is `service_configs` correct? For push mode: did the service node push (see `PhoenixGenApi.pushed_services_status()`)?
 

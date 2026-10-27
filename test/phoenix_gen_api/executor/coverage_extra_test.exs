@@ -109,11 +109,18 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
       add_config(config_tracker, base_config(unique, "coverage_rate_limiter_error"))
 
       with_env(:rate_limiter, [timeout: :bogus, fail_open: false], fn ->
+        :ok =
+          PhoenixGenApi.RateLimiter.set_global_limits([
+            %{key: :user_id, max_requests: 100, window_ms: 60_000}
+          ])
+
         result = Executor.execute!(request(unique, "coverage_rate_limiter_error"))
 
         assert result.success == false
         assert result.error == "Rate limit service unavailable"
         assert result.can_retry == true
+
+        :ok = PhoenixGenApi.RateLimiter.set_global_limits([])
       end)
     end
   end
@@ -224,7 +231,8 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
         result = Executor.execute!(request(unique, "coverage_local_timeout"))
 
         assert result.success == false
-        assert result.error =~ "local execution failed"
+        # A timeout is a hard bound: the endpoint is killed and reported as a timeout.
+        assert result.error =~ "timed out"
       end)
     end
 
@@ -530,7 +538,8 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
       result = Executor.execute!(request(unique, "coverage_error3"))
 
       assert result.success == false
-      assert result.error == "Unexpected execution result"
+      # Local and remote retry exhaustion now report the same documented message.
+      assert result.error == "all retry attempts exhausted"
     end
   end
 
@@ -600,7 +609,9 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
         result = Executor.execute_with_timeout!(request(unique, "coverage_timeout_exit"), 5000)
 
         assert result.success == false
-        assert result.error =~ "Request failed:"
+        # The endpoint raise is isolated: it becomes an error response instead of
+        # exiting the wrapping task.
+        assert result.error == "Internal Server Error"
       end)
     end
   end
@@ -679,7 +690,7 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
         nodes: :local,
         choose_node_mode: :random,
         timeout: nil,
-        mfa: {__MODULE__, :stream_fun, []},
+        mfa: {__MODULE__, :raise_fun, []},
         arg_types: nil,
         arg_orders: [],
         response_type: :stream,
@@ -741,7 +752,7 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
       config_tracker: config_tracker
     } do
       try do
-        replace_async_pool(1, 0)
+        replace_stream_pool(1, 0)
 
         config = %FunConfig{
           request_type: "coverage_stream_queue_#{unique}",
@@ -759,7 +770,7 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
 
         add_config(config_tracker, config)
 
-        :ok = PhoenixGenApi.WorkerPool.execute_async(:async_pool, fn -> Process.sleep(1000) end)
+        :ok = PhoenixGenApi.WorkerPool.execute_async(:stream_pool, fn -> Process.sleep(1000) end)
 
         result = Executor.execute!(request(unique, "coverage_stream_queue"))
 
@@ -767,7 +778,7 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
         assert result.error =~ "Service temporarily unavailable"
         assert result.can_retry == true
       after
-        restore_async_pool()
+        restore_stream_pool()
       end
     end
   end
@@ -877,6 +888,44 @@ defmodule PhoenixGenApi.ExecutorCoverageTest do
         start:
           {PhoenixGenApi.WorkerPool, :start_link,
            [[name: :async_pool, pool_size: 1000, max_queue_size: 10_000]]}
+      })
+
+    :ok
+  end
+
+  defp replace_stream_pool(pool_size, max_queue_size) do
+    sup = WorkerPoolSupervisor
+    delete_pool_child(sup, :stream_pool_coverage)
+    delete_pool_child(sup, :stream_pool)
+
+    {:ok, _pid} =
+      Supervisor.start_child(sup, %{
+        id: :stream_pool_coverage,
+        start:
+          {PhoenixGenApi.WorkerPool, :start_link,
+           [
+             [
+               name: :stream_pool,
+               pool_size: pool_size,
+               max_queue_size: max_queue_size,
+               task_timeout: 5000
+             ]
+           ]}
+      })
+
+    :ok
+  end
+
+  defp restore_stream_pool do
+    sup = WorkerPoolSupervisor
+    delete_pool_child(sup, :stream_pool_coverage)
+
+    {:ok, _pid} =
+      Supervisor.start_child(sup, %{
+        id: :stream_pool,
+        start:
+          {PhoenixGenApi.WorkerPool, :start_link,
+           [[name: :stream_pool, pool_size: 500, max_queue_size: 10_000]]}
       })
 
     :ok

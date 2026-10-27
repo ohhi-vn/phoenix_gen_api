@@ -78,6 +78,8 @@ defmodule PhoenixGenApi.WorkerPool do
   alias PhoenixGenApi.WorkerPool.CircuitBreaker
   alias PhoenixGenApi.WorkerPool.Worker
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @type pool_name :: :async_pool | :stream_pool
@@ -86,6 +88,7 @@ defmodule PhoenixGenApi.WorkerPool do
   @default_pool_size 10
   @default_max_queue_size 10_000
   @default_task_timeout 30_000
+  @respawn_delay_ms 1_000
 
   defmodule State do
     @moduledoc false
@@ -174,6 +177,10 @@ defmodule PhoenixGenApi.WorkerPool do
     max_queue_size = Keyword.get(opts, :max_queue_size, @default_max_queue_size)
     task_timeout = Keyword.get(opts, :task_timeout, @default_task_timeout)
 
+    # Workers are linked; trap exits so a worker crash is handled as a
+    # replaceable event instead of tearing down the pool (and its queue).
+    Process.flag(:trap_exit, true)
+
     # Start worker processes and track idle workers in a set for O(1) lookup
     {workers, idle_workers, idle_list} =
       for _i <- 1..pool_size, reduce: {%{}, MapSet.new(), []} do
@@ -199,7 +206,13 @@ defmodule PhoenixGenApi.WorkerPool do
     }
 
     Logger.info(
-      "[WorkerPool] started, pool: #{pool_name}, size: #{pool_size}, max_queue: #{max_queue_size}, task_timeout: #{task_timeout}ms"
+      LogContext.line("WorkerPool", :started, "started",
+        pool: pool_name,
+        size: pool_size,
+        max_queue: max_queue_size,
+        task_timeout_ms: task_timeout,
+        node: node()
+      )
     )
 
     {:ok, state}
@@ -208,7 +221,10 @@ defmodule PhoenixGenApi.WorkerPool do
   @impl true
   def handle_call(:status, _from, state) do
     idle_count = MapSet.size(state.idle_workers)
-    busy_count = map_size(state.workers) - idle_count
+
+    busy_count =
+      Enum.count(state.workers, fn {_pid, worker_state} -> worker_state in [:busy, :paused] end)
+
     queued = :queue.len(state.queue)
 
     status = %{
@@ -228,34 +244,56 @@ defmodule PhoenixGenApi.WorkerPool do
     # Check pool-level circuit breaker
     if circuit_open?(state) do
       Logger.warning(
-        "[WorkerPool] circuit breaker open, rejecting task, pool: #{state.pool_name}"
+        LogContext.line(
+          "WorkerPool",
+          :circuit_breaker_open,
+          "circuit breaker open, rejecting task",
+          pool: state.pool_name,
+          node: node()
+        )
       )
 
       {:reply, {:error, :circuit_open}, state}
     else
-      case find_idle_worker(state.idle_workers, state.idle_workers_list) do
-        {:ok, worker_pid} ->
-          execute_on_worker(worker_pid, task, state)
+      case take_idle_worker(state) do
+        {:ok, worker_pid, state} ->
+          Worker.execute(worker_pid, task)
+          {:reply, :ok, state}
 
-        :no_idle_worker ->
+        :none ->
           queue_task(task, state)
       end
     end
   end
 
-  defp execute_on_worker(worker_pid, task, state) do
-    Worker.execute(worker_pid, task)
-    new_workers = Map.put(state.workers, worker_pid, :busy)
-    new_idle = MapSet.delete(state.idle_workers, worker_pid)
-    new_idle_list = List.delete(state.idle_workers_list, worker_pid)
+  defp take_idle_worker(state) do
+    case state.idle_workers_list do
+      [worker_pid | rest] ->
+        if MapSet.member?(state.idle_workers, worker_pid) do
+          {:ok, worker_pid,
+           %{
+             state
+             | idle_workers_list: rest,
+               idle_workers: MapSet.delete(state.idle_workers, worker_pid),
+               workers: Map.put(state.workers, worker_pid, :busy)
+           }}
+        else
+          # Stale entry (worker went away); drop it and continue.
+          take_idle_worker(%{state | idle_workers_list: rest})
+        end
 
-    {:reply, :ok,
-     %{
-       state
-       | workers: new_workers,
-         idle_workers: new_idle,
-         idle_workers_list: new_idle_list
-     }}
+      [] ->
+        :none
+    end
+  end
+
+  defp mark_idle(state, worker_pid) do
+    %{
+      state
+      | workers: Map.put(state.workers, worker_pid, :idle),
+        idle_workers: MapSet.put(state.idle_workers, worker_pid),
+        idle_workers_list: [worker_pid | List.delete(state.idle_workers_list, worker_pid)]
+    }
   end
 
   defp queue_task(task, state) do
@@ -263,7 +301,11 @@ defmodule PhoenixGenApi.WorkerPool do
 
     if queue_size >= state.max_queue_size do
       Logger.warning(
-        "[WorkerPool] queue full (max: #{state.max_queue_size}), rejecting task, pool: #{state.pool_name}"
+        LogContext.line("WorkerPool", :queue_full, "queue full, rejecting task",
+          pool: state.pool_name,
+          max_queue: state.max_queue_size,
+          node: node()
+        )
       )
 
       {:reply, {:error, :queue_full}, state}
@@ -275,95 +317,182 @@ defmodule PhoenixGenApi.WorkerPool do
 
   @impl true
   def handle_info({:worker_done, worker_pid}, state) do
-    # Mark worker as idle
-    new_workers = Map.put(state.workers, worker_pid, :idle)
-    new_idle = MapSet.put(state.idle_workers, worker_pid)
-    new_idle_list = [worker_pid | state.idle_workers_list]
+    handle_worker_done(worker_pid, :ok, state)
+  end
 
-    # Try to execute queued task
-    case :queue.out(state.queue) do
-      {{:value, task}, new_queue} ->
-        # Execute queued task on the now-idle worker
-        Worker.execute(worker_pid, task)
-        final_workers = Map.put(new_workers, worker_pid, :busy)
-        final_idle = MapSet.delete(new_idle, worker_pid)
-        final_idle_list = List.delete(new_idle_list, worker_pid)
+  @impl true
+  def handle_info({:worker_done, worker_pid, outcome}, state)
+      when outcome in [:ok, :error] do
+    handle_worker_done(worker_pid, outcome, state)
+  end
 
+  @impl true
+  def handle_info({:worker_rejected, worker_pid, _reason, task}, state) do
+    if Map.has_key?(state.workers, worker_pid) do
+      cooldown = circuit_breaker_cooldown()
+
+      Logger.warning(
+        LogContext.line(
+          "WorkerPool",
+          :worker_circuit_open,
+          "worker circuit open, requeueing task",
+          pool: state.pool_name,
+          worker_pid: worker_pid,
+          cooldown_ms: cooldown,
+          node: node()
+        )
+      )
+
+      Process.send_after(self(), {:resume_worker, worker_pid}, cooldown)
+
+      new_state = %{
+        state
+        | workers: Map.put(state.workers, worker_pid, :paused),
+          idle_workers: MapSet.delete(state.idle_workers, worker_pid),
+          idle_workers_list: List.delete(state.idle_workers_list, worker_pid),
+          queue: :queue.in_r(task, state.queue)
+      }
+
+      {:noreply, dispatch_next(new_state)}
+    else
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:resume_worker, worker_pid}, state) do
+    case Map.get(state.workers, worker_pid) do
+      :paused ->
+        if Process.alive?(worker_pid) do
+          {:noreply, dispatch_next(mark_idle(state, worker_pid))}
+        else
+          {:noreply, state}
+        end
+
+      _ ->
+        {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info(:respawn_worker, state) do
+    {:noreply, start_replacement_worker(state, :respawn)}
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, worker_pid, reason}, state) do
+    handle_worker_down(worker_pid, reason, state)
+  end
+
+  @impl true
+  def handle_info({:EXIT, worker_pid, reason}, state) do
+    if Map.has_key?(state.workers, worker_pid) do
+      handle_worker_down(worker_pid, reason, state)
+    else
+      # Exit from a linked process that is not a worker (e.g. the supervisor).
+      {:stop, reason, state}
+    end
+  end
+
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  defp handle_worker_done(worker_pid, outcome, state) do
+    cond do
+      not Map.has_key?(state.workers, worker_pid) ->
+        # Stale completion for a worker that was already replaced.
+        {:noreply, state}
+
+      MapSet.member?(state.idle_workers, worker_pid) ->
+        # Duplicate completion for a worker that is already idle.
+        {:noreply, state}
+
+      Map.get(state.workers, worker_pid) == :paused ->
+        {:noreply, state}
+
+      true ->
         new_state =
-          record_success(%{
-            state
-            | workers: final_workers,
-              idle_workers: final_idle,
-              idle_workers_list: final_idle_list,
-              queue: new_queue
-          })
-
-        {:noreply, new_state}
-
-      {:empty, _queue} ->
-        # No queued tasks, keep worker idle
-        new_state =
-          record_success(%{
-            state
-            | workers: new_workers,
-              idle_workers: new_idle,
-              idle_workers_list: new_idle_list
-          })
+          state
+          |> record_outcome(outcome)
+          |> mark_idle(worker_pid)
+          |> dispatch_next()
 
         {:noreply, new_state}
     end
   end
 
-  @impl true
-  def handle_info({:DOWN, _ref, :process, worker_pid, reason}, state) do
-    Logger.warning(
-      "[WorkerPool] worker #{inspect(worker_pid)} died: #{inspect(reason)}, pool: #{state.pool_name}, restarting worker"
-    )
-
-    # Remove dead worker and start a new one
-    new_workers = Map.delete(state.workers, worker_pid)
-    new_idle = MapSet.delete(state.idle_workers, worker_pid)
-    new_idle_list = List.delete(state.idle_workers_list, worker_pid)
-
-    {:ok, new_pid} =
-      Worker.start_link(
-        pool_name: state.pool_name,
-        task_timeout: state.task_timeout
+  defp handle_worker_down(worker_pid, reason, state) do
+    if Map.has_key?(state.workers, worker_pid) do
+      Logger.warning(
+        LogContext.line("WorkerPool", :worker_died, "worker died, restarting worker",
+          pool: state.pool_name,
+          worker_pid: worker_pid,
+          reason: reason,
+          node: node()
+        )
       )
 
-    Process.monitor(new_pid)
-    final_workers = Map.put(new_workers, new_pid, :idle)
-    final_idle = MapSet.put(new_idle, new_pid)
-    final_idle_list = [new_pid | new_idle_list]
-
-    # Worker death is not a task failure — don't count it toward circuit breaker.
-    # Just reset the consecutive failures counter since we have a fresh worker.
-    new_state =
-      %{
+      new_state = %{
         state
-        | workers: final_workers,
-          idle_workers: final_idle,
-          idle_workers_list: final_idle_list,
+        | workers: Map.delete(state.workers, worker_pid),
+          idle_workers: MapSet.delete(state.idle_workers, worker_pid),
+          idle_workers_list: List.delete(state.idle_workers_list, worker_pid),
           consecutive_failures: 0
       }
 
-    {:noreply, new_state}
-  end
-
-  @impl true
-  def handle_info(_msg, state) do
-    # Ignore unknown messages (e.g., from test helpers)
-    {:noreply, state}
-  end
-
-  ## Private Functions
-
-  defp find_idle_worker(idle_workers, _idle_list) do
-    if MapSet.size(idle_workers) > 0 do
-      pid = Enum.random(MapSet.to_list(idle_workers))
-      {:ok, pid}
+      {:noreply, start_replacement_worker(new_state, reason)}
     else
-      :no_idle_worker
+      {:noreply, state}
+    end
+  end
+
+  defp start_replacement_worker(state, reason) do
+    case Worker.start_link(pool_name: state.pool_name, task_timeout: state.task_timeout) do
+      {:ok, new_pid} ->
+        Process.monitor(new_pid)
+
+        :telemetry.execute(
+          [:phoenix_gen_api, :worker_pool, :worker, :restart],
+          %{},
+          %{pool_name: state.pool_name, reason: reason}
+        )
+
+        state
+        |> mark_idle(new_pid)
+        |> dispatch_next()
+
+      {:error, start_reason} ->
+        Logger.error(
+          LogContext.line(
+            "WorkerPool",
+            :worker_restart_failed,
+            "worker restart failed, retrying",
+            pool: state.pool_name,
+            reason: start_reason,
+            node: node()
+          )
+        )
+
+        Process.send_after(self(), :respawn_worker, @respawn_delay_ms)
+        state
+    end
+  end
+
+  defp dispatch_next(state) do
+    case :queue.out(state.queue) do
+      {{:value, task}, queue} ->
+        case take_idle_worker(%{state | queue: queue}) do
+          {:ok, worker_pid, new_state} ->
+            Worker.execute(worker_pid, task)
+            dispatch_next(new_state)
+
+          :none ->
+            state
+        end
+
+      {:empty, _queue} ->
+        state
     end
   end
 
@@ -373,6 +502,8 @@ defmodule PhoenixGenApi.WorkerPool do
     Application.get_env(:phoenix_gen_api, :worker_pool, [])[:circuit_breaker_cooldown] || 60_000
   end
 
+  defp circuit_open?(%State{circuit_open_at: nil}), do: false
+
   defp circuit_open?(%State{circuit_open_at: circuit_open_at}) do
     CircuitBreaker.circuit_open?(
       circuit_open_at,
@@ -380,10 +511,26 @@ defmodule PhoenixGenApi.WorkerPool do
     )
   end
 
+  defp record_outcome(state, :ok), do: record_success(state)
+
+  defp record_outcome(state, :error) do
+    %{
+      state
+      | total_tasks_failed: state.total_tasks_failed + 1,
+        consecutive_failures: state.consecutive_failures + 1
+    }
+  end
+
   defp record_success(state) do
     if state.circuit_open_at != nil do
       Logger.info(
-        "[WorkerPool] circuit breaker reset after successful task execution, pool: #{state.pool_name}"
+        LogContext.line(
+          "WorkerPool",
+          :circuit_breaker_reset,
+          "circuit breaker reset after successful task execution",
+          pool: state.pool_name,
+          node: node()
+        )
       )
 
       :telemetry.execute(

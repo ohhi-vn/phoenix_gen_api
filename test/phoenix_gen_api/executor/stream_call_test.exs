@@ -222,9 +222,15 @@ defmodule PhoenixGenApi.StreamCallTest do
         1000 -> :ok
       end
 
-      send(pid, :some_unknown_message)
-      Process.sleep(50)
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(pid, :some_unknown_message)
+          Process.sleep(50)
+        end)
+
       assert Process.alive?(pid)
+      assert log =~ "event=unknown_message"
+      assert log =~ "request_id=\"#{request.request_id}\""
 
       StreamCall.stop(pid)
     end

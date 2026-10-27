@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.WorkerPoolTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.WorkerPool
 
   setup do
@@ -84,8 +86,15 @@ defmodule PhoenixGenApi.WorkerPoolTest do
         assert :ok = WorkerPool.execute_async(:test_pool, simple_task)
       end
 
-      # Next task should fail
-      assert {:error, :queue_full} = WorkerPool.execute_async(:test_pool, simple_task)
+      # Next task should fail and the rejection is traceable from the pool log
+      log =
+        capture_log(fn ->
+          assert {:error, :queue_full} = WorkerPool.execute_async(:test_pool, simple_task)
+        end)
+
+      assert log =~ "event=queue_full"
+      assert log =~ "pool=:test_pool"
+      assert log =~ "node=#{inspect(node())}"
 
       # Release workers
       for _ <- 1..3 do

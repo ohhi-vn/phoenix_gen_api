@@ -1,6 +1,8 @@
 defmodule PhoenixGenApi.RateLimiterTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias PhoenixGenApi.RateLimiter
   alias PhoenixGenApi.Structs.Request
 
@@ -54,10 +56,19 @@ defmodule PhoenixGenApi.RateLimiterTest do
       end)
 
       # 6th request should be rate limited
-      assert {:error, :rate_limited, details} = RateLimiter.check_rate_limit(request)
-      assert details.max_requests == 5
-      assert details.current_requests == 5
-      assert details.retry_after_ms > 0
+      log =
+        capture_log(fn ->
+          assert {:error, :rate_limited, details} = RateLimiter.check_rate_limit(request)
+          assert details.max_requests == 5
+          assert details.current_requests == 5
+          assert details.retry_after_ms > 0
+        end)
+
+      assert log =~ "event=rate_limit_exceeded"
+      assert log =~ "request_id=\"req_1\""
+      assert log =~ "request_type=\"test_api\""
+      assert log =~ "service=\"test_service\""
+      assert log =~ "user_id=\"user_123\""
     end
 
     test "allows requests after window expires" do

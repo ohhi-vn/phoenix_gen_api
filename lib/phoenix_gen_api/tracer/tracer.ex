@@ -140,6 +140,8 @@ defmodule PhoenixGenApi.Tracer do
   alias PhoenixGenApi.Structs.{FunConfig, Request, Response}
   alias PhoenixGenApi.Tracer.LogCapture
 
+  alias PhoenixGenApi.LogContext
+
   require Logger
 
   @enabled_key :phoenix_gen_api_tracer_enabled
@@ -183,8 +185,10 @@ defmodule PhoenixGenApi.Tracer do
 
   def enable_request_type(request_type)
       when is_binary(request_type) and byte_size(request_type) > 0 do
-    update_membership(:request_types, &Map.put(&1, request_type, true))
-    :ok
+    with :ok <- tracing_admin_gate() do
+      update_membership(:request_types, &Map.put(&1, request_type, true))
+      :ok
+    end
   end
 
   def enable_request_type(_), do: :ok
@@ -216,8 +220,10 @@ defmodule PhoenixGenApi.Tracer do
   end
 
   def enable_user_id(user_id) when is_binary(user_id) and byte_size(user_id) > 0 do
-    update_membership(:user_ids, &Map.put(&1, user_id, true))
-    :ok
+    with :ok <- tracing_admin_gate() do
+      update_membership(:user_ids, &Map.put(&1, user_id, true))
+      :ok
+    end
   end
 
   def enable_user_id(_), do: :ok
@@ -278,13 +284,27 @@ defmodule PhoenixGenApi.Tracer do
   def set_enabled(enabled) do
     enabled = normalize_bool(enabled)
 
-    case Process.whereis(__MODULE__) do
-      nil ->
-        :persistent_term.put(@enabled_key, enabled)
-        :ok
+    with :ok <- tracing_admin_gate() do
+      case Process.whereis(__MODULE__) do
+        nil ->
+          :persistent_term.put(@enabled_key, enabled)
+          :ok
 
-      pid ->
-        GenServer.call(pid, {:set_enabled, enabled})
+        pid ->
+          GenServer.call(pid, {:set_enabled, enabled})
+      end
+    end
+  end
+
+  defp tracing_admin_gate do
+    if Application.get_env(:phoenix_gen_api, :admin_actions) == nil do
+      :ok
+    else
+      if PhoenixGenApi.Security.admin_action_allowed?(:enable_tracing) do
+        :ok
+      else
+        {:error, :admin_action_denied}
+      end
     end
   end
 
@@ -364,7 +384,14 @@ defmodule PhoenixGenApi.Tracer do
           :ok
 
         targets ->
-          line = build_trace_line("request_start", request, %{"args" => request.args})
+          extra =
+            if capture_args?() do
+              %{"args" => request.args}
+            else
+              %{}
+            end
+
+          line = build_trace_line("request_start", request, extra)
           dispatch(targets, line)
           :ok
       end
@@ -384,16 +411,17 @@ defmodule PhoenixGenApi.Tracer do
   @spec trace_permission(Request.t(), FunConfig.t(), :allowed | :denied) :: :ok
   def trace_permission(request = %Request{}, fun_config = %FunConfig{}, result)
       when result in [:allowed, :denied] do
-    if enabled?() do
+    with true <- enabled?(),
+         targets when targets != [] <- traced_targets(request) do
       line =
         build_trace_line("permission", request, %{
           "permission" => to_string(result),
           "permission_mode" => permission_mode(fun_config)
         })
 
-      dispatch_if_traced(request, line)
+      dispatch(targets, line)
     else
-      :ok
+      _ -> :ok
     end
   end
 
@@ -407,7 +435,8 @@ defmodule PhoenixGenApi.Tracer do
   """
   @spec trace_result(Request.t(), term(), non_neg_integer()) :: :ok
   def trace_result(request = %Request{}, result, duration_us) do
-    if enabled?() do
+    with true <- enabled?(),
+         targets when targets != [] <- traced_targets(request) do
       {success, async, error} = summarize_result(result)
 
       line =
@@ -418,9 +447,9 @@ defmodule PhoenixGenApi.Tracer do
           "error" => error
         })
 
-      dispatch_if_traced(request, line)
+      dispatch(targets, line)
     else
-      :ok
+      _ -> :ok
     end
   end
 
@@ -566,7 +595,17 @@ defmodule PhoenixGenApi.Tracer do
     }
 
     Logger.info(
-      "[Tracer] started, enabled: #{inspect(enabled)}, request_types: #{inspect(request_types)}, user_ids: #{inspect(user_ids)}, log_dir: #{inspect(state.log_dir)}, capture_level: #{inspect(capture_level)}"
+      LogContext.line(
+        "Tracer",
+        :started,
+        "started",
+        enabled: enabled,
+        request_types: request_types,
+        user_ids: user_ids,
+        log_dir: state.log_dir,
+        capture_level: capture_level,
+        node: node()
+      )
     )
 
     {:ok, state}
@@ -677,11 +716,15 @@ defmodule PhoenixGenApi.Tracer do
     end
   end
 
-  defp dispatch_if_traced(request, line) do
-    case traced_targets(request) do
-      [] -> :ok
-      targets -> dispatch(targets, line)
-    end
+  @doc """
+  Returns true when the current process has an active trace context.
+
+  Cheap enough for hot paths: it reads the enabled flag first and only then
+  inspects the process metadata.
+  """
+  @spec traced?() :: boolean()
+  def traced? do
+    enabled?() and Keyword.get(Logger.metadata(), @trace_metadata_key, []) != []
   end
 
   defp dispatch(targets, line) do
@@ -741,6 +784,10 @@ defmodule PhoenixGenApi.Tracer do
   def format_value(value) when is_atom(value), do: to_string(value)
   def format_value(value), do: inspect(value)
 
+  defp capture_args? do
+    Application.get_env(:phoenix_gen_api, :trace_capture_args, true) != false
+  end
+
   defp request_snapshot(request) do
     %{
       request_id: request.request_id,
@@ -794,7 +841,17 @@ defmodule PhoenixGenApi.Tracer do
           %{state | files: Map.put(state.files, path, {byte_size(line) + 1, device})}
         else
           {:error, reason} ->
-            Logger.error("[Tracer] failed to write trace file #{path}: #{inspect(reason)}")
+            Logger.error(
+              LogContext.line(
+                "Tracer",
+                :trace_write_failed,
+                "failed to write trace file",
+                path: path,
+                reason: reason,
+                node: node()
+              )
+            )
+
             state
         end
 
@@ -809,7 +866,18 @@ defmodule PhoenixGenApi.Tracer do
 
             {:error, reason} ->
               :file.close(device)
-              Logger.error("[Tracer] failed to write trace file #{path}: #{inspect(reason)}")
+
+              Logger.error(
+                LogContext.line(
+                  "Tracer",
+                  :trace_write_failed,
+                  "failed to write trace file",
+                  path: path,
+                  reason: reason,
+                  node: node()
+                )
+              )
+
               %{state | files: Map.delete(state.files, path)}
           end
         end
@@ -829,7 +897,17 @@ defmodule PhoenixGenApi.Tracer do
       {:ok, device}
     else
       {:error, reason} ->
-        Logger.error("[Tracer] cannot open trace file #{path}: #{inspect(reason)}")
+        Logger.error(
+          LogContext.line(
+            "Tracer",
+            :trace_open_failed,
+            "cannot open trace file",
+            path: path,
+            reason: reason,
+            node: node()
+          )
+        )
+
         {:error, reason}
     end
   end
@@ -846,7 +924,7 @@ defmodule PhoenixGenApi.Tracer do
     end)
 
     File.rename(path, "#{path}.1")
-    Logger.info("[Tracer] rotated trace file #{path}")
+    Logger.info(LogContext.event("Tracer", :trace_file_rotated, path: path, node: node()))
     :ok
   end
 
@@ -893,7 +971,16 @@ defmodule PhoenixGenApi.Tracer do
         :ok
 
       {:error, reason} ->
-        Logger.error("[Tracer] failed to attach log capture handler: #{inspect(reason)}")
+        Logger.error(
+          LogContext.line(
+            "Tracer",
+            :log_capture_attach_failed,
+            "failed to attach log capture handler",
+            reason: reason,
+            node: node()
+          )
+        )
+
         :ok
     end
   end
